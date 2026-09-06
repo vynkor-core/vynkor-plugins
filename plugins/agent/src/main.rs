@@ -48,6 +48,18 @@ fn manifest() -> PluginManifest {
     }
 }
 
+fn is_device_target(action: &str) -> bool {
+    action.starts_with("dev-") && action.contains('.')
+}
+
+fn route_target(action: &str) -> (String, String) {
+    if is_device_target(action) {
+        (action.to_string(), String::new())
+    } else {
+        ("kernel".to_string(), action.to_string())
+    }
+}
+
 fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -205,10 +217,11 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                         let RpcCall { action, params_json, timeout_ms, reply } = call;
                         let action_id = format!("rpc-{seq}");
                         pending.insert(action_id.clone(), (action.clone(), reply));
+                        let (target, act) = route_target(&action);
                         let env = Envelope {
                             payload: Some(envelope::Payload::ActionRequest(ActionRequest {
                                 action_id,
-                                action,
+                                action: act,
                                 params_json,
                                 timeout_ms,
                                 streaming: false,
@@ -216,7 +229,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                             })),
                             ..Default::default()
                         };
-                        let _ = client.send("kernel", env).await;
+                        let _ = client.send(&target, env).await;
                     }
                     ProxyMsg::Command(call) => {
                         let CommandCall { command_id, command, params_json, timeout_ms: _, reply } =

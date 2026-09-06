@@ -62,6 +62,17 @@ fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
     doc.steps.push(StepRec { n, kind: kind.to_string(), detail });
 }
 
+fn is_retryable_device_error(err: &str) -> bool {
+    err.contains("unknown target")
+        || err.contains("not registered")
+        || err.contains("timed out")
+        || err.contains("no live connection")
+}
+
+fn is_device_target(name: &str) -> bool {
+    name.starts_with("dev-") && name.contains('.')
+}
+
 /// Dispatch one tool call and append the observation turn.
 async fn dispatch_and_observe(
     rpc: &Rpc,
@@ -70,7 +81,14 @@ async fn dispatch_and_observe(
     name: &str,
     params: Value,
 ) -> Result<bool, String> {
-    let outcome = rpc.call(name, params.clone(), spec_timeout_ms).await;
+    let mut outcome = rpc.call(name, params.clone(), spec_timeout_ms).await;
+    if outcome.is_err() && is_device_target(name) {
+        let err = outcome.as_ref().err().unwrap().to_string();
+        if is_retryable_device_error(&err) {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            outcome = rpc.call(name, params.clone(), spec_timeout_ms).await;
+        }
+    }
     let (status, body) = match outcome {
         Ok(v) => ("ok", serde_json::to_string(&v).unwrap_or_else(|_| "{}".into())),
         Err(e) => ("error", e),
