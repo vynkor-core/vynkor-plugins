@@ -46,7 +46,7 @@ jobs:
           echo "VERSION=${BASH_REMATCH[2]}" >> "$GITHUB_ENV"
 
       - name: Checkout full history
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
