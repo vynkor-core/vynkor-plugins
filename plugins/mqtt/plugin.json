@@ -1,0 +1,498 @@
+{
+  "plugin_id": "mqtt",
+  "version": "0.1.0",
+  "permissions": [
+    "network",
+    "secrets"
+  ],
+  "kernel_compatibility_range": {
+    "min": "0.1.0",
+    "max": "*"
+  },
+  "binary": "mqtt",
+  "events": [],
+  "files": [
+    "mqtt",
+    "plugin.json"
+  ],
+  "actions": [
+    {
+      "name": "mqtt_connect",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "broker_host": {
+            "type": "string",
+            "description": "MQTT broker hostname or IP"
+          },
+          "broker_port": {
+            "type": "integer",
+            "default": 1883,
+            "description": "MQTT broker port"
+          },
+          "client_id": {
+            "type": "string",
+            "description": "MQTT client ID (default: auto-generated)"
+          },
+          "username": {
+            "type": "string",
+            "description": "MQTT username"
+          },
+          "password": {
+            "type": "string",
+            "description": "MQTT password (vault-first via secrets plugin)"
+          },
+          "keepalive_secs": {
+            "type": "integer",
+            "default": 60,
+            "description": "MQTT keepalive in seconds"
+          },
+          "ca_cert_path": {
+            "type": "string",
+            "description": "Path to CA certificate for TLS"
+          },
+          "client_cert_path": {
+            "type": "string",
+            "description": "Path to client certificate for mTLS"
+          },
+          "client_key_path": {
+            "type": "string",
+            "description": "Path to client key for mTLS"
+          }
+        },
+        "required": ["broker_host"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          },
+          "broker": {
+            "type": "string"
+          }
+        },
+        "required": ["connected"]
+      }
+    },
+    {
+      "name": "mqtt_disconnect",
+      "input": {
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "disconnected": {
+            "type": "boolean"
+          }
+        },
+        "required": ["disconnected"]
+      }
+    },
+    {
+      "name": "mqtt_publish",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "MQTT topic to publish to"
+          },
+          "payload": {
+            "type": "string",
+            "description": "Message payload (text or base64-encoded protobuf)"
+          },
+          "qos": {
+            "type": "integer",
+            "enum": [0, 1, 2],
+            "default": 0,
+            "description": "MQTT QoS level"
+          },
+          "retain": {
+            "type": "boolean",
+            "default": false,
+            "description": "Retain flag"
+          },
+          "encoding": {
+            "type": "string",
+            "enum": ["utf8", "base64", "protobuf"],
+            "default": "utf8",
+            "description": "Payload encoding"
+          }
+        },
+        "required": ["topic", "payload"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "published": {
+            "type": "boolean"
+          },
+          "message_id": {
+            "type": "integer"
+          }
+        },
+        "required": ["published"]
+      }
+    },
+    {
+      "name": "mqtt_subscribe",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "MQTT topic to subscribe to"
+          },
+          "qos": {
+            "type": "integer",
+            "enum": [0, 1, 2],
+            "default": 0,
+            "description": "MQTT QoS level"
+          },
+          "stream": {
+            "type": "boolean",
+            "default": true,
+            "description": "Stream messages via R6 streaming"
+          }
+        },
+        "required": ["topic"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "subscribed": {
+            "type": "boolean"
+          },
+          "subscription_id": {
+            "type": "string"
+          }
+        },
+        "required": ["subscribed"]
+      }
+    },
+    {
+      "name": "mqtt_unsubscribe",
+      "input": {
+        "type": "object",
+        "properties": {
+          "topic": {
+            "type": "string",
+            "description": "MQTT topic to unsubscribe from"
+          }
+        },
+        "required": ["topic"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "unsubscribed": {
+            "type": "boolean"
+          }
+        },
+        "required": ["unsubscribed"]
+      }
+    },
+    {
+      "name": "mqtt_status",
+      "input": {
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "connected": {
+            "type": "boolean"
+          },
+          "broker": {
+            "type": "string"
+          },
+          "uptime_ms": {
+            "type": "integer"
+          },
+          "subscriptions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "messages_sent": {
+            "type": "integer"
+          },
+          "messages_received": {
+            "type": "integer"
+          }
+        },
+        "required": ["connected"]
+      }
+    },
+    {
+      "name": "mqtt_device_list",
+      "input": {
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "device_id": {
+                  "type": "string"
+                },
+                "device_type": {
+                  "type": "string"
+                },
+                "online": {
+                  "type": "boolean"
+                },
+                "last_seen": {
+                  "type": "integer"
+                },
+                "firmware": {
+                  "type": "string"
+                }
+              },
+              "required": ["device_id"]
+            }
+          }
+        },
+        "required": ["devices"]
+      }
+    },
+    {
+      "name": "mqtt_device_info",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          }
+        },
+        "required": ["device_id"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "device_type": {
+            "type": "string"
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "firmware": {
+            "type": "string"
+          },
+          "ip": {
+            "type": "string"
+          },
+          "wifi_rssi": {
+            "type": "integer"
+          },
+          "uptime_s": {
+            "type": "integer"
+          },
+          "supported_commands": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pins": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": ["device_id"]
+      }
+    },
+    {
+      "name": "mqtt_device_command",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 5000
+          }
+        },
+        "required": ["device_id", "command"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error_code": {
+            "type": "integer"
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object"
+          },
+          "execution_ms": {
+            "type": "integer"
+          }
+        },
+        "required": ["success"]
+      }
+    },
+    {
+      "name": "mqtt_device_telemetry",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "stream": {
+            "type": "string"
+          },
+          "since": {
+            "type": "integer",
+            "description": "Unix timestamp (return data since this time)"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 100
+          }
+        },
+        "required": ["device_id"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "telemetry": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "timestamp": {
+                  "type": "integer"
+                },
+                "stream": {
+                  "type": "string"
+                },
+                "data": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "required": ["device_id"]
+      }
+    },
+    {
+      "name": "mqtt_ota_update",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "firmware_url": {
+            "type": "string",
+            "description": "URL to firmware binary"
+          },
+          "firmware_version": {
+            "type": "string"
+          }
+        },
+        "required": ["device_id", "firmware_url"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "started": {
+            "type": "boolean"
+          },
+          "ota_id": {
+            "type": "string"
+          }
+        },
+        "required": ["started"]
+      }
+    }
+  ],
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "MQTT_PLUGIN_DEFAULT_BROKER": {
+        "type": "string",
+        "description": "Default MQTT broker URL (mqtt://host:port)"
+      },
+      "MQTT_PLUGIN_DEFAULT_USERNAME": {
+        "type": "string",
+        "description": "Default MQTT username"
+      },
+      "MQTT_PLUGIN_DEFAULT_PASSWORD": {
+        "type": "string",
+        "description": "Default MQTT password (vault-first via secrets)"
+      },
+      "MQTT_PLUGIN_CA_CERT_PATH": {
+        "type": "string",
+        "description": "Path to CA certificate for TLS"
+      },
+      "MQTT_PLUGIN_CLIENT_CERT_PATH": {
+        "type": "string",
+        "description": "Path to client certificate for mTLS"
+      },
+      "MQTT_PLUGIN_CLIENT_KEY_PATH": {
+        "type": "string",
+        "description": "Path to client key for mTLS"
+      },
+      "MQTT_PLUGIN_STREAM_IDLE_TIMEOUT_MS": {
+        "type": "integer",
+        "default": 300000,
+        "description": "Stream idle timeout in milliseconds (default: 5 min)"
+      },
+      "MQTT_PLUGIN_TOPIC_PREFIX": {
+        "type": "string",
+        "default": "vynkor",
+        "description": "MQTT topic prefix (default: vynkor)"
+      }
+    },
+    "additionalProperties": true
+  }
+}
