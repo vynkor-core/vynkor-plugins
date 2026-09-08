@@ -1,0 +1,421 @@
+// ═══════════════════════════════════════════════════════════════════════
+// Vynkor Device Protocol (VDP) v1
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Универсальный бинарный протокол для связи ESP ↔ Vynkor.
+// Работает поверх MQTT (WiFi), Zigbee ZCL, Thread (Matter-compatible).
+//
+// Свойства:
+//   - Бинарный (protobuf): компактный, быстрый парсинг
+//   - Расширяемый: добавление полей не ломает старые устройства
+//   - Multi-transport: один формат сообщений, разные адаптеры
+//   - Версионирование: поле version для эволюции протокола
+//
+// С芸区/to-design:
+//   - Field numbers 1-15: один байт encoding (быстро для constrained devices)
+//   - Fixed-width types для timestamp/device_id (ровные offset'ы)
+//   - Union через oneof: одно сообщение = один тип
+//   - Encryption: на уровне транспорта (TLS для MQTT, Zigbeelink для Zigbee)
+//
+// ═══════════════════════════════════════════════════════════════════════
+
+syntax = "proto3";
+package vynkor.mqtt;
+option java_package = "vynkor.mqtt";
+option go_package = "vynkor-mqtt/proto";
+
+// ─── Версия протокола ───────────────────────────────────────────────────
+// Текущая версия: 1
+// Изменения версии:
+//   - major: несовместимые изменения (потребуется прошивка)
+//   - minor: новые поля/сообщения (старые устройства работают)
+//
+// v1.0: initial release — telemetry, commands, state, OTA
+// ═══════════════════════════════════════════════════════════════════════
+
+// ─── Типы устройств ─────────────────────────────────────────────────────
+enum DeviceType {
+  DEVICE_TYPE_UNKNOWN     = 0;
+  DEVICE_TYPE_SENSOR      = 1;  // датчик (temperature, humidity, motion)
+  DEVICE_TYPE_ACTUATOR    = 2;  // исполнитель (relay, servo, motor)
+  DEVICE_TYPE_GATEWAY     = 3;  // шлюз (ESP как мост Zigbee→WiFi)
+  DEVICE_TYPE_DISPLAY     = 4;  // дисплей (LCD, OLED)
+  DEVICE_TYPE_CUSTOM      = 15; // пользовательский
+}
+
+// ─── Типы payload ───────────────────────────────────────────────────────
+enum PayloadType {
+  PAYLOAD_UNKNOWN         = 0;
+  PAYLOAD_TELEMETRY       = 1;  // данные с датчиков
+  PAYLOAD_COMMAND         = 2;  // команда от Vynkor
+  PAYLOAD_RESPONSE        = 3;  // ответ на команду
+  PAYLOAD_STATE           = 4;  // текущее состояние (retained)
+  PAYLOAD_OTA_REQUEST     = 5;  // запрос OTA
+  PAYLOAD_OTA_DATA        = 6;  // чанк OTA
+  PAYLOAD_OTA_ACK         = 7;  // подтверждение OTA
+  PAYLOAD_DISCOVERY       = 8;  // авто-обнаружение
+  PAYLOAD_HEARTBEAT       = 9;  // heartbeat
+  PAYLOAD_ERROR           = 10; // ошибка
+}
+
+// ─── Коды ошибок ────────────────────────────────────────────────────────
+enum ErrorCode {
+  ERROR_OK                = 0;
+  ERROR_UNKNOWN_COMMAND   = 1;  // неизвестная команда
+  ERROR_INVALID_PARAMS    = 2;  // невалидные параметры
+  ERROR_HARDWARE          = 3;  // аппаратная ошибка
+  ERROR_TIMEOUT           = 4;  // таймаут
+  ERROR_BUSY              = 5;  // устройство занято
+  ERROR_NOT_SUPPORTED     = 6;  // команда не поддерживается
+  ERROR_OTA_FAILED        = 7;  // ошибка OTA
+  ERROR_AUTH              = 8;  // ошибка аутентификации
+}
+
+// ─── Кодеки данных ──────────────────────────────────────────────────────
+enum DataCodec {
+  CODEC_NONE              = 0;  // raw bytes
+  CODEC_JSON              = 1;  // JSON (текст)
+  CODEC_CBOR              = 2;  // CBOR (binary JSON)
+  CODEC_PROTOBUF          = 3;  // protobuf (вложенный)
+  CODEC_MSGPACK           = 4;  // MessagePack
+  CODEC_CUSTOM            = 15; // пользовательский
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Основное сообщение
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Все сообщения оборачиваются в Message.
+// Device шлёт: telemetry, response, state, heartbeat, discovery, ota_*
+// Vynkor шлёт: command, ota_*, discovery_response
+//
+// Транспортные адаптеры:
+//   MQTT: topic = vynkor/{device_id}/{type}
+//         payload = serialize(Message)
+//   Zigbee: cluster = 0xFC00 (vynkor custom)
+//           attribute = Message protobuf
+//   Thread: UDP port 7890
+//           payload = length-prefix + serialize(Message)
+// ═══════════════════════════════════════════════════════════════════════
+
+message Message {
+  // Версия протокола (major.minor packed в uint32: major << 16 | minor)
+  uint32 version = 1;
+
+  // ID устройства (уникальный, регистрируется при first-boot)
+  // Формат: "{type}-{mac_hex}" или пользовательский
+  // Пример: "sensor-a1b2c3d4e5f6"
+  string device_id = 2;
+
+  // Тип устройства
+  DeviceType device_type = 3;
+
+  // Unix timestamp in seconds (UTC)
+  uint64 timestamp = 4;
+
+  // Время работы в секундах (для диагностики)
+  uint32 uptime_s = 5;
+
+  // Уникальный ID сообщения (для корреляции request/response)
+  // Генерируется отправителем, копируется в response
+  string msg_id = 6;
+
+  // Signal strength (для диагностики связи)
+  // WiFi: RSSI in dBm, Zigbee: LQI 0-255, Thread: RSSI
+  int32 signal_strength = 7;
+
+  // Battery level (0-100, -1 = неизмеряемо/пров饪ное)
+  int32 battery_pct = 8;
+
+  // Payload type
+  PayloadType payload_type = 10;
+
+  // Union: одно сообщение = один тип payload
+  oneof payload {
+    TelemetryPayload telemetry = 20;
+    CommandPayload command = 21;
+    ResponsePayload response = 22;
+    StatePayload state = 23;
+    OtaRequestPayload ota_request = 24;
+    OtaDataPayload ota_data = 25;
+    OtaAckPayload ota_ack = 26;
+    DiscoveryPayload discovery = 27;
+    HeartbeatPayload heartbeat = 28;
+    ErrorPayload error = 29;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Payload types
+// ═══════════════════════════════════════════════════════════════════════
+
+// ── Телеметрия ──────────────────────────────────────────────────────────
+// Периодические данные или по событию.
+// data: map<string, Value> — произвольные пары ключ-значение
+//
+// Примеры:
+//   {"temperature": 23.5, "humidity": 45.2}
+//   {"relay_state": true, "power_watts": 120}
+//   {"motion": true, "lux": 340}
+//
+message TelemetryPayload {
+  // Имя набора данных (для разделения потоков)
+  // Пример: "sensors", "actuators", "diagnostics"
+  string stream = 1;
+
+  // Данные — универсальный map
+  map<string, Value> data = 2;
+
+  // Кодек данных (если data содержит бинарные данные)
+  DataCodec data_codec = 3;
+
+  // Raw data (если data_codec != NONE)
+  bytes raw_data = 4;
+}
+
+// ── Команда ─────────────────────────────────────────────────────────────
+// Запрос от Vynkor к устройству.
+// Устройство ОБЯЗАНО ответить ResponsePayload с тем же msg_id.
+//
+// Примеры команд:
+//   "set_relay"     → {"pin": 5, "state": true}
+//   "read_sensor"   → {"sensor": "dht22"}
+//   "set_pwm"       → {"pin": 12, "value": 128, "freq": 1000}
+//   "ota_update"    → {"url": "http://..."} или обрабатывается через OtaRequest
+//
+message CommandPayload {
+  // Имя команды (registry-based)
+  string command = 1;
+
+  // Параметры команды
+  map<string, Value> params = 2;
+
+  // Таймаут ответа в миллисекундах (0 = дефолт 5000)
+  uint32 timeout_ms = 3;
+
+  // Требуется ли подтверждение (для критических команд)
+  bool requires_ack = 4;
+}
+
+// ── Ответ ───────────────────────────────────────────────────────────────
+// Ответ устройства на команду.
+// msg_id КОПИРУЕТСЯ из CommandPayload.
+//
+message ResponsePayload {
+  // Код ошибки
+  ErrorCode error_code = 1;
+
+  // Текст ошибки (человекочитаемый, опционально)
+  string error_message = 2;
+
+  // Результат команды
+  map<string, Value> data = 3;
+
+  // Время выполнения в миллисекундах
+  uint32 execution_ms = 4;
+}
+
+// ── Состояние ───────────────────────────────────────────────────────────
+// Текущее состояние устройства (retained в MQTT).
+// Публикуется при:
+//   - Подключении к MQTT
+//   - Изменении состояния
+//   - По запросу (command: "get_state")
+//
+message StatePayload {
+  // Прошивка
+  string firmware_name = 1;
+  string firmware_version = 2;
+
+  // Хардвер
+  string chip_id = 3;        // "ESP8266", "ESP32", "ESP32-S2", etc.
+  uint32 flash_size_kb = 4;
+  uint32 free_heap_bytes = 5;
+
+  // Сеть
+  string wifi_ssid = 10;
+  int32 wifi_rssi = 11;
+  string ip_address = 12;
+  string mac_address = 13;
+
+  // Zigbee (если шлюз)
+  uint32 zigbee_pan_id = 20;
+  uint32 zigbee_channel = 21;
+  uint32 zigbee_children = 22;  // количество дочерних устройств
+
+  // Thread (если шлюз)
+  string thread_dataset = 30;   // base64 encoded
+  string thread_rloc = 31;
+
+  // Пользовательские данные
+  map<string, Value> custom = 50;
+}
+
+// ── OTA ─────────────────────────────────────────────────────────────────
+// Три шага:
+//   1. Device → Vynkor: OtaRequest (хочу обновиться)
+//   2. Vynkor → Device: OtaData (чанки прошивки)
+//   3. Device → Vynkor: OtaAck (получил чанк / завершено / ошибка)
+//
+message OtaRequestPayload {
+  // Текущая версия прошивки
+  string current_version = 1;
+
+  // Поддерживаемые чипы (для фильтрации совместимых прошивок)
+  string chip_id = 2;
+
+  // Желаемый размер чанка (устройство сообщает, сколько может принять)
+  uint32 chunk_size = 3;
+}
+
+message OtaDataPayload {
+  // Номер чанка (с нуля)
+  uint32 chunk_index = 1;
+
+  // Общее количество чанков
+  uint32 total_chunks = 2;
+
+  // Данные чанка (до chunk_size из OtaRequest)
+  bytes data = 3;
+
+  // CRC32 чанка (для проверки целостности)
+  uint32 crc32 = 4;
+
+  // SHA-256 всей прошивки (только в первом чанке)
+  bytes firmware_hash = 5;
+
+  // Размер прошивки в байтах (только в первом чанке)
+  uint32 firmware_size = 6;
+}
+
+message OtaAckPayload {
+  // Индекс полученного чанка
+  uint32 chunk_index = 1;
+
+  // Статус
+  enum Status {
+    STATUS_OK = 0;
+    STATUS_CRC_ERROR = 1;
+    STATUS_WRITE_ERROR = 2;
+    STATUS_TOO_LARGE = 3;
+    STATUS_COMPLETE = 4;     // прошивка применена, перезагрузка
+    STATUS_REJECTED = 5;     // устройство отказалось
+  }
+  Status status = 2;
+
+  // Задержка перед следующим чанком (мс, для flow control)
+  uint32 delay_ms = 3;
+}
+
+// ── Discovery ───────────────────────────────────────────────────────────
+// Авто-обнаружение устройств в сети.
+// Устройства публикуют Discovery при подключении.
+// Vynkor отвечает DiscoveryResponse для регистрации.
+//
+message DiscoveryPayload {
+  // MAC address (для уникальности)
+  string mac_address = 1;
+
+  // Поддерживаемые команды (для автокомплита в UI)
+  repeated string supported_commands = 2;
+
+  // Доступные пины/sensors (для автоконфигурации)
+  repeated PinInfo pins = 3;
+
+  // Иконка (base64 PNG, опционально)
+  bytes icon = 4;
+
+  // Описание устройства
+  string description = 5;
+}
+
+message PinInfo {
+  string name = 1;        // "GPIO5", "DHT22", "ADC"
+  PinType type = 2;
+  bool writable = 3;
+}
+
+enum PinType {
+  PIN_UNKNOWN = 0;
+  PIN_DIGITAL = 1;
+  PIN_ANALOG = 2;
+  PIN_I2C = 3;
+  PIN_SPI = 4;
+  PIN_SERIAL = 5;
+  PIN_PWM = 6;
+}
+
+// ── Heartbeat ───────────────────────────────────────────────────────────
+// Периодический heartbeat для проверки связи.
+// Интервал настраивается (default: 60s).
+// Vynkor может запросить heartbeat: command "heartbeat"
+//
+message HeartbeatPayload {
+  // Свободная память
+  uint32 free_heap = 1;
+
+  // Время CPU (для ESP32: idle percentage)
+  uint32 cpu_idle_pct = 2;
+
+  // Количество отправленных/полученных сообщений
+  uint32 msgs_sent = 3;
+  uint32 msgs_received = 4;
+
+  // Количество ошибок
+  uint32 errors = 5;
+}
+
+// ── Error ───────────────────────────────────────────────────────────────
+// Сообщение об ошибке (для логирования и диагностики).
+//
+message ErrorPayload {
+  ErrorCode code = 1;
+  string message = 2;
+  string context = 3;  // что делали когда произошла ошибка
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Value — универсальный тип для map значений
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Позволяет хранить разнотипные значения в одном map.
+// protobuf oneof не работает в map, поэтому используем 束сабль.
+//
+// Для constrained devices: можно использовать только нужные типы,
+// остальные zero-value игнорируются.
+//
+message Value {
+  oneof kind {
+    bool bool_val = 1;
+    int32 int_val = 2;
+    uint32 uint_val = 3;
+    int64 int64_val = 4;
+    uint64 uint64_val = 5;
+    float float_val = 6;
+    double double_val = 7;
+    string string_val = 8;
+    bytes bytes_val = 9;
+    ArrayValue array_val = 10;
+    MapValue map_val = 11;
+  }
+}
+
+message ArrayValue {
+  repeated Value items = 1;
+}
+
+message MapValue {
+  map<string, Value> items = 1;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Вспомогательные функции
+// ═══════════════════════════════════════════════════════════════════════
+
+// Константы
+// Protocol version: 1.0
+// Max message size: 1024 bytes (для MQTT, Zigbee: 80 bytes ZCL)
+// Default MQTT topic prefix: "vynkor"
+// Default heartbeat interval: 60s
+// Default command timeout: 5000ms
+// Max OTA chunk size: 1024 bytes (настраивается)
