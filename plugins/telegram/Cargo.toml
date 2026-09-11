@@ -1,0 +1,32 @@
+[package]
+name = "telegram-plugin"
+version = "0.1.0"
+edition = "2021"
+description = "Full Telegram MTProto user-client for vynkor (N-account, agent delegate)"
+publish = false
+
+[lib]
+name = "telegram_plugin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "telegram"
+path = "src/main.rs"
+
+[dependencies]
+vynkor-sdk = "0.0.3"
+vynkor-wire = "0.0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+grammers-client = "0.7"
+grammers-session = "0.7"
+grammers-mtsender = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }

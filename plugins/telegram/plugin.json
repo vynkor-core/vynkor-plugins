@@ -1,0 +1,57 @@
+{
+  "plugin_id": "telegram",
+  "name": "Telegram",
+  "version": "0.1.0",
+  "description": "Full Telegram MTProto user-client for vynkor — N-account, agent delegate. Read/write/search from personal and corporate accounts.",
+  "author": "vynkor-core",
+  "license": "MIT",
+  "permissions": [
+    "PERMISSION_NETWORK",
+    "PERMISSION_STORAGE",
+    "PERMISSION_SECRETS",
+    "PERMISSION_EVENT_PUBLISH"
+  ],
+  "actions": [
+    {
+      "name": "status",
+      "description": "Plugin status with version and account info"
+    },
+    {
+      "name": "tg_list_dialogs",
+      "description": "List Telegram dialogs (chats, channels, groups)"
+    },
+    {
+      "name": "tg_get_history",
+      "description": "Get message history from a peer"
+    },
+    {
+      "name": "tg_get_message",
+      "description": "Get a single message by peer and id"
+    },
+    {
+      "name": "tg_search",
+      "description": "Search messages across dialogs"
+    },
+    {
+      "name": "tg_send_message",
+      "description": "Send a text message to a peer"
+    }
+  ],
+  "events": [
+    "plugin.telegram.new_message",
+    "plugin.telegram.message_sent"
+  ],
+  "requires": [],
+  "config": {
+    "TELEGRAM_PLUGIN_ACCOUNTS": {
+      "type": "string",
+      "description": "Comma-separated list of account names (e.g. 'personal,corporate')",
+      "default": "default"
+    },
+    "TELEGRAM_PLUGIN_SESSION_DIR": {
+      "type": "string",
+      "description": "Directory for session files",
+      "default": "~/.local/share/vyn/telegram"
+    }
+  }
+}
