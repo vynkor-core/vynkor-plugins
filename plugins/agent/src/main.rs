@@ -281,6 +281,11 @@ mod tests {
     /// confirmation-required so confirm-gate tests can share the setup.
     static ENV: OnceLock<()> = OnceLock::new();
 
+    /// Serializes the fake-kernel e2e tests. They share one process env
+    /// (`setup_env` sets every var once), and the memory test mutates
+    /// `AGENT_PLUGIN_MEMORY`, so goal loops must never run concurrently.
+    static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     fn setup_env() {
         ENV.get_or_init(|| {
             std::env::set_var("AGENT_PLUGIN_AI_PROVIDER", "openai");
@@ -336,6 +341,9 @@ mod tests {
     /// Kernel-routed calls the plugin fired as agent tools (non-db, non-ai).
     type Dispatched = Arc<Mutex<Vec<(String, Value)>>>;
     type AiRequests = Arc<Mutex<Vec<Value>>>;
+    /// Per-collection facts in the fake `vector-db`: written by `vec_upsert`,
+    /// read by `vec_query`, seeded directly by tests.
+    type VecStore = Arc<Mutex<StdHashMap<String, Vec<Value>>>>;
 
     /// In-memory stand-in for the `database` plugin (same KV semantics the
     /// notes/calendar tests use).
@@ -410,6 +418,8 @@ mod tests {
         published: Published,
         dispatched: Dispatched,
         ai_requests: AiRequests,
+        vec_store: VecStore,
+        _serial: tokio::sync::MutexGuard<'static, ()>,
     }
 
     impl Shim {
@@ -457,6 +467,24 @@ mod tests {
         async fn ai_requests(&self) -> Vec<Value> {
             self.ai_requests.lock().await.clone()
         }
+
+        async fn seed_fact(&self, collection: &str, id: &str, fact: &str) {
+            self.vec_store
+                .lock()
+                .await
+                .entry(collection.to_string())
+                .or_default()
+                .push(serde_json::json!({"id": id, "text": fact, "metadata": {"fact": fact}}));
+        }
+
+        async fn vec_facts(&self, collection: &str) -> Vec<Value> {
+            self.vec_store
+                .lock()
+                .await
+                .get(collection)
+                .cloned()
+                .unwrap_or_default()
+        }
     }
 
     async fn start_plugin(config: Config) -> Shim {
@@ -476,11 +504,14 @@ mod tests {
         });
 
         let (tx, rx) = mpsc::channel::<Cmd>(32);
+        let vec_store: VecStore = Arc::new(Mutex::new(StdHashMap::new()));
         let shim = Shim {
             tx,
             published: Arc::new(Mutex::new(Vec::new())),
             dispatched: Arc::new(Mutex::new(Vec::new())),
             ai_requests: Arc::new(Mutex::new(Vec::new())),
+            vec_store: vec_store.clone(),
+            _serial: TEST_SERIAL.lock().await,
         };
         tokio::spawn(run_shim(
             kernel_client,
@@ -488,6 +519,7 @@ mod tests {
             shim.published.clone(),
             shim.dispatched.clone(),
             shim.ai_requests.clone(),
+            vec_store,
             commands_denied,
         ));
         shim
@@ -500,6 +532,7 @@ mod tests {
         published: Published,
         dispatched: Dispatched,
         ai_requests: AiRequests,
+        vec_store: VecStore,
         commands_denied: bool,
     ) {
         let mut db = FakeDb::default();
@@ -542,6 +575,10 @@ mod tests {
                                 .unwrap_or(Value::Null);
                             let outcome = if req.action.starts_with("db_") {
                                 db.handle(&req.action, params)
+                            } else if req.action == "vec_upsert" {
+                                handle_vec_upsert(&vec_store, params).await
+                            } else if req.action == "vec_query" {
+                                handle_vec_query(&vec_store, params).await
                             } else if req.action == "chat_completion" {
                                 ai_requests.lock().await.push(params.clone());
                                 match ai_replies.pop_front() {
@@ -997,5 +1034,123 @@ mod tests {
         assert!(err.contains("max_steps"), "{err}");
         let err = shim.call("frobnicate", serde_json::json!({})).await.unwrap_err();
         assert!(err.contains("unknown action"), "{err}");
+    }
+
+    async fn handle_vec_upsert(store: &VecStore, params: Value) -> Result<Value, String> {
+        let collection =
+            params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
+        let id = params.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        let text = params.get("text").and_then(Value::as_str).unwrap_or_default().to_string();
+        let metadata = params.get("metadata").cloned().unwrap_or(Value::Null);
+        store
+            .lock()
+            .await
+            .entry(collection)
+            .or_default()
+            .push(serde_json::json!({"id": id, "text": text, "metadata": metadata}));
+        Ok(serde_json::json!({"ok": true}))
+    }
+
+    async fn handle_vec_query(store: &VecStore, params: Value) -> Result<Value, String> {
+        let collection =
+            params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
+        let facts = {
+            let store = store.lock().await;
+            store.get(&collection).cloned().unwrap_or_default()
+        };
+        let results: Vec<Value> = facts
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "id": f["id"].clone(),
+                    "score": 1.0,
+                    "text": f["text"].clone(),
+                    "metadata": f["metadata"].clone(),
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({"results": results}))
+    }
+
+    /// Scoped `AGENT_PLUGIN_MEMORY` override: tests share one process env, so
+    /// a leaked `=on` would flip recall/remember on for every concurrently
+    /// running goal test. Restores the prior values on drop (including panic).
+    struct MemoryEnvGuard {
+        prev_memory: Option<String>,
+        prev_collection: Option<String>,
+    }
+
+    impl MemoryEnvGuard {
+        fn enable(collection: &str) -> Self {
+            let guard = Self {
+                prev_memory: std::env::var("AGENT_PLUGIN_MEMORY").ok(),
+                prev_collection: std::env::var("AGENT_PLUGIN_MEMORY_COLLECTION").ok(),
+            };
+            std::env::set_var("AGENT_PLUGIN_MEMORY", "on");
+            std::env::set_var("AGENT_PLUGIN_MEMORY_COLLECTION", collection);
+            guard
+        }
+    }
+
+    impl Drop for MemoryEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev_memory {
+                Some(v) => std::env::set_var("AGENT_PLUGIN_MEMORY", v),
+                None => std::env::remove_var("AGENT_PLUGIN_MEMORY"),
+            }
+            match &self.prev_collection {
+                Some(v) => std::env::set_var("AGENT_PLUGIN_MEMORY_COLLECTION", v),
+                None => std::env::remove_var("AGENT_PLUGIN_MEMORY_COLLECTION"),
+            }
+        }
+    }
+
+    async fn wait_for_remembered_fact(shim: &Shim, collection: &str, fact: &str) -> bool {
+        for _ in 0..120 {
+            let facts = shim.vec_facts(collection).await;
+            if facts.iter().any(|f| {
+                f["metadata"].get("fact").and_then(Value::as_str) == Some(fact)
+                    && f["metadata"].get("goal_id").and_then(Value::as_str).is_some()
+            }) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    #[tokio::test]
+    async fn memory_recalls_context_and_remembers_facts() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+
+        shim.seed_fact("agent-memory-test", "fseed-0", "the user runs Arch Linux").await;
+
+        // Script the goal loop's final answer, then the extraction pass's
+        // facts array (both ride chat_completion).
+        shim.push_ai_reply("The user runs Arch Linux.").await;
+        shim.push_ai_reply("[\"the user runs Arch Linux\"]").await;
+
+        let res = shim
+            .call("goal_start", serde_json::json!({"goal": "which OS does the user run"}))
+            .await
+            .unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+
+        // (recall) the seeded fact reached the LLM as a leading context turn.
+        let reqs = shim.ai_requests().await;
+        assert!(!reqs.is_empty(), "goal chat_completion never fired");
+        let messages = reqs[0]["messages"].as_array().expect("chat had no messages");
+        let context_turn = messages
+            .iter()
+            .find(|m| m["content"].as_str().unwrap_or_default().contains("[KNOWN CONTEXT]"))
+            .expect("memory recall block missing from the LLM call");
+        assert!(context_turn["content"].as_str().unwrap().contains("Arch Linux"));
+
+        // (remember) the detached extraction stored the fact via vec_upsert —
+        // distinguished from the seed by its goal_id metadata.
+        let remembered =
+            wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await;
+        assert!(remembered, "vec_upsert should have stored the remembered fact");
     }
 }

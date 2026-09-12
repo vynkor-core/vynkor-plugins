@@ -37,7 +37,7 @@ deferred and what comes next.
 ## Near-term ideas
 
 - Recurrence rules (see above).
-- ICS import/export actions for interop.
+- ICS import/export actions for interop — **shipped (v0.2, 2026-08-26)**.
 - `upcoming` convenience action (next N events across a horizon) — trivially
   composed client-side today via `event_list`, worth an action once agents
   need it often.

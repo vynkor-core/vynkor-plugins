@@ -41,8 +41,8 @@ actions, state persisted in `database`). Shipped as v0.1.0 — see README.md.
   an internal task (calendar-style select branch) with progress events and
   `goal_status` polling. Blocked on a real consumer needing >30 s goals
   (the sync path already streams nothing).
-- **Memory** — vector-db-backed long-term memory (facts between goals);
-  depends on a real need, not speculative.
+- **Memory** — vector-db-backed long-term memory (facts between goals) —
+  **shipped (v0.1.0, 2026-08-26)**.
 - **Streaming steps** — per-step events for webclient UIs.
 
 ## Non-goals

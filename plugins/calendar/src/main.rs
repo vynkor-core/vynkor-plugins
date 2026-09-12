@@ -790,4 +790,54 @@ mod tests {
             .count();
         assert_eq!(due_count, 1, "reminder must not re-fire after being marked");
     }
+
+    #[tokio::test]
+    async fn ics_import_export_roundtrip() {
+        use base64::Engine as _;
+        use calendar_plugin::ics::{fmt_dt, MS_PER_DAY};
+
+        let shim = start_plugin(Config::default()).await;
+
+        // A VEVENT inside the import window ([now-1d, now+90d]) so the
+        // importer materializes it; LOCATION folds into the description.
+        let start_ms = store::now_ms() + 2 * MS_PER_DAY;
+        let end_ms = start_ms + 3_600_000;
+        let ics = format!(
+            "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//test//EN\r\n\
+             BEGIN:VEVENT\r\nUID:roundtrip-1@example.com\r\n\
+             DTSTART:{}\r\nDTEND:{}\r\n\
+             SUMMARY:Team Standup\r\n\
+             DESCRIPTION:Daily sync with the team\r\n\
+             LOCATION:Room 42\r\n\
+             END:VEVENT\r\nEND:VCALENDAR\r\n",
+            fmt_dt(start_ms, false),
+            fmt_dt(end_ms, false),
+        );
+        let ics_b64 = base64::engine::general_purpose::STANDARD.encode(ics.as_bytes());
+
+        let imported = shim
+            .call("calendar_ics_import", serde_json::json!({"ics_base64": ics_b64}))
+            .await
+            .unwrap();
+        assert_eq!(imported["imported"], 1);
+        assert_eq!(imported["updated"], 0);
+        assert_eq!(imported["parsed"], 1);
+
+        let list = shim.call("event_list", serde_json::json!({})).await.unwrap();
+        assert_eq!(list["total"], 1);
+        assert_eq!(list["events"][0]["title"], "Team Standup");
+        assert_eq!(list["events"][0]["ics_uid"], "roundtrip-1@example.com");
+
+        let exported = shim.call("calendar_ics_export", serde_json::json!({})).await.unwrap();
+        let exported_b64 = exported["ics_base64"].as_str().unwrap();
+        let exported_ics = String::from_utf8(
+            base64::engine::general_purpose::STANDARD.decode(exported_b64).unwrap(),
+        )
+        .unwrap();
+
+        assert!(exported_ics.contains("SUMMARY:Team Standup"), "exported: {exported_ics}");
+        assert!(exported_ics.contains("UID:roundtrip-1@example.com"));
+        assert!(exported_ics.contains("Daily sync with the team"));
+        assert!(exported_ics.contains("Room 42"), "location folded into description");
+    }
 }
