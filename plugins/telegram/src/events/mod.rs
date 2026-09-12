@@ -13,7 +13,6 @@ pub fn spawn_live_listener(
         let config = UpdatesConfiguration {
             catch_up: true,
             update_queue_limit: Some(100),
-            ..Default::default()
         };
 
         let mut stream = client.stream_updates(updates_rx, config);
@@ -39,37 +38,34 @@ async fn handle_update(
     update: Update,
     event_tx: &mpsc::Sender<EventToPublish>,
 ) {
-    match update {
-        Update::NewMessage(message) => {
-            if message.outgoing() {
-                return;
-            }
-
-            let peer = message.peer();
-            let peer_str = peer
-                .map(|p| crate::peer_to_string(p))
-                .unwrap_or_default();
-
-            let sender_str = message
-                .sender()
-                .map(|s| crate::peer_to_string(s))
-                .unwrap_or_default();
-
-            let payload = serde_json::json!({
-                "message_id": message.id(),
-                "peer": peer_str,
-                "sender": sender_str,
-                "text": message.text(),
-                "date": message.date().to_rfc3339(),
-            });
-
-            let _ = event_tx
-                .send(EventToPublish {
-                    event_type: "plugin.telegram.new_message".into(),
-                    payload,
-                })
-                .await;
+    if let Update::NewMessage(message) = update {
+        if message.outgoing() {
+            return;
         }
-        _ => {}
+
+        let peer = message.peer();
+        let peer_str = peer
+            .map(crate::peer_to_string)
+            .unwrap_or_default();
+
+        let sender_str = message
+            .sender()
+            .map(crate::peer_to_string)
+            .unwrap_or_default();
+
+        let payload = serde_json::json!({
+            "message_id": message.id(),
+            "peer": peer_str,
+            "sender": sender_str,
+            "text": message.text(),
+            "date": message.date().to_rfc3339(),
+        });
+
+        let _ = event_tx
+            .send(EventToPublish {
+                event_type: "plugin.telegram.new_message".into(),
+                payload,
+            })
+            .await;
     }
 }

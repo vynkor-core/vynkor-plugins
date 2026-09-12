@@ -831,16 +831,6 @@ async fn check_antiban(config: &Config, account: &str) -> Result<(), String> {
         .map_err(|e| format!("antiban: {e}"))
 }
 
-fn record_flood_wait(config: &Config, account: &str, seconds: u64) {
-    if let Some(pool) = &config.pool {
-        let antiban = pool.antiban.clone();
-        let account = account.to_string();
-        tokio::spawn(async move {
-            antiban.on_flood_wait(&account, seconds).await;
-        });
-    }
-}
-
 fn resolve_account<'a>(params: &'a Value, config: &'a Config) -> &'a str {
     params
         .get("account")
