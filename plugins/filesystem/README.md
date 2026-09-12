@@ -1,9 +1,11 @@
 # filesystem plugin
 
-Sandboxed local file browse/read/write for vynkor plugins. Three actions:
-`fs_list` (read-only directory browse), `fs_read` (windowed file read), and
-`fs_write` (full-file create/overwrite). No exec, no shell, no delete/rename —
-see `ROADMAP.md` non-goals.
+Sandboxed local file browse/read/write for vynkor plugins. Seven actions:
+`fs_list` (read-only directory browse), `fs_read` (windowed file read),
+`fs_write` (full-file create/overwrite), `fs_delete` (permanent or
+freedesktop-trash removal), `fs_mkdir` (directory creation), `fs_rename`
+(rename within a root), and `fs_move` (move across directories). No exec, no
+shell.
 
 The plugin touches **only** absolute paths inside an operator-configured
 allowlist of directory roots (`FILES_PLUGIN_ALLOWED_ROOTS`). Unset or empty
@@ -14,7 +16,8 @@ least one root.
 
 `filesystem` declares two kernel permissions — `files_read` and `files_write`
 (`plugin.json`: `"permissions": ["files_read", "files_write"]`) — mapped
-per-action (`fs_list`/`fs_read` → `files_read`, `fs_write` → `files_write`).
+per-action (`fs_list`/`fs_read` → `files_read`; `fs_write`/`fs_delete`/
+`fs_mkdir`/`fs_rename`/`fs_move` → `files_write`).
 It opens no sockets and spawns no processes; all I/O is plain `std::fs`, so it
 is safe to run with `sandbox: true`.
 
@@ -114,6 +117,53 @@ Response:
 Response: `{ "written_bytes": 3, "path": "/srv/data/out/report.bin" }`
 (`path` echoes the resolved canonical path).
 
+### `fs_delete`
+
+```json
+{ "path": "/srv/data/old.txt", "to_trash": true }
+```
+
+- `path` — required, absolute path inside an allowed root.
+- `to_trash` — optional, default `true`: move to the freedesktop Trash
+  (reversible) instead of permanent deletion.
+
+Response: `{ "deleted": true, "trashed": true, "path": "/srv/data/old.txt" }`.
+Refused when `path` is an allowed root itself.
+
+### `fs_mkdir`
+
+```json
+{ "path": "/srv/data/new", "parents": false }
+```
+
+- `parents` — optional, default `false`; create intermediate directories.
+
+Response: `{ "created": true, "path": "/srv/data/new" }` (`created` is
+`false` when the directory already exists). Refused (`ERR_FILES_EXISTS`) when
+the path exists as a non-directory.
+
+### `fs_rename`
+
+```json
+{ "from": "/srv/data/a.txt", "to": "/srv/data/b.txt", "overwrite": false }
+```
+
+- `from`, `to` — required, absolute paths inside allowed roots.
+- `overwrite` — optional, default `false`; refuses when the destination
+  already exists unless set.
+
+Response: `{ "renamed": true, "from": "...", "to": "..." }`.
+
+### `fs_move`
+
+```json
+{ "from": "/srv/data/a.txt", "to": "/srv/data/sub/b.txt", "overwrite": false }
+```
+
+- Same semantics as `fs_rename`; cross-directory moves work.
+
+Response: `{ "moved": true, "from": "...", "to": "..." }`.
+
 ## Configuration
 
 Environment variables set in the kernel's `config.yaml` under this plugin's
@@ -136,7 +186,7 @@ plugins:
 
 ## Testing
 
-`cargo test` — 33 unit tests, no network, no kernel: request parsing,
-sandbox resolution (traversal, symlink escapes, deny-all), and all three
-actions against real `tempdir` fixtures (sorting, hidden files, caps,
-encoding rules, truncation flags, write refusals).
+`cargo test` — no network, no kernel: request parsing, sandbox resolution
+(traversal, symlink escapes, deny-all), and all seven actions against real
+`tempdir` fixtures (sorting, hidden files, caps, encoding rules, truncation
+flags, write/delete/mkdir/rename/move behaviors).

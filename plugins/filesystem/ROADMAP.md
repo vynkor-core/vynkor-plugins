@@ -1,9 +1,9 @@
 # filesystem plugin roadmap
 
-Sandboxed local file browse/read/write: `fs_list` / `fs_read` / `fs_write`
-over an operator-configured allowlist of absolute directory roots. No
-outbound RPC, no network, no secrets — plain `std::fs` behind the sandbox in
-`src/sandbox.rs`.
+Sandboxed local file browse/read/write: `fs_list` / `fs_read` / `fs_write` /
+`fs_delete` / `fs_mkdir` / `fs_rename` / `fs_move` over an operator-configured
+allowlist of absolute directory roots. No outbound RPC, no network, no secrets
+— plain `std::fs` behind the sandbox in `src/sandbox.rs`.
 
 ## v1 scope (shipped, 0.1.0)
 
@@ -15,6 +15,11 @@ outbound RPC, no network, no secrets — plain `std::fs` behind the sandbox in
   offset 0 that is valid UTF-8), `truncated` flag.
 - `fs_write` — full-file create-or-overwrite from `text` xor
   `content_base64`, opt-in `create_parents`.
+- `fs_delete` — permanent removal or freedesktop-trash move (`to_trash`
+  default true).
+- `fs_mkdir` — directory creation with opt-in `parents`.
+- `fs_rename` / `fs_move` — rename/move within allowed roots, opt-in
+  `overwrite` (cross-directory moves supported).
 - Sandbox: absolute paths only; deepest-existing-ancestor canonicalize;
   `..` surviving into the non-existing remainder rejected; containment
   check against canonical roots; symlink-final-component refusal on write.
@@ -27,8 +32,6 @@ outbound RPC, no network, no secrets — plain `std::fs` behind the sandbox in
   programs is what the kernel's supervisor model exists to prevent. This is
   the reason the previously considered `shell` plugin was rejected (root
   `ROADMAP.md`, "Considered and skipped").
-- **No delete/rename/move/copy** in v1 — destructive or mutating-beyond-
-  write operations want their own permission surface discussion first.
 - **No append mode** — v1 writes are whole-file only; partial mutation is
   better served by `database`'s KV primitives.
 - **No streaming/chunked write** — one request carries the whole payload;
@@ -68,5 +71,5 @@ outbound RPC, no network, no secrets — plain `std::fs` behind the sandbox in
   writes.
 - **Trash actions** — freedesktop-trash-aware `fs_trash_list` /
   `fs_trash_restore` / `fs_trash_purge`, scoped to the same allowed roots:
-  a reversible delete without opening a destructive surface. The middle
-  ground between the v1 non-goal on delete/rename and real caller needs.
+  listing/restoring/purging what `fs_delete {to_trash}` (which already moves
+  to Trash) has put there.
