@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::RwLock;
 
 use anyhow::{Context, Result};
@@ -9,10 +10,12 @@ use grammers_session::updates::UpdatesLike;
 use tokio::sync::mpsc;
 
 use crate::AccountConfig;
+use crate::mtproto::Antiban;
 
 pub struct SessionPool {
     clients: RwLock<HashMap<String, Client>>,
     _handles: RwLock<HashMap<String, SenderPoolHandle>>,
+    pub antiban: Arc<Antiban>,
 }
 
 impl std::fmt::Debug for SessionPool {
@@ -29,6 +32,7 @@ impl SessionPool {
         Self {
             clients: RwLock::new(HashMap::new()),
             _handles: RwLock::new(HashMap::new()),
+            antiban: Arc::new(Antiban::new()),
         }
     }
 

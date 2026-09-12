@@ -192,6 +192,7 @@ async fn handle_status(config: &Config) -> Result<HandleResult, String> {
 
 async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleResult, String> {
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let limit = clamp_limit(params);
     let client = get_client(config, account)?;
 
@@ -221,6 +222,7 @@ async fn handle_get_history(config: &Config, params: &Value) -> Result<HandleRes
     let peer_str = required_str(params, "peer", "tg_get_history")?;
     let limit = clamp_limit(params);
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -252,6 +254,7 @@ async fn handle_get_message(config: &Config, params: &Value) -> Result<HandleRes
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_get_message: id required".to_string())?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, optional_peer(params)).await?;
 
@@ -283,6 +286,7 @@ async fn handle_search(config: &Config, params: &Value) -> Result<HandleResult, 
     let query = required_str(params, "query", "tg_search")?;
     let limit = clamp_limit(params);
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
 
     let mut search = client.search_all_messages().query(query).limit(limit as usize);
@@ -316,6 +320,7 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
         return Err(format!("tg_send_message: text too long (max {MAX_TEXT_LEN})"));
     }
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -356,6 +361,7 @@ async fn handle_edit_message(config: &Config, params: &Value) -> Result<HandleRe
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_edit_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -381,6 +387,7 @@ async fn handle_delete_message(config: &Config, params: &Value) -> Result<Handle
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_delete_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -407,6 +414,7 @@ async fn handle_forward_message(config: &Config, params: &Value) -> Result<Handl
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_forward_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let from_peer = resolve_peer(&client, from_peer_str).await?;
     let to_peer = resolve_peer(&client, to_peer_str).await?;
@@ -440,6 +448,7 @@ async fn handle_add_reaction(config: &Config, params: &Value) -> Result<HandleRe
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_add_reaction: message_id required".to_string())?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -471,6 +480,7 @@ async fn handle_pin_message(config: &Config, params: &Value) -> Result<HandleRes
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -499,6 +509,7 @@ async fn handle_upload_media(config: &Config, params: &Value) -> Result<HandleRe
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -538,6 +549,7 @@ async fn handle_download_media(config: &Config, params: &Value) -> Result<Handle
         .ok_or_else(|| "tg_download_media: message_id required".to_string())?;
     let output_path = required_str(params, "output_path", "tg_download_media")?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -582,6 +594,7 @@ async fn handle_delete_messages(config: &Config, params: &Value) -> Result<Handl
         return Err("tg_delete_messages: no valid message_ids".into());
     }
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -617,6 +630,7 @@ async fn handle_forward_messages(config: &Config, params: &Value) -> Result<Hand
         return Err("tg_forward_messages: no valid message_ids".into());
     }
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let from_peer = resolve_peer(&client, from_peer_str).await?;
     let to_peer = resolve_peer(&client, to_peer_str).await?;
@@ -647,6 +661,7 @@ async fn handle_send_voice(config: &Config, params: &Value) -> Result<HandleResu
     let peer_str = optional_peer(params);
     let file_path = required_str(params, "file_path", "tg_send_voice")?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -682,6 +697,7 @@ async fn handle_send_sticker(config: &Config, params: &Value) -> Result<HandleRe
     let peer_str = optional_peer(params);
     let file_path = required_str(params, "file_path", "tg_send_sticker")?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -716,6 +732,7 @@ async fn handle_send_animation(config: &Config, params: &Value) -> Result<Handle
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -747,6 +764,7 @@ async fn handle_send_animation(config: &Config, params: &Value) -> Result<Handle
 async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleResult, String> {
     let peer_str = required_str(params, "peer", "tg_get_chat_info")?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -771,6 +789,7 @@ async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleR
 async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult, String> {
     let peer_str = required_str(params, "peer", "tg_get_user")?;
     let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
@@ -799,6 +818,27 @@ fn get_client(config: &Config, account: &str) -> Result<grammers_client::Client,
         .ok_or_else(|| "no telegram accounts connected".to_string())?
         .get(account)
         .ok_or_else(|| format!("account not connected: {account}"))
+}
+
+async fn check_antiban(config: &Config, account: &str) -> Result<(), String> {
+    config
+        .pool
+        .as_ref()
+        .ok_or_else(|| "no telegram accounts connected".to_string())?
+        .antiban
+        .check(account)
+        .await
+        .map_err(|e| format!("antiban: {e}"))
+}
+
+fn record_flood_wait(config: &Config, account: &str, seconds: u64) {
+    if let Some(pool) = &config.pool {
+        let antiban = pool.antiban.clone();
+        let account = account.to_string();
+        tokio::spawn(async move {
+            antiban.on_flood_wait(&account, seconds).await;
+        });
+    }
 }
 
 fn resolve_account<'a>(params: &'a Value, config: &'a Config) -> &'a str {
