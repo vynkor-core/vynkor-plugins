@@ -64,29 +64,50 @@ struct ClientConfig {
 impl ClientConfig {
     fn from_env() -> Self {
         let proxy = match std::env::var(PROXY_URL_ENV) {
-            Ok(proxy_url) => Some(
-                reqwest::Proxy::all(&proxy_url)
-                    .unwrap_or_else(|e| panic!("invalid {PROXY_URL_ENV}: {e}")),
-            ),
+            Ok(proxy_url) => {
+                match reqwest::Proxy::all(&proxy_url) {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        eprintln!("[network] WARNING: invalid {PROXY_URL_ENV}: {e}, ignoring proxy");
+                        None
+                    }
+                }
+            }
             Err(_) => None,
         };
         let mut ca_certs = Vec::new();
         if let Ok(ca_path) = std::env::var(CA_BUNDLE_PATH_ENV) {
-            let pem = std::fs::read(&ca_path)
-                .unwrap_or_else(|e| panic!("failed to read {CA_BUNDLE_PATH_ENV} ({ca_path}): {e}"));
-            ca_certs = reqwest::Certificate::from_pem_bundle(&pem)
-                .unwrap_or_else(|e| panic!("invalid CA bundle at {ca_path}: {e}"));
+            match std::fs::read(&ca_path) {
+                Ok(pem) => {
+                    match reqwest::Certificate::from_pem_bundle(&pem) {
+                        Ok(certs) => ca_certs = certs,
+                        Err(e) => {
+                            eprintln!("[network] WARNING: invalid CA bundle at {ca_path}: {e}, ignoring");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[network] WARNING: failed to read {CA_BUNDLE_PATH_ENV} ({ca_path}): {e}, ignoring");
+                }
+            }
         }
         let identity = match std::env::var(CLIENT_IDENTITY_PATH_ENV) {
             Ok(identity_path) => {
-                let pem = std::fs::read(&identity_path).unwrap_or_else(|e| {
-                    panic!("failed to read {CLIENT_IDENTITY_PATH_ENV} ({identity_path}): {e}")
-                });
-                Some(
-                    reqwest::Identity::from_pem(&pem).unwrap_or_else(|e| {
-                        panic!("invalid client identity at {identity_path}: {e}")
-                    }),
-                )
+                match std::fs::read(&identity_path) {
+                    Ok(pem) => {
+                        match reqwest::Identity::from_pem(&pem) {
+                            Ok(id) => Some(id),
+                            Err(e) => {
+                                eprintln!("[network] WARNING: invalid client identity at {identity_path}: {e}, ignoring");
+                                None
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[network] WARNING: failed to read {CLIENT_IDENTITY_PATH_ENV} ({identity_path}): {e}, ignoring");
+                        None
+                    }
+                }
             }
             Err(_) => None,
         };
