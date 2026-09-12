@@ -185,6 +185,7 @@ mod tests {
             session_dir: "/tmp".into(),
             pool: None,
             start_instant: std::time::Instant::now(),
+            metrics: std::sync::Arc::new(telegram_plugin::Metrics::default()),
         };
         let res = handle_action(&cfg, "status", b"{}").await.unwrap();
         let v: Value = serde_json::from_slice(&res.data).unwrap();
@@ -199,6 +200,7 @@ mod tests {
             session_dir: "/tmp".into(),
             pool: None,
             start_instant: std::time::Instant::now(),
+            metrics: std::sync::Arc::new(telegram_plugin::Metrics::default()),
         };
         let err = handle_action(&cfg, "bogus", b"{}").await.unwrap_err();
         assert!(err.contains("unknown action"));

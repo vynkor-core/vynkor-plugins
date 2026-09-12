@@ -6,6 +6,7 @@ pub mod events;
 pub mod mtproto;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,15 @@ use mtproto::SessionPool;
 const MAX_TEXT_LEN: usize = 4096;
 const DEFAULT_LIMIT: u64 = 20;
 const MAX_LIMIT: u64 = 100;
+
+#[derive(Debug, Default)]
+pub struct Metrics {
+    pub messages_sent: AtomicU64,
+    pub messages_received: AtomicU64,
+    pub messages_edited: AtomicU64,
+    pub messages_deleted: AtomicU64,
+    pub messages_forwarded: AtomicU64,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
@@ -34,6 +44,7 @@ pub struct Config {
     pub session_dir: String,
     pub pool: Option<Arc<SessionPool>>,
     pub start_instant: Instant,
+    pub metrics: Arc<Metrics>,
 }
 
 impl Config {
@@ -80,6 +91,7 @@ impl Config {
             session_dir,
             pool: None,
             start_instant: Instant::now(),
+            metrics: Arc::new(Metrics::default()),
         }
     }
 
@@ -210,7 +222,7 @@ async fn handle_get_history(config: &Config, params: &Value) -> Result<HandleRes
     let limit = clamp_limit(params);
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let mut messages = client.iter_messages(peer).limit(limit as usize);
     let mut result = Vec::new();
@@ -241,7 +253,7 @@ async fn handle_get_message(config: &Config, params: &Value) -> Result<HandleRes
         .ok_or_else(|| "tg_get_message: id required".to_string())?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(optional_peer(params))?;
+    let peer = resolve_peer(&client, optional_peer(params)).await?;
 
     let mut messages = client.iter_messages(peer).limit(1);
     while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
@@ -305,7 +317,7 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
     }
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let reply_to = params.get("reply_to").and_then(|v| v.as_u64()).map(|id| id as i32);
 
@@ -316,6 +328,8 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
 
     let sent = client.send_message(peer, msg).await
         .map_err(|e| format!("send_message failed: {e}"))?;
+
+    config.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
 
     let message_id = sent.id();
     let ev = EventToPublish {
@@ -343,12 +357,14 @@ async fn handle_edit_message(config: &Config, params: &Value) -> Result<HandleRe
         .ok_or_else(|| "tg_edit_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     client
         .edit_message(peer, message_id as i32, text)
         .await
         .map_err(|e| format!("edit_message failed: {e}"))?;
+
+    config.metrics.messages_edited.fetch_add(1, Ordering::Relaxed);
 
     let v = serde_json::json!({"peer": peer_str, "message_id": message_id, "edited": true});
     Ok(HandleResult {
@@ -366,12 +382,14 @@ async fn handle_delete_message(config: &Config, params: &Value) -> Result<Handle
         .ok_or_else(|| "tg_delete_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     client
         .delete_messages(peer, &[message_id as i32])
         .await
         .map_err(|e| format!("delete_message failed: {e}"))?;
+
+    config.metrics.messages_deleted.fetch_add(1, Ordering::Relaxed);
 
     let v = serde_json::json!({"peer": peer_str, "message_id": message_id, "deleted": true});
     Ok(HandleResult {
@@ -390,13 +408,15 @@ async fn handle_forward_message(config: &Config, params: &Value) -> Result<Handl
         .ok_or_else(|| "tg_forward_message: message_id required".to_string())?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let from_peer = parse_peer(from_peer_str)?;
-    let to_peer = parse_peer(to_peer_str)?;
+    let from_peer = resolve_peer(&client, from_peer_str).await?;
+    let to_peer = resolve_peer(&client, to_peer_str).await?;
 
     let forwarded = client
         .forward_messages(to_peer, &[message_id as i32], from_peer)
         .await
         .map_err(|e| format!("forward_message failed: {e}"))?;
+
+    config.metrics.messages_forwarded.fetch_add(1, Ordering::Relaxed);
 
     let new_id = forwarded.first().and_then(|m| m.as_ref().map(|m| m.id()));
     let v = serde_json::json!({
@@ -421,7 +441,7 @@ async fn handle_add_reaction(config: &Config, params: &Value) -> Result<HandleRe
         .ok_or_else(|| "tg_add_reaction: message_id required".to_string())?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     client
         .send_reactions(peer, message_id as i32, reaction)
@@ -452,7 +472,7 @@ async fn handle_pin_message(config: &Config, params: &Value) -> Result<HandleRes
         .unwrap_or(false);
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     client
         .pin_message(peer, message_id as i32)
@@ -480,7 +500,7 @@ async fn handle_upload_media(config: &Config, params: &Value) -> Result<HandleRe
         .unwrap_or("");
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let uploaded = client
         .upload_file(file_path)
@@ -495,6 +515,8 @@ async fn handle_upload_media(config: &Config, params: &Value) -> Result<HandleRe
         .send_message(peer, msg)
         .await
         .map_err(|e| format!("send_message with media failed: {e}"))?;
+
+    config.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
 
     let v = serde_json::json!({
         "peer": peer_str,
@@ -517,7 +539,7 @@ async fn handle_download_media(config: &Config, params: &Value) -> Result<Handle
     let output_path = required_str(params, "output_path", "tg_download_media")?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let mut messages = client.iter_messages(peer).limit(1);
     while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
@@ -561,7 +583,7 @@ async fn handle_delete_messages(config: &Config, params: &Value) -> Result<Handl
     }
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let deleted = client
         .delete_messages(peer, &ids)
@@ -596,8 +618,8 @@ async fn handle_forward_messages(config: &Config, params: &Value) -> Result<Hand
     }
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let from_peer = parse_peer(from_peer_str)?;
-    let to_peer = parse_peer(to_peer_str)?;
+    let from_peer = resolve_peer(&client, from_peer_str).await?;
+    let to_peer = resolve_peer(&client, to_peer_str).await?;
 
     let forwarded = client
         .forward_messages(to_peer, &ids, from_peer)
@@ -626,7 +648,7 @@ async fn handle_send_voice(config: &Config, params: &Value) -> Result<HandleResu
     let file_path = required_str(params, "file_path", "tg_send_voice")?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let uploaded = client
         .upload_file(file_path)
@@ -661,7 +683,7 @@ async fn handle_send_sticker(config: &Config, params: &Value) -> Result<HandleRe
     let file_path = required_str(params, "file_path", "tg_send_sticker")?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let uploaded = client
         .upload_file(file_path)
@@ -695,7 +717,7 @@ async fn handle_send_animation(config: &Config, params: &Value) -> Result<Handle
         .unwrap_or("");
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let uploaded = client
         .upload_file(file_path)
@@ -726,7 +748,7 @@ async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleR
     let peer_str = required_str(params, "peer", "tg_get_chat_info")?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let mut dialogs = client.iter_dialogs();
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
@@ -750,7 +772,7 @@ async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult
     let peer_str = required_str(params, "peer", "tg_get_user")?;
     let account = resolve_account(params, config);
     let client = get_client(config, account)?;
-    let peer = parse_peer(peer_str)?;
+    let peer = resolve_peer(&client, peer_str).await?;
 
     let mut dialogs = client.iter_dialogs();
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
@@ -849,7 +871,7 @@ fn parse_peer(s: &str) -> Result<grammers_session::defs::PeerRef, String> {
         });
     }
     if s.starts_with('@') {
-        return Err("username resolution not supported, use id format".into());
+        return Err("RESOLVE_USERNAME".into());
     }
     if let Ok(id) = s.parse::<i64>() {
         if id < 0 {
@@ -864,6 +886,26 @@ fn parse_peer(s: &str) -> Result<grammers_session::defs::PeerRef, String> {
         });
     }
     Err(format!("invalid peer format: {s}"))
+}
+
+async fn resolve_peer(
+    client: &grammers_client::Client,
+    peer_str: &str,
+) -> Result<grammers_session::defs::PeerRef, String> {
+    match parse_peer(peer_str) {
+        Ok(p) if !peer_str.starts_with('@') => Ok(p),
+        Err(e) if e == "RESOLVE_USERNAME" => {
+            let username = &peer_str[1..];
+            let resolved = client
+                .resolve_username(username)
+                .await
+                .map_err(|e| format!("resolve @{username} failed: {e}"))?
+                .ok_or_else(|| format!("user @{username} not found"))?;
+            Ok((&resolved).into())
+        }
+        Err(e) => Err(e),
+        _ => unreachable!(),
+    }
 }
 
 #[cfg(test)]
@@ -884,6 +926,7 @@ mod tests {
             session_dir: "/tmp".into(),
             pool: None,
             start_instant: std::time::Instant::now(),
+            metrics: std::sync::Arc::new(Metrics::default()),
         }
     }
 
@@ -1003,6 +1046,7 @@ mod tests {
     #[test]
     fn parse_peer_username_unsupported() {
         assert!(parse_peer("@hello").is_err());
+        assert!(parse_peer("@hello").unwrap_err().contains("RESOLVE_USERNAME"));
     }
 
     #[test]
