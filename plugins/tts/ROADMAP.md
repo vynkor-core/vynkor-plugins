@@ -154,7 +154,9 @@ parsing. sherpa config assembly tested without loading a real model.
   Revisit once `ActionStreamChunk` (R6-02) lands in the kernel.
   (2026-08-15: D-12 shipped `tts_speak` — synthesize → PCM → Opus →
   `AudioStreamChunk` stream to a peer — as the host→client speaker leg,
-  still one shot of the full clip rather than per-sentence callbacks.)
+  still one shot of the full clip rather than per-sentence callbacks.
+  2026-08-26: EXI-02 shipped `tts_speak_stream` — sentence-level
+  streaming, first audio after one phrase — **shipped (v0.1.1)**.)
 - **Model hot-reload** — re-read `TTS_PLUGIN_LOCAL_MODEL_*` on an
   operator-triggered action instead of requiring a process restart.
 
