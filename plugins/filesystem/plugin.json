@@ -324,6 +324,52 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "fs_move",
+      "permission": "files_write",
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "Absolute source path inside allowed root."
+          },
+          "to": {
+            "type": "string",
+            "description": "Absolute destination path inside allowed root."
+          },
+          "overwrite": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "moved": {
+            "type": "boolean"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "moved",
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
     }
   ],
   "config_schema": {

@@ -31,7 +31,7 @@ impl ConcurrentHandler for Handler {
                 "PERMISSION_FILES_READ".into(),
                 "PERMISSION_FILES_WRITE".into(),
             ],
-            actions: vec!["fs_list".into(), "fs_read".into(), "fs_write".into(), "fs_delete".into(), "fs_mkdir".into(), "fs_rename".into()],
+            actions: vec!["fs_list".into(), "fs_read".into(), "fs_write".into(), "fs_delete".into(), "fs_mkdir".into(), "fs_rename".into(), "fs_move".into()],
             ..Default::default()
         }
     }

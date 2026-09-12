@@ -12,6 +12,7 @@ pub enum Request {
     Delete(DeleteParams),
     Mkdir(MkdirParams),
     Rename(RenameParams),
+    Move(MoveParams),
 }
 
 #[derive(Debug)]
@@ -48,6 +49,13 @@ pub struct MkdirParams {
 
 #[derive(Debug)]
 pub struct RenameParams {
+    pub from: String,
+    pub to: String,
+    pub overwrite: bool,
+}
+
+#[derive(Debug)]
+pub struct MoveParams {
     pub from: String,
     pub to: String,
     pub overwrite: bool,
@@ -92,6 +100,14 @@ struct MkdirRaw {
 
 #[derive(serde::Deserialize)]
 struct RenameRaw {
+    from: String,
+    to: String,
+    #[serde(default)]
+    overwrite: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct MoveRaw {
     from: String,
     to: String,
     #[serde(default)]
@@ -188,6 +204,16 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<Request, String
                 overwrite: p.overwrite,
             }))
         }
+        "fs_move" => {
+            let p: MoveRaw = serde_json::from_slice(params_json).map_err(|e| {
+                format!("ERR_FILES_BAD_PARAMS: invalid params for fs_move, expected {{from, to, overwrite?}}: {e}")
+            })?;
+            Ok(Request::Move(MoveParams {
+                from: require_nonempty_path(p.from, "fs_move.from")?,
+                to: require_nonempty_path(p.to, "fs_move.to")?,
+                overwrite: p.overwrite,
+            }))
+        }
         other => Err(format!("ERR_FILES_BAD_PARAMS: unknown action: {other}")),
     }
 }
@@ -249,5 +275,83 @@ mod tests {
     fn rejects_empty_path_and_unknown_action() {
         assert!(parse_request("fs_list", br#"{"path": ""}"#).is_err());
         assert!(parse_request("fs_frobnicate", b"{}").is_err());
+    }
+
+    #[test]
+    fn parses_delete_with_default_trash() {
+        match parse_request("fs_delete", br#"{"path": "/tmp/x"}"#).unwrap() {
+            Request::Delete(p) => {
+                assert_eq!(p.path, "/tmp/x");
+                assert!(p.to_trash);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match parse_request("fs_delete", br#"{"path": "/tmp/x", "to_trash": false}"#).unwrap() {
+            Request::Delete(p) => assert!(!p.to_trash),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_mkdir_with_default_parents() {
+        match parse_request("fs_mkdir", br#"{"path": "/tmp/d"}"#).unwrap() {
+            Request::Mkdir(p) => {
+                assert_eq!(p.path, "/tmp/d");
+                assert!(!p.parents);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match parse_request("fs_mkdir", br#"{"path": "/tmp/d", "parents": true}"#).unwrap() {
+            Request::Mkdir(p) => assert!(p.parents),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_rename_with_default_overwrite() {
+        match parse_request("fs_rename", br#"{"from": "/a", "to": "/b"}"#).unwrap() {
+            Request::Rename(p) => {
+                assert_eq!(p.from, "/a");
+                assert_eq!(p.to, "/b");
+                assert!(!p.overwrite);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match parse_request(
+            "fs_rename",
+            br#"{"from": "/a", "to": "/b", "overwrite": true}"#,
+        )
+        .unwrap()
+        {
+            Request::Rename(p) => assert!(p.overwrite),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_move_with_default_overwrite() {
+        match parse_request("fs_move", br#"{"from": "/a", "to": "/b"}"#).unwrap() {
+            Request::Move(p) => {
+                assert_eq!(p.from, "/a");
+                assert_eq!(p.to, "/b");
+                assert!(!p.overwrite);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match parse_request("fs_move", br#"{"from": "/a", "to": "/b", "overwrite": true}"#)
+            .unwrap()
+        {
+            Request::Move(p) => assert!(p.overwrite),
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_empty_move_fields() {
+        assert!(parse_request("fs_move", br#"{"from": "", "to": "/b"}"#).is_err());
+        assert!(parse_request("fs_move", br#"{"from": "/a", "to": ""}"#).is_err());
+        assert!(parse_request("fs_rename", br#"{"from": "", "to": "/b"}"#).is_err());
+        assert!(parse_request("fs_delete", br#"{"path": ""}"#).is_err());
+        assert!(parse_request("fs_mkdir", br#"{"path": ""}"#).is_err());
     }
 }
