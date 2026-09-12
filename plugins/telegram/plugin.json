@@ -35,6 +35,38 @@
     {
       "name": "tg_send_message",
       "description": "Send a text message to a peer"
+    },
+    {
+      "name": "tg_edit_message",
+      "description": "Edit a sent message",
+      "requires_confirmation": true
+    },
+    {
+      "name": "tg_delete_message",
+      "description": "Delete a message",
+      "requires_confirmation": true
+    },
+    {
+      "name": "tg_forward_message",
+      "description": "Forward a message to another peer",
+      "requires_confirmation": true
+    },
+    {
+      "name": "tg_add_reaction",
+      "description": "Add a reaction to a message"
+    },
+    {
+      "name": "tg_pin_message",
+      "description": "Pin a message in a chat",
+      "requires_confirmation": true
+    },
+    {
+      "name": "tg_upload_media",
+      "description": "Upload a file as media to a peer"
+    },
+    {
+      "name": "tg_download_media",
+      "description": "Download media from a message"
     }
   ],
   "events": [
