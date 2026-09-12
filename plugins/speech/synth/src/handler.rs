@@ -188,13 +188,18 @@ pub async fn handle_tts_speak(
         bitrate: params.bitrate,
     };
 
-    let pcm: Vec<i16> = samples
+    let resampled: Vec<f32> = if model_rate != sample_rate {
+        resample_linear(&samples, model_rate, sample_rate)
+    } else {
+        samples
+    };
+    let pcm: Vec<i16> = resampled
         .iter()
         .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
         .collect();
     let packets = opus::encode_pcm(&pcm, &config)?;
 
-    let duration_seconds = samples.len() as f32 / model_rate.max(1) as f32;
+    let duration_seconds = resampled.len() as f32 / sample_rate.max(1) as f32;
     let total = packets.len();
     let started = std::time::Instant::now();
     for (idx, packet) in packets.into_iter().enumerate() {
@@ -270,9 +275,14 @@ pub async fn handle_tts_speak_stream(
             channels: 1,
             bitrate: params.bitrate,
         };
-        let pcm: Vec<i16> = samples.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+        let resampled: Vec<f32> = if model_rate != sample_rate {
+            resample_linear(&samples, model_rate, sample_rate)
+        } else {
+            samples
+        };
+        let pcm: Vec<i16> = resampled.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
         let packets = opus::encode_pcm(&pcm, &opus_config)?;
-        duration_seconds += samples.len() as f32 / model_rate.max(1) as f32;
+        duration_seconds += resampled.len() as f32 / sample_rate.max(1) as f32;
 
         let count = packets.len();
         let sentence_started = std::time::Instant::now();
@@ -313,4 +323,28 @@ pub async fn handle_tts_speak_stream(
     })
     .to_string()
     .into_bytes())
+}
+
+fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || from_rate == 0 || to_rate == 0 {
+        return input.to_vec();
+    }
+    let ratio = to_rate as f64 / from_rate as f64;
+    let out_len = (input.len() as f64 * ratio).round() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let src_pos = i as f64 / ratio;
+        let idx = src_pos.floor() as usize;
+        let frac = src_pos - idx as f64;
+        if idx + 1 < input.len() {
+            let a = input[idx] as f64;
+            let b = input[idx + 1] as f64;
+            out.push((a * (1.0 - frac) + b * frac) as f32);
+        } else if idx < input.len() {
+            out.push(input[idx]);
+        } else {
+            out.push(0.0);
+        }
+    }
+    out
 }
