@@ -1,9 +1,3 @@
-//! Per-account Grammers client pool.
-//!
-//! One [`grammers_client::Client`] per Telegram account, keyed by account id.
-//! Connecting loads (or creates) the account's session file and opens an
-//! MTProto connection; callers then grab the client handle by account id.
-
 use std::collections::HashMap;
 use std::sync::RwLock;
 
@@ -11,14 +5,11 @@ use anyhow::{Context, Result};
 use grammers_client::Client;
 use grammers_mtsender::{SenderPool, SenderPoolHandle};
 use grammers_session::storages::SqliteSession;
+use grammers_session::updates::UpdatesLike;
+use tokio::sync::mpsc;
 
 use crate::AccountConfig;
 
-/// Pool of connected Grammers clients, one per Telegram account.
-///
-/// [`Client`] is a cheap `Arc` clone, so [`SessionPool::get`] hands back an
-/// owned handle rather than borrowing through the internal lock — the borrow
-/// could not outlive the read guard.
 pub struct SessionPool {
     clients: RwLock<HashMap<String, Client>>,
     _handles: RwLock<HashMap<String, SenderPoolHandle>>,
@@ -41,10 +32,10 @@ impl SessionPool {
         }
     }
 
-    /// Load (or create) `account.session_path`, then open a Grammers client
-    /// and store it keyed by `account.id`. The session file persists on disk
-    /// so a reconnect after the plugin restarts reuses the authorization key.
-    pub async fn connect(&self, account: &AccountConfig) -> Result<()> {
+    pub async fn connect(
+        &self,
+        account: &AccountConfig,
+    ) -> Result<mpsc::UnboundedReceiver<UpdatesLike>> {
         let session = std::sync::Arc::new(
             SqliteSession::open(&account.session_path).with_context(|| {
                 format!(
@@ -56,8 +47,8 @@ impl SessionPool {
         let pool = SenderPool::new(session, account.api_id);
         let client = Client::new(&pool);
         let handle = pool.handle.clone();
+        let updates_rx = pool.updates;
 
-        // Spawn the network runner in the background
         tokio::spawn(pool.runner.run());
 
         self._handles
@@ -68,10 +59,10 @@ impl SessionPool {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(account.id.clone(), client);
-        Ok(())
+
+        Ok(updates_rx)
     }
 
-    /// Look up a connected account's client by id.
     pub fn get(&self, account: &str) -> Option<Client> {
         self.clients
             .read()
@@ -80,7 +71,6 @@ impl SessionPool {
             .cloned()
     }
 
-    /// Drop every connected client, closing all MTProto connections.
     pub fn disconnect_all(&self) {
         self._handles
             .write()
