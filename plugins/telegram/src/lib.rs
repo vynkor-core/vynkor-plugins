@@ -155,7 +155,7 @@ pub async fn handle_action(
             // peer == "self" resolves to Saved Messages in the real client
             let peer = required_str(&params, "peer", "tg_get_history")?;
             let _limit = clamp_limit(&params);
-            let v = serde_json::json!({"peer": peer, "messages": []});
+            let v = serde_json::json!({"peer": peer, "messages": [], "total": 0});
             Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -325,5 +325,63 @@ mod tests {
         assert_eq!(ev.event_type, "tg.message_sent");
         assert_eq!(ev.payload["peer"], "self");
         assert_eq!(ev.payload["message_id"], 1);
+    }
+
+    #[tokio::test]
+    async fn status_returns_version_and_accounts() {
+        let res = call("status", json!({})).await.unwrap();
+        let v: Value = serde_json::from_slice(&res.data).unwrap();
+        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["default_account"], "personal");
+        let accounts = v["accounts"].as_array().unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0], "personal");
+    }
+
+    #[tokio::test]
+    async fn tg_list_dialogs_returns_empty_for_stub() {
+        let res = call("tg_list_dialogs", json!({})).await.unwrap();
+        let v: Value = serde_json::from_slice(&res.data).unwrap();
+        assert_eq!(v["account"], "personal");
+        assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn tg_get_history_with_peer_returns_empty() {
+        let res = call("tg_get_history", json!({"peer": "test"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&res.data).unwrap();
+        assert_eq!(v["peer"], "test");
+        assert_eq!(v["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn tg_search_empty_query_errors() {
+        let err = call("tg_search", json!({"query": ""})).await.unwrap_err();
+        assert!(err.contains("query required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_send_message_default_peer_is_self() {
+        let res = call("tg_send_message", json!({"text": "hi"}))
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_slice(&res.data).unwrap();
+        assert_eq!(v["peer"], "self");
+    }
+
+    #[tokio::test]
+    async fn unknown_action_returns_error() {
+        let err = call("bogus_action", json!({})).await.unwrap_err();
+        assert!(err.contains("unknown action"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_get_message_missing_peer_defaults_to_self() {
+        let res = call("tg_get_message", json!({"id": 1})).await.unwrap();
+        let v: Value = serde_json::from_slice(&res.data).unwrap();
+        assert_eq!(v["peer"], "self");
+        assert_eq!(v["found"], false);
     }
 }
