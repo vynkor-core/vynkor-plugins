@@ -7,8 +7,8 @@ on:
     branches: [main, develop]
 
 jobs:
-  test:
-    name: Test
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -24,3 +24,29 @@ jobs:
           found=$(find plugins -maxdepth 2 -name Cargo.toml 2>/dev/null | head -n 5)
           if [ -z "$found" ]; then echo "no Cargo.toml in plugins (expected)"; else echo "$found"; fi
           echo "plugins CI done"
+
+  test:
+    name: Test plugins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run cargo test for each plugin
+        run: |
+          failed=0
+          for dir in plugins/*/; do
+            if [ -f "$dir/Cargo.toml" ]; then
+              echo "=== Testing $dir ==="
+              if ! cargo test --manifest-path "$dir/Cargo.toml" --quiet 2>&1 | tail -5; then
+                echo "::error::Tests failed in $dir"
+                cargo test --manifest-path "$dir/Cargo.toml" 2>&1 | tail -30
+                failed=1
+              fi
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::One or more plugin test suites failed"
+            exit 1
+          fi
+          echo "All plugin tests passed"
