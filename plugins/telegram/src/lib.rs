@@ -196,7 +196,7 @@ pub async fn handle_action(
             // real: antiban check + FloodWait + send via grammers
             let v = serde_json::json!({"peer": peer, "message_id": 1, "text": text});
             let ev = EventToPublish {
-                event_type: "tg.message_sent".into(),
+                event_type: "plugin.telegram.message_sent".into(),
                 payload: serde_json::json!({"peer": peer, "message_id": 1}),
             };
             Ok(HandleResult {
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(v["text"], "hello");
 
         let ev = res.event.expect("send should publish a message_sent event");
-        assert_eq!(ev.event_type, "tg.message_sent");
+        assert_eq!(ev.event_type, "plugin.telegram.message_sent");
         assert_eq!(ev.payload["peer"], "self");
         assert_eq!(ev.payload["message_id"], 1);
     }
