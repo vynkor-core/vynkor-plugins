@@ -237,6 +237,43 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "status",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "uptime_ms": {
+            "type": "integer"
+          },
+          "engine_ready": {
+            "type": "boolean"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counters": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "version",
+          "uptime_ms",
+          "engine_ready"
+        ],
+        "additionalProperties": true
+      }
     }
   ],
   "config_schema": {

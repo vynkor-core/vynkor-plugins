@@ -42,6 +42,7 @@ fn manifest() -> PluginManifest {
             "stt_models".to_string(),
             "stt_listen_start".to_string(),
             "stt_listen_stop".to_string(),
+            "status".to_string(),
         ],
         ipc_targets: ipc_targets(),
         ..Default::default()
@@ -65,6 +66,19 @@ fn unix_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+fn start_instant() -> std::time::Instant { *START.get_or_init(std::time::Instant::now) }
+fn status_payload() -> Vec<u8> {
+    let uptime_ms = start_instant().elapsed().as_millis() as u64;
+    serde_json::to_vec(&serde_json::json!({
+        "version": PLUGIN_VERSION,
+        "uptime_ms": uptime_ms,
+        "engine_ready": true,
+        "last_error": null,
+        "counters": {}
+    })).unwrap()
 }
 
 fn ok(action_id: String, data_json: Vec<u8>) -> ActionResponse {
@@ -98,6 +112,7 @@ async fn dispatch(client: &mut VynkorClient, req: vynkor_sdk::proto::ActionReque
         "stt_listen_stop" => {
             listen::handler::handle_stt_listen_stop(client, &req.params_json).await
         }
+        "status" => Ok(status_payload()),
         other => return Envelope {
             payload: Some(envelope::Payload::ActionResponse(err(
                 req.action_id,
@@ -222,4 +237,19 @@ async fn main() -> Result<(), VynkorError> {
         None => VynkorClient::connect(&socket_path).await?,
     };
     serve(client).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_payload_reports_inf07_shape() {
+        let v: serde_json::Value = serde_json::from_slice(&status_payload()).unwrap();
+        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["engine_ready"], true);
+        assert_eq!(v["last_error"], serde_json::Value::Null);
+        assert_eq!(v["counters"], serde_json::json!({}));
+        assert!(v["uptime_ms"].as_u64().is_some());
+    }
 }

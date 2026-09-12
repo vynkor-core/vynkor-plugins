@@ -53,6 +53,8 @@ const CLIENT_IDENTITY_PATH_ENV: &str = "NETWORK_PLUGIN_CLIENT_IDENTITY_PATH";
 const MAX_INFLIGHT_PER_CALLER_ENV: &str = "NETWORK_PLUGIN_MAX_INFLIGHT_PER_CALLER";
 const DEFAULT_MAX_INFLIGHT_PER_CALLER: usize = 8;
 
+const PLUGIN_VERSION: &str = "0.4.0";
+
 /// Everything operator-configurable that shapes a `reqwest::Client`, read
 /// once at startup so per-cap redirect clients don't re-read env/files.
 struct ClientConfig {
@@ -146,6 +148,8 @@ struct NetworkPlugin {
     cache: Mutex<network_plugin::handler::CacheStore>,
     /// Per-caller session cookie jars (see [`CookieJar`]).
     jars: Mutex<CookieJar>,
+    /// Monotonic start instant for the INF-07 `status` action's `uptime_ms`.
+    start: std::time::Instant,
 }
 
 /// Aggregated counters for one caller, read by the `network_stats` action.
@@ -192,6 +196,7 @@ impl NetworkPlugin {
             stats: Mutex::new(HashMap::new()),
             cache: Mutex::new(network_plugin::handler::CacheStore::new()),
             jars: Mutex::new(HashMap::new()),
+            start: std::time::Instant::now(),
         }
     }
 
@@ -316,6 +321,17 @@ impl NetworkPlugin {
                 "avg_latency_ms": avg_latency_ms(&totals),
             },
             "per_caller": per_caller,
+        }))
+        .unwrap_or_default()
+    }
+
+    fn status_payload(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": PLUGIN_VERSION,
+            "uptime_ms": self.start.elapsed().as_millis() as u64,
+            "engine_ready": true,
+            "last_error": null,
+            "counters": {}
         }))
         .unwrap_or_default()
     }
@@ -578,6 +594,7 @@ fn manifest() -> PluginManifest {
         actions: vec![
             "http_request".into(),
             "network_stats".into(),
+            "status".into(),
         ],
         ..Default::default()
     }
@@ -672,7 +689,7 @@ impl ConcurrentHandler for NetworkPlugin {
     }
 
     fn version(&self) -> &str {
-        "0.4.0"
+        PLUGIN_VERSION
     }
 
     fn manifest(&self) -> PluginManifest {
@@ -680,7 +697,7 @@ impl ConcurrentHandler for NetworkPlugin {
     }
 
     fn accept(&self, req: &ActionRequest) -> Result<(), String> {
-        if req.action == "network_stats" {
+        if req.action == "network_stats" || req.action == "status" {
             return Ok(()); // does not use the network — never cap-gated
         }
         self.inflight.check(&req.caller_plugin_id)
@@ -689,6 +706,9 @@ impl ConcurrentHandler for NetworkPlugin {
     async fn on_action(&self, req: ActionRequest) -> Vec<Envelope> {
         if req.action == "network_stats" {
             return vec![response_envelope(req.action_id, Ok(self.network_stats_json()))];
+        }
+        if req.action == "status" {
+            return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
         }
         if req.action != "http_request" {
             return vec![response_envelope(
@@ -794,7 +814,19 @@ mod tests {
             stats: Mutex::new(HashMap::new()),
             cache: Mutex::new(network_plugin::handler::CacheStore::new()),
             jars: Mutex::new(HashMap::new()),
+            start: std::time::Instant::now(),
         })
+    }
+
+    #[test]
+    fn status_payload_reports_inf07_shape() {
+        let plugin = test_plugin();
+        let v: serde_json::Value = serde_json::from_slice(&plugin.status_payload()).unwrap();
+        assert_eq!(v["version"], PLUGIN_VERSION);
+        assert_eq!(v["engine_ready"], true);
+        assert_eq!(v["last_error"], serde_json::Value::Null);
+        assert_eq!(v["counters"], serde_json::json!({}));
+        assert!(v["uptime_ms"].as_u64().is_some());
     }
 
     async fn mock_server_responding(response: &'static str) -> String {

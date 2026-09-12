@@ -16,13 +16,15 @@ use vynkor_sdk::ConcurrentHandler;
 
 use handler::{ChangeEvent, Handler};
 
+pub const PLUGIN_VERSION: &str = "0.2.0";
+
 impl ConcurrentHandler for Handler {
     fn id(&self) -> &str {
         "database"
     }
 
     fn version(&self) -> &str {
-        "0.2.0"
+        PLUGIN_VERSION
     }
 
     fn manifest(&self) -> PluginManifest {
@@ -41,12 +43,16 @@ impl ConcurrentHandler for Handler {
                 "db_keys".into(),
                 "db_append".into(),
                 "db_patch".into(),
+                "status".into(),
             ],
             ..Default::default()
         }
     }
 
     async fn on_action(&self, req: ActionRequest) -> Vec<Envelope> {
+        if req.action == "status" {
+            return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
+        }
         let mut envelopes = Vec::new();
         match self
             .handle_with_events(&req.caller_plugin_id, &req.action, &req.params_json)

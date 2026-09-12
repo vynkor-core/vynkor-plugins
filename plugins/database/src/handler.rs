@@ -14,6 +14,7 @@ pub struct Handler {
     pools: DbPools,
     max_value_bytes: usize,
     max_response_bytes: usize,
+    start: std::time::Instant,
 }
 
 impl Handler {
@@ -22,7 +23,19 @@ impl Handler {
             pools: DbPools::new(config),
             max_value_bytes,
             max_response_bytes,
+            start: std::time::Instant::now(),
         }
+    }
+
+    pub fn status_payload(&self) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "version": crate::PLUGIN_VERSION,
+            "uptime_ms": self.start.elapsed().as_millis() as u64,
+            "engine_ready": true,
+            "last_error": null,
+            "counters": {}
+        }))
+        .unwrap()
     }
 
     pub async fn handle(
@@ -627,6 +640,18 @@ mod tests {
         let h = handler(dir.path());
         let err = h.handle("caller_a", "db_frobnicate", b"{}").await.unwrap_err();
         assert!(err.contains("db_frobnicate"), "error was: {err}");
+    }
+
+    #[test]
+    fn status_payload_reports_inf07_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler(dir.path());
+        let v: serde_json::Value = serde_json::from_slice(&h.status_payload()).unwrap();
+        assert_eq!(v["version"], crate::PLUGIN_VERSION);
+        assert_eq!(v["engine_ready"], true);
+        assert_eq!(v["last_error"], serde_json::Value::Null);
+        assert_eq!(v["counters"], serde_json::json!({}));
+        assert!(v["uptime_ms"].as_u64().is_some());
     }
 
     // Fix #4: a write with a RETURNING clause is still a row-producing
