@@ -439,6 +439,20 @@
         "type": "integer",
         "minimum": 1,
         "description": "Per-call timeout for database IPC round-trips (5000)."
+      },
+      "AGENT_PLUGIN_MEMORY": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "off",
+        "description": "Enable long-term memory over vector-db"
+      },
+      "AGENT_PLUGIN_MEMORY_COLLECTION": {
+        "type": "string",
+        "default": "agent-memory",
+        "description": "Vector-db collection name for agent memory"
       }
     },
     "additionalProperties": true
