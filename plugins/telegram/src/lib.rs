@@ -138,11 +138,18 @@ pub async fn handle_action(
         "tg_send_message" => handle_send_message(config, &params).await,
         "tg_edit_message" => handle_edit_message(config, &params).await,
         "tg_delete_message" => handle_delete_message(config, &params).await,
+        "tg_delete_messages" => handle_delete_messages(config, &params).await,
         "tg_forward_message" => handle_forward_message(config, &params).await,
+        "tg_forward_messages" => handle_forward_messages(config, &params).await,
         "tg_add_reaction" => handle_add_reaction(config, &params).await,
         "tg_pin_message" => handle_pin_message(config, &params).await,
         "tg_upload_media" => handle_upload_media(config, &params).await,
         "tg_download_media" => handle_download_media(config, &params).await,
+        "tg_send_voice" => handle_send_voice(config, &params).await,
+        "tg_send_sticker" => handle_send_sticker(config, &params).await,
+        "tg_send_animation" => handle_send_animation(config, &params).await,
+        "tg_get_chat_info" => handle_get_chat_info(config, &params).await,
+        "tg_get_user" => handle_get_user(config, &params).await,
         other => Err(format!("unknown action: {other}")),
     }
 }
@@ -538,6 +545,231 @@ async fn handle_download_media(config: &Config, params: &Value) -> Result<Handle
     Err("tg_download_media: message not found or has no media".to_string())
 }
 
+async fn handle_delete_messages(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let message_ids = params
+        .get("message_ids")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "tg_delete_messages: message_ids array required".to_string())?;
+    let ids: Vec<i32> = message_ids
+        .iter()
+        .filter_map(|v| v.as_u64().map(|id| id as i32))
+        .filter(|id| *id != 0)
+        .collect();
+    if ids.is_empty() {
+        return Err("tg_delete_messages: no valid message_ids".into());
+    }
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let deleted = client
+        .delete_messages(peer, &ids)
+        .await
+        .map_err(|e| format!("delete_messages failed: {e}"))?;
+
+    let v = serde_json::json!({
+        "peer": peer_str,
+        "message_ids": ids,
+        "deleted_count": deleted,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_forward_messages(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let from_peer_str = required_str(params, "from_peer", "tg_forward_messages")?;
+    let to_peer_str = required_str(params, "to_peer", "tg_forward_messages")?;
+    let message_ids = params
+        .get("message_ids")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "tg_forward_messages: message_ids array required".to_string())?;
+    let ids: Vec<i32> = message_ids
+        .iter()
+        .filter_map(|v| v.as_u64().map(|id| id as i32))
+        .filter(|id| *id != 0)
+        .collect();
+    if ids.is_empty() {
+        return Err("tg_forward_messages: no valid message_ids".into());
+    }
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let from_peer = parse_peer(from_peer_str)?;
+    let to_peer = parse_peer(to_peer_str)?;
+
+    let forwarded = client
+        .forward_messages(to_peer, &ids, from_peer)
+        .await
+        .map_err(|e| format!("forward_messages failed: {e}"))?;
+
+    let new_ids: Vec<i32> = forwarded
+        .iter()
+        .filter_map(|m| m.as_ref().map(|m| m.id()))
+        .collect();
+
+    let v = serde_json::json!({
+        "from_peer": from_peer_str,
+        "to_peer": to_peer_str,
+        "original_ids": ids,
+        "new_ids": new_ids,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_send_voice(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let file_path = required_str(params, "file_path", "tg_send_voice")?;
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let uploaded = client
+        .upload_file(file_path)
+        .await
+        .map_err(|e| format!("upload failed: {e}"))?;
+
+    let msg = grammers_client::types::InputMessage::default()
+        .document(uploaded)
+        .attribute(grammers_client::types::Attribute::Voice {
+            duration: std::time::Duration::ZERO,
+            waveform: Some(Vec::new()),
+        });
+
+    let sent = client
+        .send_message(peer, msg)
+        .await
+        .map_err(|e| format!("send_voice failed: {e}"))?;
+
+    let v = serde_json::json!({
+        "peer": peer_str,
+        "message_id": sent.id(),
+        "file_path": file_path,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_send_sticker(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let file_path = required_str(params, "file_path", "tg_send_sticker")?;
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let uploaded = client
+        .upload_file(file_path)
+        .await
+        .map_err(|e| format!("upload failed: {e}"))?;
+
+    let msg = grammers_client::types::InputMessage::default().document(uploaded);
+
+    let sent = client
+        .send_message(peer, msg)
+        .await
+        .map_err(|e| format!("send_sticker failed: {e}"))?;
+
+    let v = serde_json::json!({
+        "peer": peer_str,
+        "message_id": sent.id(),
+        "file_path": file_path,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_send_animation(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let file_path = required_str(params, "file_path", "tg_send_animation")?;
+    let caption = params
+        .get("caption")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let uploaded = client
+        .upload_file(file_path)
+        .await
+        .map_err(|e| format!("upload failed: {e}"))?;
+
+    let msg = grammers_client::types::InputMessage::default()
+        .text(caption)
+        .document(uploaded);
+
+    let sent = client
+        .send_message(peer, msg)
+        .await
+        .map_err(|e| format!("send_animation failed: {e}"))?;
+
+    let v = serde_json::json!({
+        "peer": peer_str,
+        "message_id": sent.id(),
+        "file_path": file_path,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = required_str(params, "peer", "tg_get_chat_info")?;
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let mut dialogs = client.iter_dialogs();
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let dp = dialog.peer();
+        if dp.id() == peer.id {
+            let v = serde_json::json!({
+                "peer": peer_str,
+                "name": dp.name(),
+            });
+            return Ok(HandleResult {
+                data: serde_json::to_vec(&v).unwrap(),
+                event: None,
+            });
+        }
+    }
+
+    Err(format!("tg_get_chat_info: chat not found for {peer_str}"))
+}
+
+async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = required_str(params, "peer", "tg_get_user")?;
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let mut dialogs = client.iter_dialogs();
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let dp = dialog.peer();
+        if dp.id() == peer.id {
+            let v = serde_json::json!({
+                "peer": peer_str,
+                "name": dp.name(),
+            });
+            return Ok(HandleResult {
+                data: serde_json::to_vec(&v).unwrap(),
+                event: None,
+            });
+        }
+    }
+
+    Err(format!("tg_get_user: user not found for {peer_str}"))
+}
+
 fn get_client(config: &Config, account: &str) -> Result<grammers_client::Client, String> {
     config
         .pool
@@ -909,5 +1141,71 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("output_path required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_delete_messages_requires_message_ids() {
+        let err = call("tg_delete_messages", json!({})).await.unwrap_err();
+        assert!(err.contains("message_ids array required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_delete_messages_empty_array_errors() {
+        let err = call("tg_delete_messages", json!({"message_ids": []}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("no valid message_ids"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_forward_messages_requires_from_peer() {
+        let err = call(
+            "tg_forward_messages",
+            json!({"to_peer": "self", "message_ids": [1]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("from_peer required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_forward_messages_requires_to_peer() {
+        let err = call(
+            "tg_forward_messages",
+            json!({"from_peer": "self", "message_ids": [1]}),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("to_peer required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_send_voice_requires_file_path() {
+        let err = call("tg_send_voice", json!({})).await.unwrap_err();
+        assert!(err.contains("file_path required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_send_sticker_requires_file_path() {
+        let err = call("tg_send_sticker", json!({})).await.unwrap_err();
+        assert!(err.contains("file_path required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_send_animation_requires_file_path() {
+        let err = call("tg_send_animation", json!({})).await.unwrap_err();
+        assert!(err.contains("file_path required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_get_chat_info_requires_peer() {
+        let err = call("tg_get_chat_info", json!({})).await.unwrap_err();
+        assert!(err.contains("peer required"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn tg_get_user_requires_peer() {
+        let err = call("tg_get_user", json!({})).await.unwrap_err();
+        assert!(err.contains("peer required"), "{err}");
     }
 }
