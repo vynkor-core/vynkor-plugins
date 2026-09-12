@@ -47,8 +47,18 @@
       "requires_confirmation": true
     },
     {
+      "name": "tg_delete_messages",
+      "description": "Delete multiple messages",
+      "requires_confirmation": true
+    },
+    {
       "name": "tg_forward_message",
       "description": "Forward a message to another peer",
+      "requires_confirmation": true
+    },
+    {
+      "name": "tg_forward_messages",
+      "description": "Forward multiple messages to another peer",
       "requires_confirmation": true
     },
     {
@@ -67,6 +77,26 @@
     {
       "name": "tg_download_media",
       "description": "Download media from a message"
+    },
+    {
+      "name": "tg_send_voice",
+      "description": "Send a voice message"
+    },
+    {
+      "name": "tg_send_sticker",
+      "description": "Send a sticker"
+    },
+    {
+      "name": "tg_send_animation",
+      "description": "Send an animation (GIF)"
+    },
+    {
+      "name": "tg_get_chat_info",
+      "description": "Get chat information"
+    },
+    {
+      "name": "tg_get_user",
+      "description": "Get user profile information"
     }
   ],
   "events": [
