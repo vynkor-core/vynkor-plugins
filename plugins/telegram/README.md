@@ -52,4 +52,11 @@ cargo clippy -p telegram-plugin -- -D warnings
 P1: `tg_edit/delete/forward/react/pin` with `requires_confirmation` gate (device.* confirms).
 P2: media upload/download via `filesystem` jail, vector-db RAG, infection graph.
 
+## Dev scripts
+
+Helper scripts for manual testing (not shipped, dev-only):
+- `get_messages.py` — fetch message history via Telethon (Python fallback for quick testing)
+- `read_messages.py` — read recent messages from a dialog
+- `run_test.sh` — run integration tests against a live Telegram account
+
 See `PLANS.md` for full plan and `../../docs/PLUGIN_AUTHORING.md` for loop pattern.

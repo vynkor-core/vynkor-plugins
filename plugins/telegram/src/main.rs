@@ -81,9 +81,9 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
             ack.reject_reason
         )));
     }
-    println!(
-        "[{PLUGIN_ID}] registered, accounts={:?}",
-        config.accounts.iter().map(|a| &a.id).collect::<Vec<_>>()
+    tracing::info!(
+        accounts = ?config.accounts.iter().map(|a| &a.id).collect::<Vec<_>>(),
+        "registered"
     );
 
     let config = Arc::new(config);
@@ -134,7 +134,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                             let _ = reply.send(result);
                         }
                     }
-                    other => { println!("[{PLUGIN_ID}] unhandled: {other:?}"); }
+                    other => { tracing::warn!(?other, "unhandled envelope"); }
                 }
             }
             Some(env) = outbound_rx.recv() => { let _ = client.send("kernel", env).await; }
@@ -150,7 +150,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
             }
         }
     }
-    println!("[{PLUGIN_ID}] shutting down");
+    tracing::info!("shutting down");
     Ok(())
 }
 

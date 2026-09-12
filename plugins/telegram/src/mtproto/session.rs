@@ -8,8 +8,9 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use anyhow::{Context, Result};
-use grammers_client::{Client, Config as GrammersConfig};
-use grammers_session::Session;
+use grammers_client::Client;
+use grammers_mtsender::{SenderPool, SenderPoolHandle};
+use grammers_session::storages::SqliteSession;
 
 use crate::AccountConfig;
 
@@ -20,12 +21,15 @@ use crate::AccountConfig;
 /// could not outlive the read guard.
 pub struct SessionPool {
     clients: RwLock<HashMap<String, Client>>,
+    /// Network handles kept alive so the sender pools stay connected.
+    _handles: RwLock<HashMap<String, SenderPoolHandle>>,
 }
 
 impl SessionPool {
     pub fn new() -> Self {
         Self {
             clients: RwLock::new(HashMap::new()),
+            _handles: RwLock::new(HashMap::new()),
         }
     }
 
@@ -33,21 +37,25 @@ impl SessionPool {
     /// and store it keyed by `account.id`. The session file persists on disk
     /// so a reconnect after the plugin restarts reuses the authorization key.
     pub async fn connect(&self, account: &AccountConfig) -> Result<()> {
-        let session = Session::load_file_or_create(&account.session_path).with_context(|| {
-            format!(
-                "failed to load/create session file {}",
-                account.session_path
-            )
-        })?;
-        let config = GrammersConfig {
-            session,
-            api_id: account.api_id,
-            api_hash: account.api_hash.clone(),
-            params: Default::default(),
-        };
-        let client = Client::connect(config)
-            .await
-            .with_context(|| format!("failed to connect account {}", account.id))?;
+        let session = std::sync::Arc::new(
+            SqliteSession::open(&account.session_path).with_context(|| {
+                format!(
+                    "failed to load/create session file {}",
+                    account.session_path
+                )
+            })?,
+        );
+        let pool = SenderPool::new(session, account.api_id);
+        let client = Client::new(&pool);
+        let handle = pool.handle.clone();
+
+        // Spawn the network runner in the background
+        tokio::spawn(pool.runner.run());
+
+        self._handles
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(account.id.clone(), handle);
         self.clients
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -66,6 +74,10 @@ impl SessionPool {
 
     /// Drop every connected client, closing all MTProto connections.
     pub fn disconnect_all(&self) {
+        self._handles
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.clients
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())

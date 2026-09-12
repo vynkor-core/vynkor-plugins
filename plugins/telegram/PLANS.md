@@ -89,8 +89,8 @@
 
 ## Todos
 
-- [ ] 1. Scaffold telegram crate (Cargo.toml, lib.rs, main.rs, README)
-  What to do: Create `plugins/telegram/` with `Cargo.toml` (vynkor-sdk 0.0.3, vynkor-wire 0.0.3, tokio full, serde, grammers-* 0.7, chrono, anyhow, thiserror, tracing), `src/lib.rs` (Config, Rpc, HandleResult, handle_action stubs), `src/main.rs` (PLUGIN_ID=telegram, PLUGIN_VERSION=0.1.0, manifest(), unix_millis(), action_response(), event_envelope(), serve() single-reader select! over client.recv/outbound_rx/rpc_rx, main() tracing + connect_from_env).
+- [x] 1. Scaffold telegram crate (Cargo.toml, lib.rs, main.rs, README)
+  What to do: Create `plugins/telegram/` with `Cargo.toml` (vynkor-sdk 0.0.3, vynkor-wire 0.0.3, tokio full, serde, grammers-* 0.8, chrono, anyhow, thiserror, tracing), `src/lib.rs` (Config, Rpc, HandleResult, handle_action stubs), `src/main.rs` (PLUGIN_ID=telegram, PLUGIN_VERSION=0.1.0, manifest(), unix_millis(), action_response(), event_envelope(), serve() single-reader select! over client.recv/outbound_rx/rpc_rx, main() tracing + connect_from_env).
   Must NOT do: No business logic beyond stubs; no unwrap on env; no hardcoded api_id.
   Parallelization: Wave 0 | Blocked by: — | Blocks: 2,3
   References: `plugins/notes/src/main.rs:1-212` (loop pattern), `plugins/notes/Cargo.toml`, `plugins/calendar/Cargo.toml`, `vynkor-sdk-python/README.md:1-52` (Plugin trait)
@@ -98,7 +98,7 @@
   QA: `cargo test -p telegram-plugin -- --nocapture` happy (status) + failure (unknown action → error string contains "unknown action") → evidence `.omo/evidence/telegram/task-1.log`
   Commit: N (scaffold only)
 
-- [ ] 2. N-account Config (env + vault-first)
+- [x] 2. N-account Config (env + vault-first)
   What to do: `src/lib.rs::Config::from_env()` parses `TELEGRAM_PLUGIN_ACCOUNTS`, per-account `TELEGRAM_PLUGIN_API_ID_<UPPER>/_API_HASH/_PHONE`, `TELEGRAM_PLUGIN_SESSION_DIR`, fallback `TG_API_ID/HASH`. `AccountConfig {id, api_id, api_hash, phone, session_path}`. Tests for single account, two accounts (personal+corporate), missing api_hash → skipped.
   Must NOT do: No plaintext logging of api_hash/phone; no session file creation here.
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 4,5 | With: 3
@@ -107,7 +107,7 @@
   QA: happy (two accounts) + failure (no env → empty accounts, default_account=="default") → task-2.log
   Commit: N
 
-- [ ] 3. Manifest + status + single-reader loop wiring
+- [x] 3. Manifest + status + single-reader loop wiring
   What to do: `manifest()` returns `PERMISSION_NETWORK/STORAGE/SECRETS/EVENT_PUBLISH` + 6 actions. `handle_action` for `status` returns `{version, accounts, default_account, uptime_ms, engine_ready}` via `vynkor_sdk::status::status_response` helper. Wire `serve()` pending map `action_id -> oneshot`, outbound channel, `register_full` with `VYN_JWT_TOKEN`, Ping/Pong, PluginShutdown, EventAck, ActionResponse dispatch.
   Must NOT do: No direct `client.send_action` outside loop; no `ipc_targets` (kernel-routed only).
   Parallelization: Wave 0 | Blocked by: 1 | Blocks: 5,6 | With: 2
@@ -116,11 +116,11 @@
   QA: happy (status) + failure (registration rejected → PermissionDenied) → task-3.log
   Commit: Y | feat(telegram): manifest status and single-reader loop
 
-- [ ] 4. MTProto session + antiban (Grammers)
+- [x] 4. MTProto session + antiban (Grammers)
   What to do: `src/mtproto/session.rs` — `SessionPool { clients: HashMap<account_id, Client> }`, `connect(account)` via `grammers-client` + `grammers-session::Session::load_file_or_create`, `is_connected()`, `disconnect()`. `src/mtproto/antiban.rs` — `Antiban { bucket: TokenBucket { capacity: 8, rate: 8.0 }, proxy_pool, device_model }`, `check(account) -> Result<()>`, `on_flood_wait(seconds)` sleep + jitter 0.2..0.8s + circuit breaker. Unit tests with mocked time.
   Must NOT do: No real Telegram connection in unit tests; no `unwrap` on session file.
   Parallelization: Wave 1 | Blocked by: 2 | Blocks: 5 | With: 3 (logic independent)
-  References: `tg-swarm/src/antiban/*`, `tg-swarm/docs/ANTIBAN.md`, `tg-swarm/src/swarm/session_pool.rs`, `grammers` docs (0.10 -> 0.7 compat check)
+  References: `tg-swarm/src/antiban/*`, `tg-swarm/docs/ANTIBAN.md`, `tg-swarm/src/swarm/session_pool.rs`, `grammers` docs (0.8 compat)
   Acceptance: `cargo test -p telegram-plugin antiban_token_bucket_blocks_on_exhaustion` — 9th call within 1s → `Err(RateLimited)`, after 1s → Ok.
   QA: happy (8 rps allowed) + failure (FloodWait 60s → sleep counted, not panic) → task-4.log
   Commit: Y | feat(telegram): mtproto session pool and antiban

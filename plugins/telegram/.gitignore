@@ -1,0 +1,3 @@
+# Telegram session files contain MTProto auth keys — never commit.
+*.session
+*.session-journal
