@@ -4,14 +4,21 @@ Full MTProto user-client for vynkor (N-account, Rust + Grammers). Acts as your d
 
 ## Actions
 
-| Action | Params | Result |
-|---|---|---|
-| `status` | `{}` | `{version, accounts[], default_account, uptime_ms, engine_ready}` |
-| `tg_list_dialogs` | `{account?, limit? (default 20, max 100)}` | `{account, dialogs: [{peer, unread}], total}` |
-| `tg_get_history` | `{account?, peer (required), limit?}` | `{peer, messages: [{id, text, date, outgoing}], total}` |
-| `tg_get_message` | `{account?, peer, id (required)}` | `{found, message?}` |
-| `tg_search` | `{account?, query (required), limit?}` | `{query, messages: [{id, text, chat, date}], total}` |
-| `tg_send_message` | `{account?, peer, text (required, 1..4096), reply_to?}` | `{peer, message_id}` |
+| Action | Params | Result | Confirmation |
+|---|---|---|---|
+| `status` | `{}` | `{version, accounts[], default_account, uptime_ms, engine_ready}` | — |
+| `tg_list_dialogs` | `{account?, limit?}` | `{account, dialogs: [{peer, unread}], total}` | — |
+| `tg_get_history` | `{account?, peer, limit?}` | `{peer, messages: [...], total}` | — |
+| `tg_get_message` | `{account?, peer, id}` | `{found, message?}` | — |
+| `tg_search` | `{account?, query, limit?}` | `{query, messages: [...], total}` | — |
+| `tg_send_message` | `{account?, peer, text, reply_to?}` | `{peer, message_id}` | — |
+| `tg_edit_message` | `{account?, peer, message_id, text}` | `{peer, message_id, edited}` | ⚠️ |
+| `tg_delete_message` | `{account?, peer, message_id}` | `{peer, message_id, deleted}` | ⚠️ |
+| `tg_forward_message` | `{account?, from_peer, to_peer, message_id}` | `{from_peer, to_peer, new_id}` | ⚠️ |
+| `tg_add_reaction` | `{account?, peer, message_id, reaction}` | `{peer, message_id, reaction}` | — |
+| `tg_pin_message` | `{account?, peer, message_id, silent?}` | `{peer, message_id, pinned}` | ⚠️ |
+| `tg_upload_media` | `{account?, peer, file_path, caption?}` | `{peer, message_id, file_path}` | — |
+| `tg_download_media` | `{account?, peer, message_id, output_path}` | `{peer, message_id, output_path}` | — |
 
 ## Peer formats
 

@@ -11,13 +11,20 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "telegram";
 const PLUGIN_VERSION: &str = "0.1.0";
-const ACTIONS: [&str; 6] = [
+const ACTIONS: [&str; 13] = [
     "status",
     "tg_list_dialogs",
     "tg_get_history",
     "tg_get_message",
     "tg_search",
     "tg_send_message",
+    "tg_edit_message",
+    "tg_delete_message",
+    "tg_forward_message",
+    "tg_add_reaction",
+    "tg_pin_message",
+    "tg_upload_media",
+    "tg_download_media",
 ];
 
 fn manifest() -> vynkor_sdk::proto::PluginManifest {
