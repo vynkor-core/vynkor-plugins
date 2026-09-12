@@ -4,40 +4,39 @@
 
 pub mod mtproto;
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
-/// Telegram caps a single message at 4096 characters.
+use mtproto::SessionPool;
+
 const MAX_TEXT_LEN: usize = 4096;
-/// Default page size when `limit` is omitted.
 const DEFAULT_LIMIT: u64 = 20;
-/// Upper bound for any dialog/history page.
 const MAX_LIMIT: u64 = 100;
 
-/// Per-account config derived from env / secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountConfig {
-    pub id: String, // "personal" | "corporate"
+    pub id: String,
     pub api_id: i32,
     pub api_hash: String,
     pub phone: String,
     pub session_path: String,
 }
 
-/// Plugin runtime config (env-driven).
 #[derive(Debug, Clone)]
 pub struct Config {
     pub accounts: Vec<AccountConfig>,
     pub default_account: String,
     pub session_dir: String,
+    pub pool: Option<Arc<SessionPool>>,
+    pub start_instant: Instant,
 }
 
 impl Config {
     pub fn from_env() -> Self {
-        // TELEGRAM_PLUGIN_ACCOUNTS="personal,corporate"
-        // TELEGRAM_PLUGIN_API_ID_personal, _API_HASH_personal, _PHONE_personal
-        // fallback to legacy TG_API_ID / TG_API_HASH for single-account compat
         let accounts_raw =
             std::env::var("TELEGRAM_PLUGIN_ACCOUNTS").unwrap_or_else(|_| "default".into());
         let ids: Vec<String> = accounts_raw
@@ -78,15 +77,24 @@ impl Config {
             accounts,
             default_account,
             session_dir,
+            pool: None,
+            start_instant: Instant::now(),
         }
     }
-}
 
-/// Channel-fronted RPC proxy — handlers never touch VynkorClient directly.
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct Rpc {
-    tx: mpsc::Sender<RpcCall>,
+    pub async fn connect_all(&mut self) -> Result<(), String> {
+        if self.accounts.is_empty() {
+            return Ok(());
+        }
+        let pool = Arc::new(SessionPool::new());
+        for account in &self.accounts {
+            pool.connect(account)
+                .await
+                .map_err(|e| format!("failed to connect {}: {e}", account.id))?;
+        }
+        self.pool = Some(pool);
+        Ok(())
+    }
 }
 
 pub struct RpcCall {
@@ -96,13 +104,6 @@ pub struct RpcCall {
     pub reply: oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
-impl Rpc {
-    pub fn new(tx: mpsc::Sender<RpcCall>) -> Self {
-        Self { tx }
-    }
-}
-
-/// Result of handling one ActionRequest.
 #[derive(Debug)]
 pub struct HandleResult {
     pub data: Vec<u8>,
@@ -115,100 +116,208 @@ pub struct EventToPublish {
     pub payload: serde_json::Value,
 }
 
-/// Dispatch table — implemented in main.rs, mapped here for testing.
-///
-/// Every handler validates its params first (exact error strings per
-/// PLANS.md §5) and returns a stub payload; the real MTProto calls land in
-/// [`mtproto`] once the Grammers client is wired up.
 pub async fn handle_action(
-    _rpc: Rpc,
     config: &Config,
     action: &str,
     params_json: &[u8],
 ) -> Result<HandleResult, String> {
     let params: Value = serde_json::from_slice(params_json).unwrap_or(Value::Null);
     match action {
-        "status" => {
-            let v = serde_json::json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "accounts": config.accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
-                "default_account": config.default_account,
-            });
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: None,
-            })
-        }
-        "tg_list_dialogs" => {
-            // params: {account?, limit? (default 20, max 100), offset?, filter?}
-            let account = resolve_account(&params, config);
-            let _limit = clamp_limit(&params);
-            // stub — real: grammers Client::get_dialogs with antiban token_bucket
-            let v = serde_json::json!({"account": account, "dialogs": [], "total": 0});
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: None,
-            })
-        }
-        "tg_get_history" => {
-            // params: {account?, peer (required), limit? (default 20, max 100), offset_id?}
-            // peer == "self" resolves to Saved Messages in the real client
-            let peer = required_str(&params, "peer", "tg_get_history")?;
-            let _limit = clamp_limit(&params);
-            let v = serde_json::json!({"peer": peer, "messages": [], "total": 0});
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: None,
-            })
-        }
-        "tg_get_message" => {
-            // params: {account?, peer, id (required)}
-            let peer = optional_peer(&params);
-            let id = params
-                .get("id")
-                .and_then(|v| v.as_u64())
-                .filter(|id| *id != 0)
-                .ok_or_else(|| "tg_get_message: id required".to_string())?;
-            let v = serde_json::json!({"peer": peer, "id": id, "found": false});
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: None,
-            })
-        }
-        "tg_search" => {
-            // params: {account?, query (required, non-empty), peer?, limit?}
-            let query = required_str(&params, "query", "tg_search")?;
-            let v = serde_json::json!({"query": query, "messages": [], "total": 0});
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: None,
-            })
-        }
-        "tg_send_message" => {
-            // params: {account?, peer, text (required, 1..4096), reply_to?}
-            let peer = optional_peer(&params);
-            let text = required_str(&params, "text", "tg_send_message")?;
-            if text.len() > MAX_TEXT_LEN {
-                return Err(format!(
-                    "tg_send_message: text too long (max {MAX_TEXT_LEN})"
-                ));
-            }
-            // real: antiban check + FloodWait + send via grammers
-            let v = serde_json::json!({"peer": peer, "message_id": 1, "text": text});
-            let ev = EventToPublish {
-                event_type: "plugin.telegram.message_sent".into(),
-                payload: serde_json::json!({"peer": peer, "message_id": 1}),
-            };
-            Ok(HandleResult {
-                data: serde_json::to_vec(&v).unwrap(),
-                event: Some(ev),
-            })
-        }
+        "status" => handle_status(config).await,
+        "tg_list_dialogs" => handle_list_dialogs(config, &params).await,
+        "tg_get_history" => handle_get_history(config, &params).await,
+        "tg_get_message" => handle_get_message(config, &params).await,
+        "tg_search" => handle_search(config, &params).await,
+        "tg_send_message" => handle_send_message(config, &params).await,
         other => Err(format!("unknown action: {other}")),
     }
 }
 
-/// `account` param if present and non-empty, else the configured default.
+async fn handle_status(config: &Config) -> Result<HandleResult, String> {
+    let uptime_ms = config.start_instant.elapsed().as_millis() as u64;
+    let connected = config.pool.as_ref().map(|p| {
+        config
+            .accounts
+            .iter()
+            .any(|a| p.get(&a.id).is_some())
+    }).unwrap_or(false);
+
+    let v = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "accounts": config.accounts.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+        "default_account": config.default_account,
+        "uptime_ms": uptime_ms,
+        "engine_ready": connected,
+        "last_error": null,
+        "counters": {},
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let account = resolve_account(params, config);
+    let limit = clamp_limit(params);
+    let client = get_client(config, account)?;
+
+    let mut dialogs = client.iter_dialogs();
+    let mut result = Vec::new();
+    let mut total = 0u64;
+
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        total += 1;
+        if result.len() >= limit as usize {
+            continue;
+        }
+        let peer = dialog.peer();
+        result.push(serde_json::json!({
+            "peer": peer_to_string(peer),
+        }));
+    }
+
+    let v = serde_json::json!({"account": account, "dialogs": result, "total": total});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_get_history(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = required_str(params, "peer", "tg_get_history")?;
+    let limit = clamp_limit(params);
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let mut messages = client.iter_messages(peer).limit(limit as usize);
+    let mut result = Vec::new();
+    let mut total = 0u64;
+
+    while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
+        total += 1;
+        result.push(serde_json::json!({
+            "id": msg.id(),
+            "text": msg.text(),
+            "date": msg.date().to_rfc3339(),
+            "outgoing": msg.outgoing(),
+        }));
+    }
+
+    let v = serde_json::json!({"peer": peer_str, "messages": result, "total": total});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_get_message(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let id = params
+        .get("id")
+        .and_then(|v| v.as_u64())
+        .filter(|id| *id != 0)
+        .ok_or_else(|| "tg_get_message: id required".to_string())?;
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(optional_peer(params))?;
+
+    let mut messages = client.iter_messages(peer).limit(1);
+    while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
+        if msg.id() == id as i32 {
+            return Ok(HandleResult {
+                data: serde_json::to_vec(&serde_json::json!({
+                    "found": true,
+                    "message": {
+                        "id": msg.id(),
+                        "text": msg.text(),
+                        "date": msg.date().to_rfc3339(),
+                        "outgoing": msg.outgoing(),
+                    }
+                })).unwrap(),
+                event: None,
+            });
+        }
+    }
+
+    Ok(HandleResult {
+        data: serde_json::to_vec(&serde_json::json!({"found": false})).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_search(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let query = required_str(params, "query", "tg_search")?;
+    let limit = clamp_limit(params);
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+
+    let mut search = client.search_all_messages().query(query).limit(limit as usize);
+    let mut result = Vec::new();
+    let mut total = 0u64;
+
+    while let Some(msg) = search.next().await.map_err(|e| format!("search iter: {e}"))? {
+        total += 1;
+        let chat_name = msg.peer()
+            .map(|p| p.name().unwrap_or("unknown").to_string())
+            .unwrap_or_default();
+        result.push(serde_json::json!({
+            "id": msg.id(),
+            "text": msg.text(),
+            "chat": chat_name,
+            "date": msg.date().to_rfc3339(),
+        }));
+    }
+
+    let v = serde_json::json!({"query": query, "messages": result, "total": total});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let text = required_str(params, "text", "tg_send_message")?;
+    if text.len() > MAX_TEXT_LEN {
+        return Err(format!("tg_send_message: text too long (max {MAX_TEXT_LEN})"));
+    }
+    let account = resolve_account(params, config);
+    let client = get_client(config, account)?;
+    let peer = parse_peer(peer_str)?;
+
+    let reply_to = params.get("reply_to").and_then(|v| v.as_u64()).map(|id| id as i32);
+
+    let mut msg = grammers_client::types::InputMessage::default().text(text);
+    if let Some(reply_id) = reply_to {
+        msg = msg.reply_to(Some(reply_id));
+    }
+
+    let sent = client.send_message(peer, msg).await
+        .map_err(|e| format!("send_message failed: {e}"))?;
+
+    let message_id = sent.id();
+    let ev = EventToPublish {
+        event_type: "plugin.telegram.message_sent".into(),
+        payload: serde_json::json!({"peer": peer_str, "message_id": message_id}),
+    };
+
+    let v = serde_json::json!({"peer": peer_str, "message_id": message_id});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: Some(ev),
+    })
+}
+
+fn get_client(config: &Config, account: &str) -> Result<grammers_client::Client, String> {
+    config
+        .pool
+        .as_ref()
+        .ok_or_else(|| "no telegram accounts connected".to_string())?
+        .get(account)
+        .ok_or_else(|| format!("account not connected: {account}"))
+}
+
 fn resolve_account<'a>(params: &'a Value, config: &'a Config) -> &'a str {
     params
         .get("account")
@@ -217,7 +326,6 @@ fn resolve_account<'a>(params: &'a Value, config: &'a Config) -> &'a str {
         .unwrap_or(&config.default_account)
 }
 
-/// `limit` param defaulting to 20, clamped to 1..=100.
 fn clamp_limit(params: &Value) -> u64 {
     params
         .get("limit")
@@ -226,7 +334,6 @@ fn clamp_limit(params: &Value) -> u64 {
         .clamp(1, MAX_LIMIT)
 }
 
-/// `peer` param, defaulting to `"self"` (Saved Messages).
 fn optional_peer(params: &Value) -> &str {
     params
         .get("peer")
@@ -235,8 +342,6 @@ fn optional_peer(params: &Value) -> &str {
         .unwrap_or("self")
 }
 
-/// A required non-empty string param; missing/blank surfaces an error naming
-/// the action and key (e.g. `tg_search: query required`).
 fn required_str<'a>(params: &'a Value, key: &str, action: &str) -> Result<&'a str, String> {
     match params.get(key).and_then(|v| v.as_str()) {
         Some(s) if !s.trim().is_empty() => Ok(s),
@@ -244,11 +349,66 @@ fn required_str<'a>(params: &'a Value, key: &str, action: &str) -> Result<&'a st
     }
 }
 
+fn peer_to_string(peer: &grammers_client::types::Peer) -> String {
+    use grammers_client::types::Peer;
+    match peer {
+        Peer::User(u) => format!("user:{}", u.raw.id()),
+        Peer::Group(g) => format!("group:{}", g.id().bare_id()),
+        Peer::Channel(c) => format!("channel:{}", c.raw.id),
+    }
+}
+
+fn parse_peer(s: &str) -> Result<grammers_session::defs::PeerRef, String> {
+    use grammers_session::defs::{PeerAuth, PeerId, PeerRef};
+    if s == "self" {
+        return Ok(PeerRef {
+            id: PeerId::self_user(),
+            auth: PeerAuth::default(),
+        });
+    }
+    if let Some(id) = s.strip_prefix("user:") {
+        let id: i64 = id.parse().map_err(|_| format!("invalid user id: {id}"))?;
+        return Ok(PeerRef {
+            id: PeerId::user(id),
+            auth: PeerAuth::default(),
+        });
+    }
+    if let Some(id) = s.strip_prefix("chat:") {
+        let id: i64 = id.parse().map_err(|_| format!("invalid chat id: {id}"))?;
+        return Ok(PeerRef {
+            id: PeerId::chat(id),
+            auth: PeerAuth::default(),
+        });
+    }
+    if let Some(id) = s.strip_prefix("channel:") {
+        let id: i64 = id.parse().map_err(|_| format!("invalid channel id: {id}"))?;
+        return Ok(PeerRef {
+            id: PeerId::channel(id),
+            auth: PeerAuth::default(),
+        });
+    }
+    if s.starts_with('@') {
+        return Err("username resolution not supported, use id format".into());
+    }
+    if let Ok(id) = s.parse::<i64>() {
+        if id < 0 {
+            return Ok(PeerRef {
+                id: PeerId::channel(id.abs()),
+                auth: PeerAuth::default(),
+            });
+        }
+        return Ok(PeerRef {
+            id: PeerId::user(id),
+            auth: PeerAuth::default(),
+        });
+    }
+    Err(format!("invalid peer format: {s}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use tokio::sync::mpsc;
 
     fn test_config() -> Config {
         Config {
@@ -261,17 +421,15 @@ mod tests {
             }],
             default_account: "personal".into(),
             session_dir: "/tmp".into(),
+            pool: None,
+            start_instant: std::time::Instant::now(),
         }
-    }
-
-    fn rpc() -> Rpc {
-        Rpc::new(mpsc::channel(1).0)
     }
 
     async fn call(action: &str, params: Value) -> Result<HandleResult, String> {
         let cfg = test_config();
         let bytes = serde_json::to_vec(&params).unwrap();
-        handle_action(rpc(), &cfg, action, &bytes).await
+        handle_action(&cfg, action, &bytes).await
     }
 
     #[tokio::test]
@@ -312,22 +470,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tg_send_message_ok_publishes_event() {
-        let res = call("tg_send_message", json!({"peer": "self", "text": "hello"}))
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["peer"], "self");
-        assert_eq!(v["message_id"], 1);
-        assert_eq!(v["text"], "hello");
-
-        let ev = res.event.expect("send should publish a message_sent event");
-        assert_eq!(ev.event_type, "plugin.telegram.message_sent");
-        assert_eq!(ev.payload["peer"], "self");
-        assert_eq!(ev.payload["message_id"], 1);
-    }
-
-    #[tokio::test]
     async fn status_returns_version_and_accounts() {
         let res = call("status", json!({})).await.unwrap();
         let v: Value = serde_json::from_slice(&res.data).unwrap();
@@ -336,24 +478,22 @@ mod tests {
         let accounts = v["accounts"].as_array().unwrap();
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0], "personal");
+        assert!(v["uptime_ms"].as_u64().is_some());
+        assert_eq!(v["engine_ready"], false);
     }
 
     #[tokio::test]
-    async fn tg_list_dialogs_returns_empty_for_stub() {
-        let res = call("tg_list_dialogs", json!({})).await.unwrap();
-        let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["account"], "personal");
-        assert_eq!(v["total"], 0);
+    async fn tg_list_dialogs_no_pool_errors() {
+        let err = call("tg_list_dialogs", json!({})).await.unwrap_err();
+        assert!(err.contains("no telegram accounts connected"), "{err}");
     }
 
     #[tokio::test]
-    async fn tg_get_history_with_peer_returns_empty() {
-        let res = call("tg_get_history", json!({"peer": "test"}))
+    async fn tg_get_history_no_pool_errors() {
+        let err = call("tg_get_history", json!({"peer": "self"}))
             .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["peer"], "test");
-        assert_eq!(v["total"], 0);
+            .unwrap_err();
+        assert!(err.contains("no telegram accounts connected"), "{err}");
     }
 
     #[tokio::test]
@@ -363,12 +503,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn tg_send_message_default_peer_is_self() {
-        let res = call("tg_send_message", json!({"text": "hi"}))
+    async fn tg_send_message_no_pool_errors() {
+        let err = call("tg_send_message", json!({"peer": "self", "text": "hi"}))
             .await
-            .unwrap();
-        let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["peer"], "self");
+            .unwrap_err();
+        assert!(err.contains("no telegram accounts connected"), "{err}");
     }
 
     #[tokio::test]
@@ -379,9 +518,41 @@ mod tests {
 
     #[tokio::test]
     async fn tg_get_message_missing_peer_defaults_to_self() {
-        let res = call("tg_get_message", json!({"id": 1})).await.unwrap();
-        let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["peer"], "self");
-        assert_eq!(v["found"], false);
+        let err = call("tg_get_message", json!({"id": 1})).await.unwrap_err();
+        assert!(err.contains("no telegram accounts connected"), "{err}");
+    }
+
+    #[test]
+    fn parse_peer_self() {
+        assert!(parse_peer("self").is_ok());
+    }
+
+    #[test]
+    fn parse_peer_user_id() {
+        let p = parse_peer("12345").unwrap();
+        assert_eq!(p.id, grammers_session::defs::PeerId::user(12345));
+    }
+
+    #[test]
+    fn parse_peer_negative_is_channel() {
+        let p = parse_peer("-100123").unwrap();
+        assert_eq!(p.id, grammers_session::defs::PeerId::channel(100123));
+    }
+
+    #[test]
+    fn parse_peer_username_unsupported() {
+        assert!(parse_peer("@hello").is_err());
+    }
+
+    #[test]
+    fn parse_peer_prefixed() {
+        assert_eq!(parse_peer("user:1").unwrap().id, grammers_session::defs::PeerId::user(1));
+        assert_eq!(parse_peer("chat:2").unwrap().id, grammers_session::defs::PeerId::chat(2));
+        assert_eq!(parse_peer("channel:3").unwrap().id, grammers_session::defs::PeerId::channel(3));
+    }
+
+    #[test]
+    fn parse_peer_invalid() {
+        assert!(parse_peer("not_a_peer").is_err());
     }
 }

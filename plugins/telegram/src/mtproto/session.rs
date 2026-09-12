@@ -21,8 +21,16 @@ use crate::AccountConfig;
 /// could not outlive the read guard.
 pub struct SessionPool {
     clients: RwLock<HashMap<String, Client>>,
-    /// Network handles kept alive so the sender pools stay connected.
     _handles: RwLock<HashMap<String, SenderPoolHandle>>,
+}
+
+impl std::fmt::Debug for SessionPool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let clients = self.clients.read().unwrap_or_else(|e| e.into_inner());
+        f.debug_struct("SessionPool")
+            .field("accounts", &clients.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl SessionPool {

@@ -1,14 +1,11 @@
 //! telegram plugin — full MTProto user-client (N-account)
 //! Single-reader loop owns VynkorClient; workers use Rpc proxy.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use serde_json::Value;
-use telegram_plugin::{handle_action, Config, Rpc, RpcCall};
-use tokio::sync::{mpsc, oneshot};
+use telegram_plugin::{handle_action, Config};
+use tokio::sync::mpsc;
 use vynkor_sdk::proto::{
-    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish, Pong,
+    envelope, ActionResponse, ActionStatus, Envelope, EventPublish, Pong,
 };
 use vynkor_sdk::{VynkorClient, VynkorError};
 
@@ -86,14 +83,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
         "registered"
     );
 
-    let config = Arc::new(config);
+    let config = std::sync::Arc::new(config);
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(64);
-    let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
-    let rpc = Rpc::new(rpc_tx);
-
-    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> =
-        HashMap::new();
-    let mut seq: u64 = 0;
 
     loop {
         tokio::select! {
@@ -111,11 +102,10 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                     Some(envelope::Payload::Event(e)) => { let _ = client.ack_event(&e.event_id).await; }
                     Some(envelope::Payload::EventPublishAck(_)) => {}
                     Some(envelope::Payload::ActionRequest(req)) => {
-                        let rpc = rpc.clone();
                         let out = outbound_tx.clone();
-                        let cfg = Arc::clone(&config);
+                        let cfg = std::sync::Arc::clone(&config);
                         tokio::spawn(async move {
-                            match handle_action(rpc, &cfg, &req.action, &req.params_json).await {
+                            match handle_action(&cfg, &req.action, &req.params_json).await {
                                 Ok(res) => {
                                     let _ = out.send(action_response(req.action_id, ActionStatus::ActionOk, res.data, String::new())).await;
                                     if let Some(ev) = res.event {
@@ -126,28 +116,11 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                             }
                         });
                     }
-                    Some(envelope::Payload::ActionResponse(resp)) => {
-                        if let Some((action, reply)) = pending.remove(&resp.action_id) {
-                            let result = if resp.status == ActionStatus::ActionOk as i32 {
-                                serde_json::from_slice::<Value>(&resp.data_json).map_err(|e| format!("malformed payload: {e}"))
-                            } else { Err(format!("{action} failed: {}", resp.error)) };
-                            let _ = reply.send(result);
-                        }
-                    }
+                    Some(envelope::Payload::ActionResponse(_)) => {}
                     other => { tracing::warn!(?other, "unhandled envelope"); }
                 }
             }
             Some(env) = outbound_rx.recv() => { let _ = client.send("kernel", env).await; }
-            Some(call) = rpc_rx.recv() => {
-                seq += 1;
-                let action_id = format!("rpc-{seq}");
-                pending.insert(action_id.clone(), (call.action.clone(), call.reply));
-                let env = Envelope { payload: Some(envelope::Payload::ActionRequest(ActionRequest {
-                    action_id, action: call.action, params_json: call.params_json,
-                    timeout_ms: call.timeout_ms, streaming: false, ..Default::default()
-                })), ..Default::default() };
-                let _ = client.send("kernel", env).await;
-            }
         }
     }
     tracing::info!("shutting down");
@@ -159,7 +132,10 @@ async fn main() -> Result<(), VynkorError> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    let config = Config::from_env();
+    let mut config = Config::from_env();
+    if let Err(e) = config.connect_all().await {
+        tracing::error!("failed to connect telegram accounts: {e}");
+    }
     let client = VynkorClient::connect_from_env().await?;
     serve(client, config).await
 }
@@ -170,14 +146,14 @@ mod tests {
 
     #[tokio::test]
     async fn status_returns_accounts() {
-        // smoke — handle_action is pure
         let cfg = Config {
             accounts: vec![],
             default_account: "default".into(),
             session_dir: "/tmp".into(),
+            pool: None,
+            start_instant: std::time::Instant::now(),
         };
-        let rpc = Rpc::new(mpsc::channel(1).0);
-        let res = handle_action(rpc, &cfg, "status", b"{}").await.unwrap();
+        let res = handle_action(&cfg, "status", b"{}").await.unwrap();
         let v: Value = serde_json::from_slice(&res.data).unwrap();
         assert_eq!(v["version"], "0.1.0");
     }
@@ -188,9 +164,10 @@ mod tests {
             accounts: vec![],
             default_account: "default".into(),
             session_dir: "/tmp".into(),
+            pool: None,
+            start_instant: std::time::Instant::now(),
         };
-        let rpc = Rpc::new(mpsc::channel(1).0);
-        let err = handle_action(rpc, &cfg, "bogus", b"{}").await.unwrap_err();
+        let err = handle_action(&cfg, "bogus", b"{}").await.unwrap_err();
         assert!(err.contains("unknown action"));
     }
 }
