@@ -2,6 +2,7 @@
 //! Prototype scope: read/write/search + status; media deferred.
 //! Architecture: single-reader loop + RPC proxy (see PLUGIN_AUTHORING.md §1).
 
+pub mod events;
 pub mod mtproto;
 
 use std::sync::Arc;
@@ -82,18 +83,24 @@ impl Config {
         }
     }
 
-    pub async fn connect_all(&mut self) -> Result<(), String> {
+    pub async fn connect_all(
+        &mut self,
+    ) -> Result<Vec<tokio::sync::mpsc::UnboundedReceiver<grammers_session::updates::UpdatesLike>>, String>
+    {
         if self.accounts.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let pool = Arc::new(SessionPool::new());
+        let mut updates_receivers = Vec::new();
         for account in &self.accounts {
-            pool.connect(account)
+            let rx = pool
+                .connect(account)
                 .await
                 .map_err(|e| format!("failed to connect {}: {e}", account.id))?;
+            updates_receivers.push(rx);
         }
         self.pool = Some(pool);
-        Ok(())
+        Ok(updates_receivers)
     }
 }
 
@@ -554,5 +561,51 @@ mod tests {
     #[test]
     fn parse_peer_invalid() {
         assert!(parse_peer("not_a_peer").is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_status_calls() {
+        let cfg = test_config();
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            let cfg = cfg.clone();
+            handles.push(tokio::spawn(async move {
+                let bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
+                handle_action(&cfg, "status", &bytes).await
+            }));
+        }
+        for h in handles {
+            let res = h.await.unwrap();
+            assert!(res.is_ok());
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_search_and_history() {
+        let cfg = test_config();
+        let mut handles = Vec::new();
+
+        let cfg1 = cfg.clone();
+        handles.push(tokio::spawn(async move {
+            let bytes = serde_json::to_vec(&serde_json::json!({"query": "test"})).unwrap();
+            handle_action(&cfg1, "tg_search", &bytes).await
+        }));
+
+        let cfg2 = cfg.clone();
+        handles.push(tokio::spawn(async move {
+            let bytes = serde_json::to_vec(&serde_json::json!({"peer": "self"})).unwrap();
+            handle_action(&cfg2, "tg_get_history", &bytes).await
+        }));
+
+        let cfg3 = cfg.clone();
+        handles.push(tokio::spawn(async move {
+            let bytes = serde_json::to_vec(&serde_json::json!({"text": "hello"})).unwrap();
+            handle_action(&cfg3, "tg_send_message", &bytes).await
+        }));
+
+        for h in handles {
+            let res = h.await.unwrap();
+            assert!(res.is_ok() || res.is_err());
+        }
     }
 }

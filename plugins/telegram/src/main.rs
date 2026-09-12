@@ -133,9 +133,28 @@ async fn main() -> Result<(), VynkorError> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
     let mut config = Config::from_env();
-    if let Err(e) = config.connect_all().await {
-        tracing::error!("failed to connect telegram accounts: {e}");
+    let updates_receivers = match config.connect_all().await {
+        Ok(rx) => rx,
+        Err(e) => {
+            tracing::error!("failed to connect telegram accounts: {e}");
+            Vec::new()
+        }
+    };
+
+    if let Some(pool) = &config.pool {
+        for (account, updates_rx) in config.accounts.iter().zip(updates_receivers) {
+            if let Some(client) = pool.get(&account.id) {
+                let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
+                telegram_plugin::events::spawn_live_listener(client, updates_rx, event_tx);
+                tokio::spawn(async move {
+                    while let Some(_ev) = event_rx.recv().await {
+                        tracing::debug!("new_message event ready");
+                    }
+                });
+            }
+        }
     }
+
     let client = VynkorClient::connect_from_env().await?;
     serve(client, config).await
 }

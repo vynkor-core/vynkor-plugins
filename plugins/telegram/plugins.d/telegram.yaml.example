@@ -1,0 +1,14 @@
+# Telegram plugin drop-in for vyn kernel
+# Place this file in ~/.config/vyn/plugins.d/telegram.yaml
+# Requires: vyn kernel running, telegram account authenticated
+
+plugin_id: telegram
+jwt_secret: ${VYN_JWT_SECRET}
+jwt_token: ${VYNKOR_JWT_TOKEN}
+sandbox: false
+env:
+  - TELEGRAM_PLUGIN_ACCOUNTS=default
+  - TELEGRAM_PLUGIN_API_ID_default=${TELEGRAM_API_ID}
+  - TELEGRAM_PLUGIN_API_HASH_default=${TELEGRAM_API_HASH}
+  - TELEGRAM_PLUGIN_PHONE_default=${TELEGRAM_PHONE}
+  - TELEGRAM_PLUGIN_SESSION_DIR=~/.local/share/vyn/telegram
