@@ -16,7 +16,10 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::config::{clamp_max_read, Config};
-use crate::request::{parse_request, ListParams, ReadParams, Request, WriteParams};
+use crate::request::{
+    parse_request, DeleteParams, ListParams, MkdirParams, MoveParams, ReadParams, RenameParams,
+    Request, WriteParams,
+};
 use crate::sandbox::Sandbox;
 
 pub struct Handler {
@@ -37,6 +40,7 @@ impl Handler {
             Request::Delete(p) => self.fs_delete(&p),
             Request::Mkdir(p) => self.fs_mkdir(&p),
             Request::Rename(p) => self.fs_rename(&p),
+            Request::Move(p) => self.fs_move(&p),
         }
     }
 
@@ -174,7 +178,7 @@ impl Handler {
         }))
     }
 
-    pub fn fs_delete(&self, p: &crate::request::DeleteParams) -> Result<Value, String> {
+    pub fn fs_delete(&self, p: &DeleteParams) -> Result<Value, String> {
         let resolved = self.sandbox.resolve(Path::new(&p.path))?;
         if resolved.is_root {
             return Err(format!("ERR_FILES_IS_A_DIRECTORY: refusing to delete allowed root {}", p.path));
@@ -194,7 +198,7 @@ impl Handler {
         }
     }
 
-    pub fn fs_mkdir(&self, p: &crate::request::MkdirParams) -> Result<Value, String> {
+    pub fn fs_mkdir(&self, p: &MkdirParams) -> Result<Value, String> {
         let resolved = self.sandbox.resolve(Path::new(&p.path))?;
         if resolved.path.exists() {
             let m = fs::symlink_metadata(&resolved.path).map_err(|e| not_found_or_io(&p.path, e))?;
@@ -212,7 +216,7 @@ impl Handler {
         Ok(json!({"created": true, "path": resolved.path.display().to_string()}))
     }
 
-    pub fn fs_rename(&self, p: &crate::request::RenameParams) -> Result<Value, String> {
+    pub fn fs_rename(&self, p: &RenameParams) -> Result<Value, String> {
         let from_resolved = self.sandbox.resolve(Path::new(&p.from))?;
         let to_resolved = self.sandbox.resolve(Path::new(&p.to))?;
         if from_resolved.is_root || to_resolved.is_root {
@@ -239,6 +243,35 @@ impl Handler {
         }
         fs::rename(&from_resolved.path, &to_resolved.path).map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
         Ok(json!({"renamed": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}))
+    }
+
+    pub fn fs_move(&self, p: &MoveParams) -> Result<Value, String> {
+        let from_resolved = self.sandbox.resolve(Path::new(&p.from))?;
+        let to_resolved = self.sandbox.resolve(Path::new(&p.to))?;
+        if from_resolved.is_root || to_resolved.is_root {
+            return Err("ERR_FILES_IS_A_DIRECTORY: refusing to move allowed root".into());
+        }
+        let from_meta = fs::symlink_metadata(&from_resolved.path).map_err(|e| not_found_or_io(&p.from, e))?;
+        let _ = from_meta;
+        if to_resolved.path.exists() && !p.overwrite {
+            return Err(format!("ERR_FILES_EXISTS: destination {} already exists (set overwrite=true)", p.to));
+        }
+        if let Some(parent) = to_resolved.path.parent() {
+            if !parent.is_dir() {
+                return Err(format!("ERR_FILES_NOT_FOUND: destination parent {} does not exist", parent.display()));
+            }
+        }
+        // If overwrite and destination exists, remove it first (file or dir)
+        if p.overwrite && to_resolved.path.exists() {
+            let m = fs::symlink_metadata(&to_resolved.path).map_err(|e| not_found_or_io(&p.to, e))?;
+            if m.is_dir() && !m.file_type().is_symlink() {
+                fs::remove_dir_all(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
+            } else {
+                fs::remove_file(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
+            }
+        }
+        fs::rename(&from_resolved.path, &to_resolved.path).map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
+        Ok(json!({"moved": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}))
     }
 }
 
@@ -794,5 +827,235 @@ mod tests {
             })
             .unwrap();
         assert_eq!(out["data"], "t");
+    }
+
+
+    #[test]
+    fn delete_existing_file_to_trash_moves_it_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("victim.txt");
+        std::fs::write(&file, b"bye").unwrap();
+        // Confine freedesktop Trash to the tempdir so tests never touch $HOME.
+        std::env::set_var("XDG_DATA_HOME", dir.path().join("xdg").display().to_string());
+
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_delete(&DeleteParams {
+                path: file.display().to_string(),
+                to_trash: true,
+            })
+            .unwrap();
+        assert_eq!(out["deleted"], true);
+        assert_eq!(out["trashed"], true);
+        assert!(!file.exists(), "source file should be gone after trashing");
+    }
+
+    #[test]
+    fn delete_permanently_removes_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("gone.txt");
+        std::fs::write(&file, b"x").unwrap();
+
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_delete(&DeleteParams {
+                path: file.display().to_string(),
+                to_trash: false,
+            })
+            .unwrap();
+        assert_eq!(out["deleted"], true);
+        assert_eq!(out["trashed"], false);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn delete_non_existent_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let err = h
+            .fs_delete(&DeleteParams {
+                path: dir.path().join("nope.txt").display().to_string(),
+                to_trash: true,
+            })
+            .unwrap_err();
+        assert!(err.contains("ERR_FILES_NOT_FOUND"), "{err}");
+    }
+
+    #[test]
+    fn delete_root_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let err = h
+            .fs_delete(&DeleteParams {
+                path: dir.path().display().to_string(),
+                to_trash: true,
+            })
+            .unwrap_err();
+        assert!(err.contains("refusing to delete allowed root"), "{err}");
+    }
+
+
+    #[test]
+    fn mkdir_creates_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let target = dir.path().join("newdir");
+        let out = h
+            .fs_mkdir(&MkdirParams {
+                path: target.display().to_string(),
+                parents: false,
+            })
+            .unwrap();
+        assert_eq!(out["created"], true);
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn mkdir_with_parents_creates_nested_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let target = dir.path().join("a/b/c");
+        let out = h
+            .fs_mkdir(&MkdirParams {
+                path: target.display().to_string(),
+                parents: true,
+            })
+            .unwrap();
+        assert_eq!(out["created"], true);
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn mkdir_existing_dir_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_mkdir(&MkdirParams {
+                path: dir.path().join("sub").display().to_string(),
+                parents: false,
+            })
+            .unwrap();
+        assert_eq!(out["created"], false);
+    }
+
+    #[test]
+    fn mkdir_onto_existing_file_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("f.txt"), b"x").unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let err = h
+            .fs_mkdir(&MkdirParams {
+                path: dir.path().join("f.txt").display().to_string(),
+                parents: false,
+            })
+            .unwrap_err();
+        assert!(err.contains("ERR_FILES_EXISTS"), "{err}");
+    }
+
+
+    #[test]
+    fn rename_moves_file_within_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        std::fs::write(&src, b"content").unwrap();
+
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_rename(&RenameParams {
+                from: src.display().to_string(),
+                to: dst.display().to_string(),
+                overwrite: false,
+            })
+            .unwrap();
+        assert_eq!(out["renamed"], true);
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "content");
+    }
+
+    #[test]
+    fn rename_across_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("sub/a.txt");
+        std::fs::write(&src, b"moved").unwrap();
+
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_rename(&RenameParams {
+                from: src.display().to_string(),
+                to: dst.display().to_string(),
+                overwrite: false,
+            })
+            .unwrap();
+        assert_eq!(out["renamed"], true);
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "moved");
+    }
+
+    #[test]
+    fn rename_overwrite_flag_gates_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.txt");
+        let dst = dir.path().join("dst.txt");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"old").unwrap();
+
+        let h = handler_with_root(dir.path(), 1000);
+        let err = h
+            .fs_rename(&RenameParams {
+                from: src.display().to_string(),
+                to: dst.display().to_string(),
+                overwrite: false,
+            })
+            .unwrap_err();
+        assert!(err.contains("ERR_FILES_EXISTS"), "{err}");
+
+        h.fs_rename(&RenameParams {
+            from: src.display().to_string(),
+            to: dst.display().to_string(),
+            overwrite: true,
+        })
+        .unwrap();
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "new");
+    }
+
+
+    #[test]
+    fn move_file_across_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("sub/b.txt");
+        std::fs::write(&src, b"relocated").unwrap();
+
+        let h = handler_with_root(dir.path(), 1000);
+        let out = h
+            .fs_move(&MoveParams {
+                from: src.display().to_string(),
+                to: dst.display().to_string(),
+                overwrite: false,
+            })
+            .unwrap();
+        assert_eq!(out["moved"], true);
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "relocated");
+    }
+
+    #[test]
+    fn move_non_existent_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = handler_with_root(dir.path(), 1000);
+        let err = h
+            .fs_move(&MoveParams {
+                from: dir.path().join("missing.txt").display().to_string(),
+                to: dir.path().join("dest.txt").display().to_string(),
+                overwrite: false,
+            })
+            .unwrap_err();
+        assert!(err.contains("ERR_FILES_NOT_FOUND"), "{err}");
     }
 }
