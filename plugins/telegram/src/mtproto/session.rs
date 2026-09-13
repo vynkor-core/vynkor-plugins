@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::RwLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use grammers_client::Client;
+use grammers_client::types::Dialog;
 use grammers_mtsender::{SenderPool, SenderPoolHandle};
 use grammers_session::storages::SqliteSession;
 use grammers_session::updates::UpdatesLike;
@@ -12,10 +14,18 @@ use tokio::sync::mpsc;
 use crate::AccountConfig;
 use crate::mtproto::Antiban;
 
+const DIALOG_CACHE_TTL: Duration = Duration::from_secs(10);
+
+struct DialogCacheEntry {
+    fetched_at: Instant,
+    dialogs: Vec<Dialog>,
+}
+
 pub struct SessionPool {
     clients: RwLock<HashMap<String, Client>>,
     _handles: RwLock<HashMap<String, SenderPoolHandle>>,
     pub antiban: Arc<Antiban>,
+    dialog_cache: RwLock<HashMap<String, DialogCacheEntry>>,
 }
 
 impl std::fmt::Debug for SessionPool {
@@ -33,6 +43,52 @@ impl SessionPool {
             clients: RwLock::new(HashMap::new()),
             _handles: RwLock::new(HashMap::new()),
             antiban: Arc::new(Antiban::new()),
+            dialog_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    pub async fn get_dialogs_cached(
+        &self,
+        account: &str,
+        client: &Client,
+    ) -> Result<Vec<Dialog>, String> {
+        {
+            let cache = self
+                .dialog_cache
+                .read()
+                .unwrap_or_else(|e| e.into_inner());
+            if let Some(entry) = cache.get(account) {
+                if entry.fetched_at.elapsed() < DIALOG_CACHE_TTL {
+                    return Ok(entry.dialogs.clone());
+                }
+            }
+        }
+        let mut iter = client.iter_dialogs();
+        let mut dialogs = Vec::new();
+        while let Some(d) = iter
+            .next()
+            .await
+            .map_err(|e| format!("dialog iter: {e}"))?
+        {
+            dialogs.push(d);
+        }
+        let mut cache = self
+            .dialog_cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        cache.insert(
+            account.to_string(),
+            DialogCacheEntry {
+                fetched_at: Instant::now(),
+                dialogs: dialogs.clone(),
+            },
+        );
+        Ok(dialogs)
+    }
+
+    pub fn invalidate_dialogs(&self, account: &str) {
+        if let Ok(mut cache) = self.dialog_cache.write() {
+            cache.remove(account);
         }
     }
 

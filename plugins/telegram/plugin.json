@@ -23,7 +23,7 @@
     },
     {
       "name": "tg_list_dialogs",
-      "description": "List Telegram dialogs with names/usernames + unread_count; supports query/limit/account/unread_only, returns peer+name+username+peer_type+id+unread"
+      "description": "List dialogs with names/usernames + unread; query/limit/account/unread_only/fields(minimal/full or comma list like peer,name,unread_count), 10s cache"
     },
     {
       "name": "tg_get_history",
@@ -97,23 +97,23 @@
     },
     {
       "name": "tg_get_chat_info",
-      "description": "Get chat info by peer (peer string) — returns name, username, peer_type, id, phone etc."
+      "description": "Get chat info by peer — fields filter, 10s cache, returns name, username, peer_type, id, phone etc."
     },
     {
       "name": "tg_get_user",
-      "description": "Get user profile by peer — returns full_name, first/last, username, phone, contact flags"
+      "description": "Get user by peer — fields filter, 10s cache, returns full_name, first/last, username, phone"
     },
     {
       "name": "tg_list_contacts",
-      "description": "List Telegram contacts (phonebook) — filters by query over name/username/phone, returns peer+name+phone+usernames"
+      "description": "List contacts (phonebook) — query/limit/account/fields, 10s cache, returns peer+name+phone+usernames"
     },
     {
       "name": "tg_get_contact",
-      "description": "Get single contact detail by peer — returns name, usernames, phone, is_contact/mutual/bot/verified"
+      "description": "Get contact by peer — fields filter, 10s cache, returns name, usernames, phone, is_contact/mutual"
     },
     {
       "name": "tg_list_unread",
-      "description": "List all dialogs with unread messages — returns peer+name+unread_count+unread_mentions and unread_messages (limit/message_limit/account)"
+      "description": "List unread dialogs — limit/account/fields/include_messages(false by default)/message_limit, 10s cache"
     },
     {
       "name": "tg_get_unread",

@@ -7,18 +7,18 @@ Full MTProto user-client for vynkor (N-account, Rust + Grammers). Acts as your d
 | Action | Params | Result | Confirmation |
 |---|---|---|---|
 | `status` | `{}` | `{version, accounts[], default_account, uptime_ms, engine_ready}` | — |
-| `tg_list_dialogs` | `{account?, limit?, query?, unread_only?}` | `{account, dialogs: [{peer, peer_type, id, name, username, phone, unread_count, unread_mentions}], total, matched?}` | — |
+| `tg_list_dialogs` | `{account?, limit?, query?, unread_only?, fields?}` | `{account, dialogs: [{peer, name, unread_count}], total, matched?}` — `fields=minimal/full or peer,name,unread_count`, 10s cache | — |
 | `tg_get_history` | `{account?, peer, limit?}` | `{peer, messages: [...], total}` | — |
 | `tg_get_message` | `{account?, peer, id}` | `{found, message?}` | — |
 | `tg_search` | `{account?, query, limit?}` | `{query, messages: [...], total}` | — |
-| `tg_send_message` | `{account?, peer, text, reply_to?, no_typing?}` | `{peer, message_id}` — auto typing before send (10ms/char) | — |
+| `tg_send_message` | `{account?, peer, text, reply_to?, no_typing?}` | `{peer, message_id}` — auto typing before send (10ms/char), invalidates dialog cache | — |
 | `tg_send_action` / `tg_set_typing` | `{account?, peer, action, progress?, duration_ms?}` | `{peer, action, duration_ms}` | — |
-| `tg_list_contacts` | `{account?, limit?, query?}` | `{account, contacts: [{peer, name, phone, username}], total}` | — |
-| `tg_get_contact` | `{account?, peer}` | `{peer, name, phone, username, is_contact, ...}` | — |
-| `tg_list_unread` / `tg_get_unread` | `{account?, limit?, include_messages?, message_limit?}` | `{account, dialogs: [{peer, name, unread_count, unread_messages: [...] }], total_unread_dialogs, total_unread_messages}` | — |
-| `tg_mark_read` / `tg_mark_all_read` | `{account?, peer?, max_id?}` | `{peer, marked, max_id} / {marked, errors}` | — |
-| `tg_get_chat_info` | `{account?, peer}` | `{peer, name, username, phone, peer_type, ...}` | — |
-| `tg_get_user` | `{account?, peer}` | `{peer, name, first_name, last_name, username, phone, ...}` | — |
+| `tg_list_contacts` | `{account?, limit?, query?, fields?}` | `{account, contacts: [{peer, name, phone}], total}` — `fields`, 10s cache | — |
+| `tg_get_contact` | `{account?, peer, fields?}` | `{peer, name, phone, ...}` — `fields`, 10s cache | — |
+| `tg_list_unread` / `tg_get_unread` | `{account?, limit?, fields?, include_messages? (default false), message_limit?}` | `{account, dialogs: [{peer, name, unread_count, unread_messages?}], total_unread_dialogs}` — 10s cache | — |
+| `tg_mark_read` / `tg_mark_all_read` | `{account?, peer?, max_id?}` | `{peer, marked, max_id} / {marked, errors}` — invalidates cache | — |
+| `tg_get_chat_info` | `{account?, peer, fields?}` | `{peer, name, ...}` — `fields`, 10s cache | — |
+| `tg_get_user` | `{account?, peer, fields?}` | `{peer, name, ...}` — `fields`, 10s cache | — |
 | `tg_edit_message` | `{account?, peer, message_id, text}` | `{peer, message_id, edited}` | ⚠️ |
 | `tg_delete_message` | `{account?, peer, message_id}` | `{peer, message_id, deleted}` | ⚠️ |
 | `tg_forward_message` | `{account?, from_peer, to_peer, message_id}` | `{from_peer, to_peer, new_id}` | ⚠️ |
