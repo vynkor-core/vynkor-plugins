@@ -223,29 +223,15 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
         .unwrap_or(false);
 
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        total += 1;
         let (unread_count, unread_mentions, unread_mark) = dialog_unread(&dialog);
         if unread_only && unread_count == 0 && !unread_mark {
             continue;
         }
-        total += 1;
         let peer = dialog.peer();
         if let Some(ref q) = query {
-            let name = peer.name().unwrap_or("").to_lowercase();
-            let username = peer.username().unwrap_or("").to_lowercase();
-            let first_last = match peer {
-                grammers_client::types::Peer::User(u) => u.full_name().to_lowercase(),
-                _ => String::new(),
-            };
-            let hay = format!("{name} {username} {first_last}");
-            if !hay.contains(q) && !peer_to_string(peer).to_lowercase().contains(q) {
-                if let grammers_client::types::Peer::User(u) = peer {
-                    let phone = u.phone().unwrap_or("").to_lowercase();
-                    if !phone.contains(q) {
-                        continue;
-                    }
-                } else {
-                    continue;
-                }
+            if !peer_matches_query(peer, q) {
+                continue;
             }
             matched_total += 1;
             if result.len() >= limit as usize {
@@ -260,9 +246,6 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
         entry["unread_mentions"] = serde_json::json!(unread_mentions);
         entry["unread_mark"] = serde_json::json!(unread_mark);
         result.push(entry);
-        if query.is_some() && matched_total == 0 {
-            matched_total = result.len() as u64;
-        }
     }
 
     let v = if query.is_some() {
@@ -1309,6 +1292,24 @@ fn peer_to_details(peer: &grammers_client::types::Peer) -> Value {
             "title": c.title(),
         }),
     }
+}
+
+fn peer_matches_query(peer: &grammers_client::types::Peer, q: &str) -> bool {
+    if peer.name().is_some_and(|s| s.to_lowercase().contains(q)) {
+        return true;
+    }
+    if peer.username().is_some_and(|s| s.to_lowercase().contains(q)) {
+        return true;
+    }
+    if let grammers_client::types::Peer::User(u) = peer {
+        if u.full_name().to_lowercase().contains(q) {
+            return true;
+        }
+        if u.phone().is_some_and(|s| s.to_lowercase().contains(q)) {
+            return true;
+        }
+    }
+    peer_to_string(peer).to_lowercase().contains(q)
 }
 
 fn peer_to_string(peer: &grammers_client::types::Peer) -> String {
