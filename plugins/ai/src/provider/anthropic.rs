@@ -36,8 +36,21 @@ impl Provider for AnthropicProvider {
     fn build_http_request(&self, params: &ChatCompletionParams, api_key: &str) -> HttpRequestJson {
         let url = format!("{}/v1/messages", params.base_url.trim_end_matches('/'));
 
-        let messages: Vec<serde_json::Value> =
+        let mut messages: Vec<serde_json::Value> =
             params.messages.iter().map(message_json).collect();
+        let cache_enabled = std::env::var("AI_PROMPT_CACHE")
+            .map(|v| !v.trim().eq_ignore_ascii_case("off") && v.trim() != "0" && !v.trim().eq_ignore_ascii_case("false"))
+            .unwrap_or(true);
+        if cache_enabled && !messages.is_empty() {
+            if let Some(first) = messages.get_mut(0) {
+                if let Some(content) = first.get("content").and_then(|c| c.as_str()) {
+                    if content.len() > 800 {
+                        let cached = serde_json::json!([{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]);
+                        first["content"] = cached;
+                    }
+                }
+            }
+        }
 
         let mut body = serde_json::json!({
             "model": params.model,
@@ -45,22 +58,30 @@ impl Provider for AnthropicProvider {
             "messages": messages,
         });
         if !params.tools.is_empty() {
-            body["tools"] = serde_json::Value::Array(
-                params
-                    .tools
-                    .iter()
-                    .map(|t| {
-                        serde_json::json!({
-                            "name": t.name,
-                            "description": t.description,
-                            "input_schema": t.input_schema,
-                        })
+            let mut tools: Vec<serde_json::Value> = params
+                .tools
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
                     })
-                    .collect(),
-            );
+                })
+                .collect();
+            if cache_enabled && !tools.is_empty() {
+                if let Some(last) = tools.last_mut() {
+                    last["cache_control"] = serde_json::json!({"type": "ephemeral"});
+                }
+            }
+            body["tools"] = serde_json::Value::Array(tools);
         }
         if let Some(system) = params.system_prompt.as_deref().filter(|s| !s.is_empty()) {
-            body["system"] = system.into();
+            if cache_enabled {
+                body["system"] = serde_json::json!([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]);
+            } else {
+                body["system"] = system.into();
+            }
         }
         let body = body.to_string();
 

@@ -157,6 +157,77 @@ pub async fn chat_with_fallback(
     }
 }
 
+#[allow(clippy::match_like_matches_macro)]
+pub fn is_dynamic_catalog_enabled() -> bool {
+    match std::env::var("AGENT_PLUGIN_DYNAMIC_CATALOG")
+        .unwrap_or_else(|_| "on".into())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" | "false" | "0" | "no" => false,
+        _ => true,
+    }
+}
+
+#[allow(clippy::needless_bool)]
+pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog {
+    if !is_dynamic_catalog_enabled() || goal.trim().is_empty() {
+        return catalog.clone();
+    }
+    let hay = format!("{} {}", goal, context).to_lowercase();
+    let is_telegram = hay.contains("телег") || hay.contains("telegram") || hay.contains("tg_") || hay.contains("tg-") || hay.contains("чат") || hay.contains("сообщ") || hay.contains("диалог") || hay.contains("контакт") || hay.contains("непрочит") || hay.contains("артем") || hay.contains("артём") || hay.contains("loner");
+    let is_email = hay.contains("почт") || hay.contains("email") || hay.contains("письм") || hay.contains("imap") || hay.contains("smtp");
+    let is_calendar = hay.contains("календ") || hay.contains("встреч") || hay.contains("событ") || hay.contains("напомин") || hay.contains("schedule") || hay.contains("calendar") || hay.contains("event");
+    let is_fs = hay.contains("файл") || hay.contains("папк") || hay.contains("директ") || hay.contains("fs_") || hay.contains("filesystem");
+    let is_notes = hay.contains("заметк") || hay.contains("note");
+    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("mpris") || hay.contains("media");
+    let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
+    let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
+    let is_any_telegram = hay.contains("telegram") || is_telegram;
+
+    let mut filtered: Vec<crate::tools::ToolSpec> = Vec::new();
+    for tool in &catalog.tools {
+        let name = tool.name.as_str();
+        let keep = if name.starts_with("tg_") {
+            is_any_telegram || hay.contains("tg") || hay.is_empty()
+        } else if name.starts_with("email_") {
+            is_email
+        } else if name.starts_with("event_") || name.starts_with("schedule_") {
+            is_calendar
+        } else if name.starts_with("fs_") {
+            is_fs
+        } else if name.starts_with("note_") {
+            is_notes
+        } else if name.starts_with("media_") {
+            is_media
+        } else if name.starts_with("sys_") {
+            is_system
+        } else if name == "web_search" || name == "http_request" {
+            is_web || is_any_telegram
+        } else if name.starts_with("vec_") || name.starts_with("tts_") || name.starts_with("stt_") || name.starts_with("mic_") || name.starts_with("sound_") || name.starts_with("daemon_") || name.starts_with("hotkey_") || name.starts_with("launch") || name.starts_with("clipboard") || name.starts_with("vector") {
+            false
+        } else {
+            true
+        };
+        if keep {
+            filtered.push(tool.clone());
+        }
+    }
+    if filtered.len() < 3 || filtered.len() == catalog.tools.len() {
+        return catalog.clone();
+    }
+    let has_filtered = filtered.iter().any(|t| t.name.starts_with("tg_"));
+    if is_any_telegram && !has_filtered {
+        return catalog.clone();
+    }
+    Catalog {
+        tools: filtered,
+        allowed_actions: catalog.allowed_actions.clone(),
+        tools_file_set: catalog.tools_file_set,
+    }
+}
+
 /// Build the instructions message that carries the tool catalog. `ai`
 /// resolves `system_prompt` only from an `agent_id` profile (never from
 /// callers), so the portable place for operator-free instructions is a
