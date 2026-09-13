@@ -184,6 +184,8 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
     let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("mpris") || hay.contains("media");
     let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
     let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
+    let is_memory = hay.contains("помни") || hay.contains("память") || hay.contains("вспомн") || hay.contains("запомн") || hay.contains("обо мне") || hay.contains("про меня") || hay.contains("обо_мне") || hay.contains("факт") || hay.contains("memory") || hay.contains("вектор") || hay.contains("vector") || hay.contains("векторн");
+    let is_db = hay.contains("бд") || hay.contains("баз") || hay.contains("db_") || hay.contains("database") || hay.contains("vector") || hay.contains("вектор") || is_memory;
     let is_any_telegram = hay.contains("telegram") || is_telegram;
 
     let mut filtered: Vec<crate::tools::ToolSpec> = Vec::new();
@@ -198,14 +200,20 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
         } else if name.starts_with("fs_") {
             is_fs
         } else if name.starts_with("note_") {
-            is_notes
+            is_notes || is_memory
         } else if name.starts_with("media_") {
             is_media
         } else if name.starts_with("sys_") {
             is_system
         } else if name == "web_search" || name == "http_request" {
             is_web || is_any_telegram
-        } else if name.starts_with("vec_") || name.starts_with("tts_") || name.starts_with("stt_") || name.starts_with("mic_") || name.starts_with("sound_") || name.starts_with("daemon_") || name.starts_with("hotkey_") || name.starts_with("launch") || name.starts_with("clipboard") || name.starts_with("vector") {
+        } else if name.starts_with("vec_") || name.starts_with("vector") {
+            is_memory || is_db || hay.contains("vec") || hay.contains("вектор")
+        } else if name.starts_with("db_") {
+            is_memory || is_db || hay.contains("db") || hay.contains("баз")
+        } else if name.starts_with("tts_") || name.starts_with("stt_") || name.starts_with("mic_") || name.starts_with("sound_") {
+            is_media || hay.contains("tts") || hay.contains("stt") || hay.contains("озвуч") || hay.contains("говор")
+        } else if name.starts_with("daemon_") || name.starts_with("hotkey_") || name.starts_with("launch") || name.starts_with("clipboard") {
             false
         } else {
             true
