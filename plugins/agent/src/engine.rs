@@ -141,10 +141,11 @@ pub async fn run(
 ) -> Result<(), String> {
     let effective = llm::filtered_catalog(catalog, &doc.goal, &doc.context);
     let llm_catalog = &effective;
+    let dispatch_catalog = catalog;
     match entry {
         Entry::Fresh => {
             doc.status = store::STATUS_RUNNING.to_string();
-            doc.transcript = llm::opening_messages(&doc.goal, &doc.context, llm_catalog);
+            doc.transcript = llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;
