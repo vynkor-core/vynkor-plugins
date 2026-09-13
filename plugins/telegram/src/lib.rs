@@ -209,9 +209,10 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
+    let fields = parse_fields_param(params);
     let client = get_client(config, account)?;
 
-    let mut dialogs = client.iter_dialogs();
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
     let mut result = Vec::new();
     let mut total = 0u64;
     let mut matched_total = 0u64;
@@ -222,9 +223,9 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+    for dialog in dialogs.iter() {
         total += 1;
-        let (unread_count, unread_mentions, unread_mark) = dialog_unread(&dialog);
+        let (unread_count, unread_mentions, unread_mark) = dialog_unread(dialog);
         if unread_only && unread_count == 0 && !unread_mark {
             continue;
         }
@@ -245,6 +246,7 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
         entry["unread_count"] = serde_json::json!(unread_count);
         entry["unread_mentions"] = serde_json::json!(unread_mentions);
         entry["unread_mark"] = serde_json::json!(unread_mark);
+        entry = apply_fields_filter(entry, fields.as_deref());
         result.push(entry);
     }
 
@@ -392,6 +394,9 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
     let sent = client.send_message(peer, msg).await
         .map_err(|e| format!("send_message failed: {e}"))?;
 
+    if let Some(pool) = &config.pool {
+        pool.invalidate_dialogs(account);
+    }
     config.metrics.messages_sent.fetch_add(1, Ordering::Relaxed);
 
     let message_id = sent.id();
@@ -826,12 +831,14 @@ async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleR
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
+    for dialog in dialogs.iter() {
         let dp = dialog.peer();
         if dp.id() == peer.id {
             let mut v = peer_to_details(dp);
             v["peer"] = serde_json::json!(peer_str);
+            let fields = parse_fields_param(params);
+            v = apply_fields_filter(v, fields.as_deref());
             return Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -849,12 +856,14 @@ async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
+    for dialog in dialogs.iter() {
         let dp = dialog.peer();
         if dp.id() == peer.id {
             let mut v = peer_to_details(dp);
             v["peer"] = serde_json::json!(peer_str);
+            let fields = parse_fields_param(params);
+            v = apply_fields_filter(v, fields.as_deref());
             return Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -876,13 +885,14 @@ async fn handle_list_contacts(config: &Config, params: &Value) -> Result<HandleR
         .and_then(|v| v.as_str())
         .map(|s| s.trim().to_lowercase())
         .filter(|s| !s.is_empty());
+    let fields = parse_fields_param(params);
     let client = get_client(config, account)?;
-    let mut dialogs = client.iter_dialogs();
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
     let mut result = Vec::new();
     let mut total = 0u64;
     let mut matched = 0u64;
 
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+    for dialog in dialogs.iter() {
         let peer = dialog.peer();
         let user = match peer {
             grammers_client::types::Peer::User(u) => u,
@@ -915,6 +925,7 @@ async fn handle_list_contacts(config: &Config, params: &Value) -> Result<HandleR
         }
         let mut entry = peer_to_details(peer);
         entry["peer"] = serde_json::Value::String(peer_to_string(peer));
+        entry = apply_fields_filter(entry, fields.as_deref());
         result.push(entry);
     }
 
@@ -936,13 +947,15 @@ async fn handle_get_contact(config: &Config, params: &Value) -> Result<HandleRes
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
-    let mut dialogs = client.iter_dialogs();
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
+    for dialog in dialogs.iter() {
         let dp = dialog.peer();
         if dp.id() == peer.id {
             let mut v = peer_to_details(dp);
             v["peer"] = serde_json::json!(peer_str);
             v["found"] = serde_json::json!(true);
+            let fields = parse_fields_param(params);
+            v = apply_fields_filter(v, fields.as_deref());
             return Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -960,20 +973,21 @@ async fn handle_list_unread(config: &Config, params: &Value) -> Result<HandleRes
     let include_messages = params
         .get("include_messages")
         .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     let message_limit = params
         .get("message_limit")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
+    let fields = parse_fields_param(params);
     let client = get_client(config, account)?;
 
-    let mut dialogs = client.iter_dialogs();
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
     let mut result = Vec::new();
     let mut total_unread_dialogs = 0u64;
     let mut total_unread_messages = 0u64;
 
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
-        let (unread_count, unread_mentions, unread_mark) = dialog_unread(&dialog);
+    for dialog in dialogs.iter() {
+        let (unread_count, unread_mentions, unread_mark) = dialog_unread(dialog);
         if unread_count == 0 && !unread_mark {
             continue;
         }
@@ -1015,6 +1029,7 @@ async fn handle_list_unread(config: &Config, params: &Value) -> Result<HandleRes
             }
             entry["unread_messages"] = serde_json::json!(msgs);
         }
+        entry = apply_fields_filter(entry, fields.as_deref());
 
         result.push(entry);
     }
@@ -1076,6 +1091,9 @@ async fn handle_mark_read(config: &Config, params: &Value) -> Result<HandleResul
                 .await
                 .map_err(|e| format!("tg_mark_read failed for {peer_str}: {e}"))?;
         }
+        if let Some(pool) = &config.pool {
+            pool.invalidate_dialogs(account);
+        }
         let v = serde_json::json!({"peer": peer_str, "marked": true, "max_id": max_id});
         return Ok(HandleResult {
             data: serde_json::to_vec(&v).unwrap(),
@@ -1083,11 +1101,11 @@ async fn handle_mark_read(config: &Config, params: &Value) -> Result<HandleResul
         });
     }
 
-    let mut dialogs = client.iter_dialogs();
+    let dialogs = fetch_dialogs_cached(config, account, &client).await?;
     let mut marked = 0u64;
     let mut errors = Vec::new();
-    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
-        let (unread_count, _, unread_mark) = dialog_unread(&dialog);
+    for dialog in dialogs.iter() {
+        let (unread_count, _, unread_mark) = dialog_unread(dialog);
         if unread_count == 0 && !unread_mark {
             continue;
         }
@@ -1099,6 +1117,9 @@ async fn handle_mark_read(config: &Config, params: &Value) -> Result<HandleResul
         }
     }
 
+    if let Some(pool) = &config.pool {
+        pool.invalidate_dialogs(account);
+    }
     let v = serde_json::json!({"marked": marked, "errors": errors});
     Ok(HandleResult {
         data: serde_json::to_vec(&v).unwrap(),
@@ -1240,6 +1261,49 @@ fn clamp_limit(params: &Value) -> u64 {
         .and_then(|v| v.as_u64())
         .unwrap_or(DEFAULT_LIMIT)
         .clamp(1, MAX_LIMIT)
+}
+
+fn parse_fields_param(params: &Value) -> Option<String> {
+    params
+        .get("fields")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn apply_fields_filter(mut entry: Value, fields: Option<&str>) -> Value {
+    let Some(fields) = fields else {
+        return entry;
+    };
+    let fields = fields.trim();
+    if fields.is_empty() || fields.eq_ignore_ascii_case("full") || fields == "*" {
+        return entry;
+    }
+    let wanted: std::collections::HashSet<String> = if fields.eq_ignore_ascii_case("minimal") {
+        ["peer", "name", "id"].iter().map(|s| s.to_string()).collect()
+    } else {
+        fields
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect()
+    };
+    if let Some(obj) = entry.as_object_mut() {
+        obj.retain(|k, _| wanted.contains(&k.to_lowercase()));
+    }
+    entry
+}
+
+async fn fetch_dialogs_cached(
+    config: &Config,
+    account: &str,
+    client: &grammers_client::Client,
+) -> Result<Vec<grammers_client::types::Dialog>, String> {
+    if let Some(pool) = &config.pool {
+        pool.get_dialogs_cached(account, client).await
+    } else {
+        Err("no telegram accounts connected".to_string())
+    }
 }
 
 fn optional_peer(params: &Value) -> &str {
