@@ -200,6 +200,7 @@ impl EmbeddingProvider for OpenAiCompatProvider {
             embedding: Vec<f32>,
         }
         #[derive(serde::Deserialize, Default)]
+        #[allow(dead_code)]
         struct EmbeddingUsage {
             #[serde(default)]
             prompt_tokens: u64,

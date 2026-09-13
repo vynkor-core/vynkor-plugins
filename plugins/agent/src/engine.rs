@@ -139,10 +139,13 @@ pub async fn run(
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
+    let effective = llm::filtered_catalog(catalog, &doc.goal, &doc.context);
+    let llm_catalog = &effective;
+    let dispatch_catalog = catalog;
     match entry {
         Entry::Fresh => {
             doc.status = store::STATUS_RUNNING.to_string();
-            doc.transcript = llm::opening_messages(&doc.goal, &doc.context, catalog);
+            doc.transcript = llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;
@@ -182,10 +185,10 @@ pub async fn run(
         let want_native = match llm::native_mode() {
             llm::NativeMode::Off => false,
             llm::NativeMode::On => true,
-            llm::NativeMode::Auto => !catalog.tools.is_empty(),
+            llm::NativeMode::Auto => !llm_catalog.tools.is_empty(),
         } && !doc.native_tools_disabled;
         let tools = if want_native {
-            llm::catalog_tools_param(catalog)
+            llm::catalog_tools_param(llm_catalog)
         } else {
             Vec::new()
         };

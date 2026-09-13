@@ -157,12 +157,132 @@ pub async fn chat_with_fallback(
     }
 }
 
+#[allow(clippy::match_like_matches_macro)]
+pub fn is_dynamic_catalog_enabled() -> bool {
+    match std::env::var("AGENT_PLUGIN_DYNAMIC_CATALOG")
+        .unwrap_or_else(|_| "on".into())
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "off" | "false" | "0" | "no" => false,
+        _ => true,
+    }
+}
+
+#[allow(clippy::needless_bool)]
+pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog {
+    if !is_dynamic_catalog_enabled() || goal.trim().is_empty() {
+        return catalog.clone();
+    }
+    let hay = format!("{} {}", goal, context).to_lowercase();
+    let is_telegram = hay.contains("телег") || hay.contains("telegram") || hay.contains("tg_") || hay.contains("tg-") || hay.contains("чат") || hay.contains("сообщ") || hay.contains("диалог") || hay.contains("контакт") || hay.contains("непрочит") || hay.contains("артем") || hay.contains("артём") || hay.contains("loner");
+    let is_email = hay.contains("почт") || hay.contains("email") || hay.contains("письм") || hay.contains("imap") || hay.contains("smtp");
+    let is_calendar = hay.contains("календ") || hay.contains("встреч") || hay.contains("событ") || hay.contains("напомин") || hay.contains("schedule") || hay.contains("calendar") || hay.contains("event");
+    let is_fs = hay.contains("файл") || hay.contains("папк") || hay.contains("директ") || hay.contains("fs_") || hay.contains("filesystem");
+    let is_notes = hay.contains("заметк") || hay.contains("note");
+    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("mpris") || hay.contains("media");
+    let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
+    let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
+    let is_memory = hay.contains("помни") || hay.contains("память") || hay.contains("вспомн") || hay.contains("запомн") || hay.contains("обо мне") || hay.contains("про меня") || hay.contains("обо_мне") || hay.contains("факт") || hay.contains("memory") || hay.contains("вектор") || hay.contains("vector") || hay.contains("векторн");
+    let is_db = hay.contains("бд") || hay.contains("баз") || hay.contains("db_") || hay.contains("database") || hay.contains("vector") || hay.contains("вектор") || is_memory;
+    let is_any_telegram = hay.contains("telegram") || is_telegram;
+
+    let mut filtered: Vec<crate::tools::ToolSpec> = Vec::new();
+    for tool in &catalog.tools {
+        let name = tool.name.as_str();
+        let keep = if name.starts_with("tg_") {
+            is_any_telegram || hay.contains("tg") || hay.is_empty()
+        } else if name.starts_with("email_") {
+            is_email
+        } else if name.starts_with("event_") || name.starts_with("schedule_") {
+            is_calendar
+        } else if name.starts_with("fs_") {
+            is_fs
+        } else if name.starts_with("note_") {
+            is_notes || is_memory
+        } else if name.starts_with("media_") {
+            is_media
+        } else if name.starts_with("sys_") {
+            is_system
+        } else if name == "web_search" || name == "http_request" {
+            is_web || is_any_telegram
+        } else if name.starts_with("vec_") || name.starts_with("vector") {
+            is_memory || is_db || hay.contains("vec") || hay.contains("вектор")
+        } else if name.starts_with("db_") {
+            is_memory || is_db || hay.contains("db") || hay.contains("баз")
+        } else if name.starts_with("tts_") || name.starts_with("stt_") || name.starts_with("mic_") || name.starts_with("sound_") {
+            is_media || hay.contains("tts") || hay.contains("stt") || hay.contains("озвуч") || hay.contains("говор")
+        } else if name.starts_with("daemon_") || name.starts_with("hotkey_") || name.starts_with("launch") || name.starts_with("clipboard") {
+            false
+        } else {
+            true
+        };
+        if keep {
+            filtered.push(tool.clone());
+        }
+    }
+    if filtered.len() < 3 || filtered.len() == catalog.tools.len() {
+        return catalog.clone();
+    }
+    let has_filtered = filtered.iter().any(|t| t.name.starts_with("tg_"));
+    if is_any_telegram && !has_filtered {
+        return catalog.clone();
+    }
+    Catalog {
+        tools: filtered,
+        allowed_actions: catalog.allowed_actions.clone(),
+        tools_file_set: catalog.tools_file_set,
+    }
+}
+
+fn catalog_groups_overview(catalog: &Catalog) -> String {
+    use std::collections::BTreeMap;
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for tool in &catalog.tools {
+        let prefix = tool.name.split('_').next().unwrap_or("other").to_string();
+        let key = match prefix.as_str() {
+            "tg" => "telegram".to_string(),
+            "db" => "database".to_string(),
+            "vec" => "vector-db".to_string(),
+            "note" => "notes".to_string(),
+            "contact" => "contacts".to_string(),
+            "email" => "email".to_string(),
+            "event" | "schedule" => "calendar/scheduler".to_string(),
+            "fs" => "filesystem".to_string(),
+            "media" => "media".to_string(),
+            "sys" => "system".to_string(),
+            "web" | "http" => "web/network".to_string(),
+            "secret" => "secrets".to_string(),
+            "notify" => "notifications".to_string(),
+            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice".to_string(),
+            "launch" | "clipboard" | "hotkey" => "desktop".to_string(),
+            other => other.to_string(),
+        };
+        groups.entry(key).or_default().push(tool.name.clone());
+    }
+    let mut lines = Vec::new();
+    for (group, mut names) in groups {
+        names.sort();
+        let count = names.len();
+        let sample = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
+        let extra = if count > 6 { format!(", +{} more", count - 6) } else { String::new() };
+        lines.push(format!("- {} ({} tools): {}{}", group, count, sample, extra));
+    }
+    lines.join("\n")
+}
+
 /// Build the instructions message that carries the tool catalog. `ai`
 /// resolves `system_prompt` only from an `agent_id` profile (never from
 /// callers), so the portable place for operator-free instructions is a
 /// leading user message.
 pub fn opening_messages(goal: &str, context: &str, catalog: &Catalog) -> Vec<Turn> {
-    let tools_json: Vec<Value> = catalog
+    opening_messages_with_full(goal, context, catalog, catalog)
+}
+
+pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog, full: &Catalog) -> Vec<Turn> {
+    let overview = catalog_groups_overview(full);
+    let tools_json: Vec<Value> = filtered
         .tools
         .iter()
         .map(|t| {
@@ -177,23 +297,25 @@ pub fn opening_messages(goal: &str, context: &str, catalog: &Catalog) -> Vec<Tur
     let mut instructions = format!(
         "You are the vynkor host agent: you complete the user's goal by \
          calling host tools step by step.\n\n\
-         Available tools (JSON array; `parameters` is a JSON Schema for the \
-         `params` object):\n{}\n\n\
+         Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+         Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
+         `params` object — only these are valid to call now):\n{}\n\n\
          Reply rules:\n\
          - To call a tool, reply with EXACTLY ONE JSON object and nothing \
          else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-         - Only tool names from the list above are valid.\n\
+         - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
          - After each call you receive a message starting with \
          \"[TOOL RESULT\" containing the outcome.\n\
          - When the goal is achieved (or impossible), reply with the final \
          answer as PLAIN TEXT — no JSON object at all.",
+        overview,
         serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
     );
     // only when the goal loop can actually launch apps: name-based lookup is
     // unique-only, so a guessed short name ("telegram") 404s while the exact
     // catalog id works
-    let has_launch = catalog.tools.iter().any(|t| t.name == "launch");
-    let has_list = catalog.tools.iter().any(|t| t.name == "launch_list");
+    let has_launch = filtered.tools.iter().any(|t| t.name == "launch");
+    let has_list = filtered.tools.iter().any(|t| t.name == "launch_list");
     if has_launch && has_list {
         instructions.push_str(
             "\n\nLauncher rule:\n\

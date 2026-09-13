@@ -15,6 +15,7 @@
 use serde_json::{json, Value};
 
 use crate::llm;
+#[allow(unused_imports)]
 use crate::store::{self, Db, LlmPlan};
 use crate::Rpc;
 
@@ -45,6 +46,7 @@ fn collection() -> String {
 /// Extract the JSON array of fact strings from a raw model reply — lenient:
 /// fenced blocks and surrounding prose tolerated, non-string entries dropped,
 /// per-fact size caps applied.
+#[allow(clippy::sliced_string_as_bytes)]
 pub fn parse_facts(content: &str) -> Vec<String> {
     let text = llm::strip_tool_markup(content);
     let start = match text.find('[') {

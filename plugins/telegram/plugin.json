@@ -5,6 +5,11 @@
   "description": "Full Telegram MTProto user-client for vynkor — N-account, agent delegate. Read/write/search from personal and corporate accounts.",
   "author": "vynkor-core",
   "license": "MIT",
+  "binary": "telegram",
+  "kernel_compatibility_range": {
+    "min": "0.1.0",
+    "max": "*"
+  },
   "permissions": [
     "PERMISSION_NETWORK",
     "PERMISSION_STORAGE",
@@ -18,7 +23,7 @@
     },
     {
       "name": "tg_list_dialogs",
-      "description": "List Telegram dialogs (chats, channels, groups)"
+      "description": "List Telegram dialogs with names/usernames + unread_count; supports query/limit/account/unread_only, returns peer+name+username+peer_type+id+unread"
     },
     {
       "name": "tg_get_history",
@@ -92,11 +97,43 @@
     },
     {
       "name": "tg_get_chat_info",
-      "description": "Get chat information"
+      "description": "Get chat info by peer (peer string) — returns name, username, peer_type, id, phone etc."
     },
     {
       "name": "tg_get_user",
-      "description": "Get user profile information"
+      "description": "Get user profile by peer — returns full_name, first/last, username, phone, contact flags"
+    },
+    {
+      "name": "tg_list_contacts",
+      "description": "List Telegram contacts (phonebook) — filters by query over name/username/phone, returns peer+name+phone+usernames"
+    },
+    {
+      "name": "tg_get_contact",
+      "description": "Get single contact detail by peer — returns name, usernames, phone, is_contact/mutual/bot/verified"
+    },
+    {
+      "name": "tg_list_unread",
+      "description": "List all dialogs with unread messages — returns peer+name+unread_count+unread_mentions and unread_messages (limit/message_limit/account)"
+    },
+    {
+      "name": "tg_get_unread",
+      "description": "Alias for tg_list_unread — get all unread messages across chats"
+    },
+    {
+      "name": "tg_mark_read",
+      "description": "Mark chat as read — peer required for one chat (max_id/message_id optional, 0=all), or without peer marks all unread dialogs"
+    },
+    {
+      "name": "tg_mark_all_read",
+      "description": "Alias for tg_mark_read without peer — marks all unread dialogs as read"
+    },
+    {
+      "name": "tg_send_action",
+      "description": "Emulate typing/upload/record action in a chat — peer, action=typing/cancel/record_audio/record_video/upload_photo/etc., progress 0-100, duration_ms optional"
+    },
+    {
+      "name": "tg_set_typing",
+      "description": "Alias for tg_send_action — set typing indicator"
     }
   ],
   "events": [

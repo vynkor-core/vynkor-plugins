@@ -162,6 +162,14 @@ pub async fn handle_action(
         "tg_send_animation" => handle_send_animation(config, &params).await,
         "tg_get_chat_info" => handle_get_chat_info(config, &params).await,
         "tg_get_user" => handle_get_user(config, &params).await,
+        "tg_list_contacts" => handle_list_contacts(config, &params).await,
+        "tg_get_contact" => handle_get_contact(config, &params).await,
+        "tg_list_unread" => handle_list_unread(config, &params).await,
+        "tg_get_unread" => handle_list_unread(config, &params).await,
+        "tg_mark_read" => handle_mark_read(config, &params).await,
+        "tg_mark_all_read" => handle_mark_read(config, &params).await,
+        "tg_send_action" => handle_send_action(config, &params).await,
+        "tg_set_typing" => handle_send_action(config, &params).await,
         other => Err(format!("unknown action: {other}")),
     }
 }
@@ -194,24 +202,57 @@ async fn handle_list_dialogs(config: &Config, params: &Value) -> Result<HandleRe
     let account = resolve_account(params, config);
     check_antiban(config, account).await?;
     let limit = clamp_limit(params);
+    let query = params
+        .get("query")
+        .or_else(|| params.get("q"))
+        .or_else(|| params.get("search"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
     let client = get_client(config, account)?;
 
     let mut dialogs = client.iter_dialogs();
     let mut result = Vec::new();
     let mut total = 0u64;
+    let mut matched_total = 0u64;
+
+    let unread_only = params
+        .get("unread_only")
+        .or_else(|| params.get("only_unread"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
         total += 1;
-        if result.len() >= limit as usize {
+        let (unread_count, unread_mentions, unread_mark) = dialog_unread(&dialog);
+        if unread_only && unread_count == 0 && !unread_mark {
             continue;
         }
         let peer = dialog.peer();
-        result.push(serde_json::json!({
-            "peer": peer_to_string(peer),
-        }));
+        if let Some(ref q) = query {
+            if !peer_matches_query(peer, q) {
+                continue;
+            }
+            matched_total += 1;
+            if result.len() >= limit as usize {
+                continue;
+            }
+        } else if result.len() >= limit as usize {
+            continue;
+        }
+        let mut entry = peer_to_details(peer);
+        entry["peer"] = serde_json::Value::String(peer_to_string(peer));
+        entry["unread_count"] = serde_json::json!(unread_count);
+        entry["unread_mentions"] = serde_json::json!(unread_mentions);
+        entry["unread_mark"] = serde_json::json!(unread_mark);
+        result.push(entry);
     }
 
-    let v = serde_json::json!({"account": account, "dialogs": result, "total": total});
+    let v = if query.is_some() {
+        serde_json::json!({"account": account, "dialogs": result, "total": total, "matched": matched_total, "query": query})
+    } else {
+        serde_json::json!({"account": account, "dialogs": result, "total": total})
+    };
     Ok(HandleResult {
         data: serde_json::to_vec(&v).unwrap(),
         event: None,
@@ -323,6 +364,23 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
     check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
+
+    let no_typing = params
+        .get("no_typing")
+        .or_else(|| params.get("skip_typing"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !no_typing && !text.trim().is_empty() {
+        let char_count = text.chars().count() as u64;
+        let mut duration_ms = char_count * 10;
+        if duration_ms < 300 && char_count > 0 {
+            duration_ms = 300;
+        }
+        if duration_ms > 5000 {
+            duration_ms = 5000;
+        }
+        let _ = emulate_typing(&client, peer, duration_ms).await;
+    }
 
     let reply_to = params.get("reply_to").and_then(|v| v.as_u64()).map(|id| id as i32);
 
@@ -772,10 +830,8 @@ async fn handle_get_chat_info(config: &Config, params: &Value) -> Result<HandleR
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
         let dp = dialog.peer();
         if dp.id() == peer.id {
-            let v = serde_json::json!({
-                "peer": peer_str,
-                "name": dp.name(),
-            });
+            let mut v = peer_to_details(dp);
+            v["peer"] = serde_json::json!(peer_str);
             return Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -797,10 +853,8 @@ async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult
     while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
         let dp = dialog.peer();
         if dp.id() == peer.id {
-            let v = serde_json::json!({
-                "peer": peer_str,
-                "name": dp.name(),
-            });
+            let mut v = peer_to_details(dp);
+            v["peer"] = serde_json::json!(peer_str);
             return Ok(HandleResult {
                 data: serde_json::to_vec(&v).unwrap(),
                 event: None,
@@ -809,6 +863,347 @@ async fn handle_get_user(config: &Config, params: &Value) -> Result<HandleResult
     }
 
     Err(format!("tg_get_user: user not found for {peer_str}"))
+}
+
+async fn handle_list_contacts(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let limit = clamp_limit(params);
+    let query = params
+        .get("query")
+        .or_else(|| params.get("q"))
+        .or_else(|| params.get("search"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    let client = get_client(config, account)?;
+    let mut dialogs = client.iter_dialogs();
+    let mut result = Vec::new();
+    let mut total = 0u64;
+    let mut matched = 0u64;
+
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let peer = dialog.peer();
+        let user = match peer {
+            grammers_client::types::Peer::User(u) => u,
+            _ => continue,
+        };
+        if !user.contact() && query.is_none() {
+            continue;
+        }
+        if let Some(ref q) = query {
+            let hay = format!(
+                "{} {} {} {} {}",
+                user.full_name().to_lowercase(),
+                user.first_name().unwrap_or("").to_lowercase(),
+                user.last_name().unwrap_or("").to_lowercase(),
+                user.username().unwrap_or("").to_lowercase(),
+                user.phone().unwrap_or("").to_lowercase()
+            );
+            if !hay.contains(q) && !peer_to_string(peer).to_lowercase().contains(q) {
+                continue;
+            }
+            matched += 1;
+            if result.len() >= limit as usize {
+                continue;
+            }
+        } else {
+            total += 1;
+            if result.len() >= limit as usize {
+                continue;
+            }
+        }
+        let mut entry = peer_to_details(peer);
+        entry["peer"] = serde_json::Value::String(peer_to_string(peer));
+        result.push(entry);
+    }
+
+    let v = if query.is_some() {
+        serde_json::json!({"account": account, "contacts": result, "total": matched, "query": query})
+    } else {
+        serde_json::json!({"account": account, "contacts": result, "total": total})
+    };
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_get_contact(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = required_str(params, "peer", "tg_get_contact")?;
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let client = get_client(config, account)?;
+    let peer = resolve_peer(&client, peer_str).await?;
+
+    let mut dialogs = client.iter_dialogs();
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let dp = dialog.peer();
+        if dp.id() == peer.id {
+            let mut v = peer_to_details(dp);
+            v["peer"] = serde_json::json!(peer_str);
+            v["found"] = serde_json::json!(true);
+            return Ok(HandleResult {
+                data: serde_json::to_vec(&v).unwrap(),
+                event: None,
+            });
+        }
+    }
+
+    Err(format!("tg_get_contact: contact not found for {peer_str}"))
+}
+
+async fn handle_list_unread(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let limit = clamp_limit(params);
+    let include_messages = params
+        .get("include_messages")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let message_limit = params
+        .get("message_limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let client = get_client(config, account)?;
+
+    let mut dialogs = client.iter_dialogs();
+    let mut result = Vec::new();
+    let mut total_unread_dialogs = 0u64;
+    let mut total_unread_messages = 0u64;
+
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let (unread_count, unread_mentions, unread_mark) = dialog_unread(&dialog);
+        if unread_count == 0 && !unread_mark {
+            continue;
+        }
+        total_unread_dialogs += 1;
+        total_unread_messages += unread_count as u64;
+        if result.len() >= limit as usize {
+            continue;
+        }
+        let peer = dialog.peer();
+        let mut entry = peer_to_details(peer);
+        entry["peer"] = serde_json::json!(peer_to_string(peer));
+        entry["unread_count"] = serde_json::json!(unread_count);
+        entry["unread_mentions"] = serde_json::json!(unread_mentions);
+        entry["unread_mark"] = serde_json::json!(unread_mark);
+
+        if include_messages && unread_count > 0 {
+            let fetch = if message_limit > 0 {
+                (message_limit as usize).min(unread_count as usize)
+            } else {
+                (unread_count as usize).min(20)
+            };
+            let peer_ref: grammers_session::defs::PeerRef = peer.into();
+            let mut iter = client.iter_messages(peer_ref).limit(fetch);
+            let mut msgs = Vec::new();
+            while let Some(msg) = iter.next().await.map_err(|e| format!("message iter: {e}"))? {
+                if msg.outgoing() {
+                    continue;
+                }
+                msgs.push(serde_json::json!({
+                    "id": msg.id(),
+                    "text": msg.text(),
+                    "date": msg.date().to_rfc3339(),
+                    "outgoing": msg.outgoing(),
+                    "sender": msg.sender().map(peer_to_string).unwrap_or_default(),
+                }));
+                if msgs.len() >= fetch {
+                    break;
+                }
+            }
+            entry["unread_messages"] = serde_json::json!(msgs);
+        }
+
+        result.push(entry);
+    }
+
+    let v = serde_json::json!({
+        "account": account,
+        "dialogs": result,
+        "total_unread_dialogs": total_unread_dialogs,
+        "total_unread_messages": total_unread_messages,
+    });
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_mark_read(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = params
+        .get("peer")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty());
+    let max_id = params
+        .get("max_id")
+        .or_else(|| params.get("message_id"))
+        .or_else(|| params.get("id"))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as i32)
+        .unwrap_or(0);
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let client = get_client(config, account)?;
+
+    if let Some(peer_str) = peer_str {
+        let peer = resolve_peer(&client, peer_str).await?;
+        if max_id != 0 {
+            use grammers_client::grammers_tl_types as tl;
+            use grammers_session::defs::PeerKind;
+            if peer.id.kind() == PeerKind::Channel {
+                client
+                    .invoke(&tl::functions::channels::ReadHistory {
+                        channel: peer.into(),
+                        max_id,
+                    })
+                    .await
+                    .map_err(|e| format!("tg_mark_read failed for {peer_str} max_id {max_id}: {e}"))?;
+            } else {
+                client
+                    .invoke(&tl::functions::messages::ReadHistory {
+                        peer: peer.into(),
+                        max_id,
+                    })
+                    .await
+                    .map_err(|e| format!("tg_mark_read failed for {peer_str} max_id {max_id}: {e}"))?;
+            }
+        } else {
+            client
+                .mark_as_read(peer)
+                .await
+                .map_err(|e| format!("tg_mark_read failed for {peer_str}: {e}"))?;
+        }
+        let v = serde_json::json!({"peer": peer_str, "marked": true, "max_id": max_id});
+        return Ok(HandleResult {
+            data: serde_json::to_vec(&v).unwrap(),
+            event: None,
+        });
+    }
+
+    let mut dialogs = client.iter_dialogs();
+    let mut marked = 0u64;
+    let mut errors = Vec::new();
+    while let Some(dialog) = dialogs.next().await.map_err(|e| format!("dialog iter: {e}"))? {
+        let (unread_count, _, unread_mark) = dialog_unread(&dialog);
+        if unread_count == 0 && !unread_mark {
+            continue;
+        }
+        let peer = dialog.peer();
+        let peer_ref: grammers_session::defs::PeerRef = peer.into();
+        match client.mark_as_read(peer_ref).await {
+            Ok(_) => marked += 1,
+            Err(e) => errors.push(format!("{}: {e}", peer_to_string(peer))),
+        }
+    }
+
+    let v = serde_json::json!({"marked": marked, "errors": errors});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn handle_send_action(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = required_str(params, "peer", "tg_send_action")?;
+    let action_str = params
+        .get("action")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_else(|| "typing".to_string());
+    let progress = params.get("progress").and_then(|v| v.as_u64()).unwrap_or(0).clamp(0, 100) as i32;
+    let duration_ms = params
+        .get("duration_ms")
+        .or_else(|| params.get("duration"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let client = get_client(config, account)?;
+    let peer = resolve_peer(&client, peer_str).await?;
+
+    use grammers_client::grammers_tl_types as tl;
+    let tl_action: tl::enums::SendMessageAction = match action_str.as_str() {
+        "typing" | "type" => tl::types::SendMessageTypingAction {}.into(),
+        "cancel" | "clear" => tl::types::SendMessageCancelAction {}.into(),
+        "record_audio" | "record_voice" => tl::types::SendMessageRecordAudioAction {}.into(),
+        "record_video" => tl::types::SendMessageRecordVideoAction {}.into(),
+        "record_round" | "record_circle" => tl::types::SendMessageRecordRoundAction {}.into(),
+        "upload_photo" | "photo" => tl::types::SendMessageUploadPhotoAction { progress }.into(),
+        "upload_document" | "document" | "file" => tl::types::SendMessageUploadDocumentAction { progress }.into(),
+        "upload_video" | "video" => tl::types::SendMessageUploadVideoAction { progress }.into(),
+        "upload_audio" | "audio" => tl::types::SendMessageUploadAudioAction { progress }.into(),
+        "upload_round" => tl::types::SendMessageUploadRoundAction { progress }.into(),
+        "choose_sticker" | "sticker" => tl::types::SendMessageChooseStickerAction {}.into(),
+        "choose_contact" => tl::types::SendMessageChooseContactAction {}.into(),
+        "game_play" | "game" => tl::types::SendMessageGamePlayAction {}.into(),
+        "geo" | "location" => tl::types::SendMessageGeoLocationAction {}.into(),
+        "speaking" => tl::types::SpeakingInGroupCallAction {}.into(),
+        other => return Err(format!("tg_send_action: unknown action '{other}' — use typing/cancel/record_audio/record_video/upload_photo/etc.")),
+    };
+
+    if duration_ms > 0 {
+        let repeat_ms = 4000u64;
+        let mut elapsed = 0u64;
+        while elapsed < duration_ms {
+            client
+                .action(peer)
+                .oneshot(tl_action.clone())
+                .await
+                .map_err(|e| format!("tg_send_action failed: {e}"))?;
+            let step = (duration_ms - elapsed).min(repeat_ms);
+            if step < duration_ms - elapsed {
+                tokio::time::sleep(std::time::Duration::from_millis(step)).await;
+            } else {
+                tokio::time::sleep(std::time::Duration::from_millis(step)).await;
+                break;
+            }
+            elapsed += step;
+        }
+    } else {
+        client
+            .action(peer)
+            .oneshot(tl_action)
+            .await
+            .map_err(|e| format!("tg_send_action failed: {e}"))?;
+    }
+
+    let v = serde_json::json!({"peer": peer_str, "action": action_str, "duration_ms": duration_ms});
+    Ok(HandleResult {
+        data: serde_json::to_vec(&v).unwrap(),
+        event: None,
+    })
+}
+
+async fn emulate_typing(
+    client: &grammers_client::Client,
+    peer: grammers_session::defs::PeerRef,
+    duration_ms: u64,
+) -> Result<(), String> {
+    use grammers_client::grammers_tl_types as tl;
+    let action: tl::enums::SendMessageAction = tl::types::SendMessageTypingAction {}.into();
+    let mut elapsed = 0u64;
+    let repeat_ms = 4000u64;
+    while elapsed < duration_ms {
+        let res = client.action(peer).oneshot(action.clone()).await;
+        if res.is_err() {
+            break;
+        }
+        let step = (duration_ms - elapsed).min(repeat_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(step)).await;
+        elapsed += step;
+    }
+    Ok(())
+}
+
+fn dialog_unread(dialog: &grammers_client::types::Dialog) -> (i32, i32, bool) {
+    use grammers_client::grammers_tl_types::enums::Dialog as D;
+    match &dialog.raw {
+        D::Dialog(d) => (d.unread_count, d.unread_mentions_count, d.unread_mark),
+        D::Folder(_) => (0, 0, false),
+    }
 }
 
 fn get_client(config: &Config, account: &str) -> Result<grammers_client::Client, String> {
@@ -860,6 +1255,61 @@ fn required_str<'a>(params: &'a Value, key: &str, action: &str) -> Result<&'a st
         Some(s) if !s.trim().is_empty() => Ok(s),
         _ => Err(format!("{action}: {key} required")),
     }
+}
+
+fn peer_to_details(peer: &grammers_client::types::Peer) -> Value {
+    use grammers_client::types::Peer;
+    match peer {
+        Peer::User(u) => serde_json::json!({
+            "peer_type": "user",
+            "id": u.raw.id(),
+            "name": u.full_name(),
+            "first_name": u.first_name().unwrap_or(""),
+            "last_name": u.last_name().unwrap_or(""),
+            "username": u.username().unwrap_or(""),
+            "usernames": u.usernames(),
+            "phone": u.phone().unwrap_or(""),
+            "is_contact": u.contact(),
+            "is_mutual": u.mutual_contact(),
+            "is_bot": u.is_bot(),
+            "is_verified": u.verified(),
+            "is_deleted": u.deleted(),
+        }),
+        Peer::Group(g) => serde_json::json!({
+            "peer_type": "group",
+            "id": g.id().bare_id(),
+            "name": g.title().unwrap_or(""),
+            "username": g.username().unwrap_or(""),
+            "usernames": g.usernames(),
+            "title": g.title().unwrap_or(""),
+        }),
+        Peer::Channel(c) => serde_json::json!({
+            "peer_type": "channel",
+            "id": c.bare_id(),
+            "name": c.title(),
+            "username": c.username().unwrap_or(""),
+            "usernames": c.usernames(),
+            "title": c.title(),
+        }),
+    }
+}
+
+fn peer_matches_query(peer: &grammers_client::types::Peer, q: &str) -> bool {
+    if peer.name().is_some_and(|s| s.to_lowercase().contains(q)) {
+        return true;
+    }
+    if peer.username().is_some_and(|s| s.to_lowercase().contains(q)) {
+        return true;
+    }
+    if let grammers_client::types::Peer::User(u) = peer {
+        if u.full_name().to_lowercase().contains(q) {
+            return true;
+        }
+        if u.phone().is_some_and(|s| s.to_lowercase().contains(q)) {
+            return true;
+        }
+    }
+    peer_to_string(peer).to_lowercase().contains(q)
 }
 
 fn peer_to_string(peer: &grammers_client::types::Peer) -> String {
