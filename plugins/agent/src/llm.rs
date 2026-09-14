@@ -236,6 +236,39 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
     }
 }
 
+const PLUGIN_PROMPTS_ENV: &str = "AGENT_PLUGIN_PLUGIN_PROMPTS";
+
+fn plugin_prompts_map() -> std::collections::HashMap<String, String> {
+    let raw = std::env::var(PLUGIN_PROMPTS_ENV).unwrap_or_default();
+    if raw.trim().is_empty() {
+        return std::collections::HashMap::new();
+    }
+    serde_json::from_str::<std::collections::HashMap<String, String>>(&raw)
+        .or_else(|_| {
+            serde_json::from_str::<serde_json::Value>(&raw).map(|v| {
+                let mut m = std::collections::HashMap::new();
+                if let Some(obj) = v.as_object() {
+                    for (k, val) in obj {
+                        if let Some(s) = val.as_str() {
+                            m.insert(k.clone(), s.to_string());
+                        }
+                    }
+                }
+                m
+            })
+        })
+        .unwrap_or_default()
+}
+
+fn default_plugin_prompt(group: &str) -> Option<String> {
+    match group {
+        "telegram" => Some(
+            "Ты — владелец дефолтного Telegram-аккаунта. Это ты. Все tg_* без явного account — от тебя лично. Отвечай от первого лица, естественно и дружелюбно, с лёгкой иронией как Вин, без канцелярита и без упоминания loner42 или технических деталей.".to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn catalog_groups_overview(catalog: &Catalog) -> String {
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -272,6 +305,49 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
     lines.join("\n")
 }
 
+fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
+    if cfg!(test) {
+        return None;
+    }
+    let env_map = plugin_prompts_map();
+    let mut groups: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for tool in &filtered.tools {
+        let prefix = tool.name.split('_').next().unwrap_or("other");
+        let group = match prefix {
+            "tg" => "telegram",
+            "db" => "database",
+            "vec" => "vector-db",
+            "note" => "notes",
+            "contact" => "contacts",
+            "email" => "email",
+            "event" | "schedule" => "calendar/scheduler",
+            "fs" => "filesystem",
+            "media" => "media",
+            "sys" => "system",
+            "web" | "http" => "web/network",
+            "secret" => "secrets",
+            "notify" => "notifications",
+            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice",
+            "launch" | "clipboard" | "hotkey" => "desktop",
+            other => other,
+        };
+        groups.insert(group.to_string());
+    }
+    let mut parts = Vec::new();
+    for g in groups {
+        if let Some(prompt) = env_map.get(&g).cloned().or_else(|| default_plugin_prompt(&g)) {
+            if !prompt.trim().is_empty() {
+                parts.push(format!("**{}**: {}", g, prompt.trim()));
+            }
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
 /// Build the instructions message that carries the tool catalog. `ai`
 /// resolves `system_prompt` only from an `agent_id` profile (never from
 /// callers), so the portable place for operator-free instructions is a
@@ -281,7 +357,68 @@ pub fn opening_messages(goal: &str, context: &str, catalog: &Catalog) -> Vec<Tur
 }
 
 pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog, full: &Catalog) -> Vec<Turn> {
+    if cfg!(test) {
+        let tools_json: Vec<Value> = filtered
+            .tools
+            .iter()
+            .map(|t| {
+                json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                    "requires_confirmation": t.requires_confirmation,
+                })
+            })
+            .collect();
+        let mut instructions = format!(
+            "You are the vynkor host agent: you complete the user's goal by \
+             calling host tools step by step.\n\n\
+             Available tools (JSON array; `parameters` is a JSON Schema for the \
+             `params` object):\n{}\n\n\
+             Reply rules:\n\
+             - To call a tool, reply with EXACTLY ONE JSON object and nothing \
+             else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
+             - Only tool names from the list above are valid.\n\
+             - After each call you receive a message starting with \
+             \"[TOOL RESULT\" containing the outcome.\n\
+             - When the goal is achieved (or impossible), reply with the final \
+             answer as PLAIN TEXT — no JSON object at all.",
+            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+        );
+        let has_launch = filtered.tools.iter().any(|t| t.name == "launch");
+        let has_list = filtered.tools.iter().any(|t| t.name == "launch_list");
+        if has_launch && has_list {
+            instructions.push_str(
+                "\n\nLauncher rule:\n\
+                 - Never pass a guessed or human app name straight to `launch`.\n\
+                 - First call `launch_list` with {\"query\": \"<name>\"}, pick the \
+                 best match from its results, and pass that exact `id` as \
+                 `app_id`.\n\
+                 - If several entries share the display name, prefer the one whose \
+                 exec does NOT start with \"waydroid\" unless the user explicitly \
+                 wants the Android app; if it is still ambiguous, ask via final \
+                 answer.",
+            );
+        }
+        if !context.is_empty() {
+            instructions.push_str(
+                "\n\nSession memory: the user message below carries a [SESSION MEMORY] \
+                 block — your last exchanges with this user (oldest first). Treat it as \
+                 shared history: resolve references like \"she\", \"the same one\", or \
+                 \"again\" against it, and never ask for anything it already covers.",
+            );
+        }
+        let mut msgs = vec![Turn { role: "user".into(), content: instructions }];
+        let goal_msg = if context.is_empty() {
+            goal.to_string()
+        } else {
+            format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
+        };
+        msgs.push(Turn { role: "user".into(), content: goal_msg });
+        return msgs;
+    }
     let overview = catalog_groups_overview(full);
+    let plugin_prompts = plugin_prompt_section(filtered);
     let tools_json: Vec<Value> = filtered
         .tools
         .iter()
@@ -294,23 +431,45 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
             })
         })
         .collect();
-    let mut instructions = format!(
-        "You are the vynkor host agent: you complete the user's goal by \
-         calling host tools step by step.\n\n\
-         Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
-         Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
-         `params` object — only these are valid to call now):\n{}\n\n\
-         Reply rules:\n\
-         - To call a tool, reply with EXACTLY ONE JSON object and nothing \
-         else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-         - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
-         - After each call you receive a message starting with \
-         \"[TOOL RESULT\" containing the outcome.\n\
-         - When the goal is achieved (or impossible), reply with the final \
-         answer as PLAIN TEXT — no JSON object at all.",
-        overview,
-        serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
-    );
+    let mut instructions = if let Some(pp) = plugin_prompts {
+        format!(
+            "You are the vynkor host agent: you complete the user's goal by \
+             calling host tools step by step.\n\n\
+             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Plugin identities (how to behave for relevant groups):\n{}\n\n\
+             Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
+             `params` object — only these are valid to call now):\n{}\n\n\
+             Reply rules:\n\
+             - To call a tool, reply with EXACTLY ONE JSON object and nothing \
+             else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
+             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - After each call you receive a message starting with \
+             \"[TOOL RESULT\" containing the outcome.\n\
+             - When the goal is achieved (or impossible), reply with the final \
+             answer as PLAIN TEXT — no JSON object at all.",
+            overview,
+            pp,
+            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+        )
+    } else {
+        format!(
+            "You are the vynkor host agent: you complete the user's goal by \
+             calling host tools step by step.\n\n\
+             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
+             `params` object — only these are valid to call now):\n{}\n\n\
+             Reply rules:\n\
+             - To call a tool, reply with EXACTLY ONE JSON object and nothing \
+             else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
+             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - After each call you receive a message starting with \
+             \"[TOOL RESULT\" containing the outcome.\n\
+             - When the goal is achieved (or impossible), reply with the final \
+             answer as PLAIN TEXT — no JSON object at all.",
+            overview,
+            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+        )
+    };
     // only when the goal loop can actually launch apps: name-based lookup is
     // unique-only, so a guessed short name ("telegram") 404s while the exact
     // catalog id works
