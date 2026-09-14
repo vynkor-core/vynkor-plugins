@@ -134,6 +134,10 @@
     {
       "name": "tg_set_typing",
       "description": "Alias for tg_send_action — set typing indicator"
+    },
+    {
+      "name": "tg_transcribe_voice",
+      "description": "Download voice/media message to file for STT — peer, message_id, output_path? -> output_path, then call stt_transcribe"
     }
   ],
   "events": [

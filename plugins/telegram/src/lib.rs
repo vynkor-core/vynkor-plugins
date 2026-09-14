@@ -170,6 +170,7 @@ pub async fn handle_action(
         "tg_mark_all_read" => handle_mark_read(config, &params).await,
         "tg_send_action" => handle_send_action(config, &params).await,
         "tg_set_typing" => handle_send_action(config, &params).await,
+        "tg_transcribe_voice" => handle_transcribe_voice(config, &params).await,
         other => Err(format!("unknown action: {other}")),
     }
 }
@@ -275,11 +276,24 @@ async fn handle_get_history(config: &Config, params: &Value) -> Result<HandleRes
 
     while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
         total += 1;
+        let media_type = msg.media().map(|m| match m {
+            grammers_client::types::Media::Contact(_) => "contact",
+            grammers_client::types::Media::Document(_) => "document",
+            grammers_client::types::Media::Geo(_) => "geo",
+            grammers_client::types::Media::Photo(_) => "photo",
+            grammers_client::types::Media::Poll(_) => "poll",
+            grammers_client::types::Media::Sticker(_) => "sticker",
+            grammers_client::types::Media::Venue(_) => "venue",
+            grammers_client::types::Media::WebPage(_) => "webpage",
+            _ => "unknown",
+        }).unwrap_or("none");
         result.push(serde_json::json!({
             "id": msg.id(),
             "text": msg.text(),
             "date": msg.date().to_rfc3339(),
             "outgoing": msg.outgoing(),
+            "has_media": msg.media().is_some(),
+            "media_type": media_type,
         }));
     }
 
@@ -640,6 +654,49 @@ async fn handle_download_media(config: &Config, params: &Value) -> Result<Handle
     }
 
     Err("tg_download_media: message not found or has no media".to_string())
+}
+
+async fn handle_transcribe_voice(config: &Config, params: &Value) -> Result<HandleResult, String> {
+    let peer_str = optional_peer(params);
+    let message_id = params
+        .get("message_id")
+        .and_then(|v| v.as_u64())
+        .filter(|id| *id != 0)
+        .ok_or_else(|| "tg_transcribe_voice: message_id required".to_string())?;
+    let output_path = params
+        .get("output_path")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("/tmp/tg_voice_{}_{}.ogg", peer_str.replace(':', "_"), message_id));
+    let account = resolve_account(params, config);
+    check_antiban(config, account).await?;
+    let client = get_client(config, account)?;
+    let peer = resolve_peer(&client, peer_str).await?;
+
+    let mut messages = client.iter_messages(peer).limit(10);
+    while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
+        if msg.id() == message_id as i32 {
+            if let Some(media) = msg.media() {
+                client
+                    .download_media(&media, &output_path)
+                    .await
+                    .map_err(|e| format!("download failed: {e}"))?;
+                let v = serde_json::json!({
+                    "peer": peer_str,
+                    "message_id": message_id,
+                    "output_path": output_path,
+                    "downloaded": true,
+                    "hint": "next: call stt_transcribe {provider:\"sherpa\", file_path: output_path} then use text",
+                });
+                return Ok(HandleResult {
+                    data: serde_json::to_vec(&v).unwrap(),
+                    event: None,
+                });
+            }
+        }
+    }
+
+    Err("tg_transcribe_voice: message not found or has no media".to_string())
 }
 
 async fn handle_delete_messages(config: &Config, params: &Value) -> Result<HandleResult, String> {

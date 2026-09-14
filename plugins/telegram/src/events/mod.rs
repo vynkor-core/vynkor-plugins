@@ -53,12 +53,28 @@ async fn handle_update(
             .map(crate::peer_to_string)
             .unwrap_or_default();
 
+        let media_type = message.media().map(|m| match m {
+            grammers_client::types::Media::Contact(_) => "contact",
+            grammers_client::types::Media::Document(_) => "document",
+            grammers_client::types::Media::Geo(_) => "geo",
+            grammers_client::types::Media::Photo(_) => "photo",
+            grammers_client::types::Media::Poll(_) => "poll",
+            grammers_client::types::Media::Sticker(_) => "sticker",
+            grammers_client::types::Media::Venue(_) => "venue",
+            grammers_client::types::Media::WebPage(_) => "webpage",
+            _ => "unknown",
+        }).unwrap_or("none");
+        let has_media = message.media().is_some();
+        let is_voice = matches!(message.media(), Some(grammers_client::types::Media::Document(_)));
         let payload = serde_json::json!({
             "message_id": message.id(),
             "peer": peer_str,
             "sender": sender_str,
             "text": message.text(),
             "date": message.date().to_rfc3339(),
+            "has_media": has_media,
+            "media_type": media_type,
+            "is_voice_guess": is_voice,
         });
 
         let _ = event_tx

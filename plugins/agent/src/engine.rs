@@ -23,6 +23,152 @@ const OBSERVATION_MAX: usize = 8192;
 /// Cap on the whole persisted transcript (chars) — guards both the LLM
 /// context window and the `database` document size.
 const TRANSCRIPT_MAX_CHARS: usize = 262_144;
+const TOOLS_COLLECTION: &str = "agent-tools";
+const EMBEDDING_FILTER_ENV: &str = "AGENT_PLUGIN_EMBEDDING_FILTER";
+
+#[allow(clippy::match_like_matches_macro)]
+fn embedding_filter_enabled() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    matches!(
+        std::env::var(EMBEDDING_FILTER_ENV)
+            .unwrap_or_else(|_| "off".into())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "on" | "true" | "1" | "yes"
+    )
+}
+
+async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), String> {
+    let list_resp = rpc.call("vec_list", json!({}), 5000).await;
+    let has_collection = match list_resp {
+        Ok(v) => v
+            .get("collections")
+            .and_then(|c| c.as_array())
+            .is_some_and(|arr| arr.iter().any(|x| x.as_str() == Some(TOOLS_COLLECTION))),
+        Err(_) => false,
+    };
+    if has_collection {
+        let q: Value = rpc
+            .call(
+                "vec_query",
+                json!({"collection": TOOLS_COLLECTION, "top_k": 1, "text": "test"}),
+                8000,
+            )
+            .await
+            .unwrap_or(json!({"results": []}));
+        let count = q
+            .get("results")
+            .and_then(|r| r.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        if count > 0 {
+            let stats: Value = rpc
+                .call(
+                    "vec_stats",
+                    json!({"collection": TOOLS_COLLECTION}),
+                    5000,
+                )
+                .await
+                .unwrap_or(json!({"count": 0}));
+            let cnt = stats.get("count").and_then(|c| c.as_u64()).unwrap_or(0) as usize;
+            if cnt >= catalog.tools.len().saturating_sub(5) {
+                return Ok(());
+            }
+        }
+    }
+    let docs: Vec<Value> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            let text = format!("{} — {}", t.name, t.description);
+            json!({"id": t.name, "text": text, "metadata": {"name": t.name}})
+        })
+        .collect();
+    for chunk in docs.chunks(50) {
+        let batch = json!({"collection": TOOLS_COLLECTION, "docs": chunk});
+        rpc.call("vec_upsert_batch", batch, 30000)
+            .await
+            .map_err(|e| format!("vec_upsert_batch failed: {e}"))?;
+    }
+    Ok(())
+}
+
+async fn embedding_filtered_catalog(
+    rpc: &Rpc,
+    catalog: &Catalog,
+    goal: &str,
+) -> Option<Catalog> {
+    if !embedding_filter_enabled() || goal.trim().is_empty() {
+        return None;
+    }
+    if let Err(e) = ensure_tool_embeddings(rpc, catalog).await {
+        eprintln!("[agent] embedding filter: ensure failed: {e}");
+        return None;
+    }
+    let resp = rpc
+        .call(
+            "vec_query",
+            json!({"collection": TOOLS_COLLECTION, "text": goal, "top_k": 35}),
+            10000,
+        )
+        .await;
+    let results = match resp {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[agent] embedding vec_query failed: {e}");
+            return None;
+        }
+    };
+    let hits: Vec<String> = results
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    let score = o.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                    if score < 0.35 {
+                        return None;
+                    }
+                    o.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if hits.len() < 3 {
+        return None;
+    }
+    let hit_set: std::collections::HashSet<String> = hits.into_iter().collect();
+    let filtered: Vec<_> = catalog
+        .tools
+        .iter()
+        .filter(|t| hit_set.contains(&t.name))
+        .cloned()
+        .collect();
+    if filtered.len() < 3 {
+        return None;
+    }
+    Some(Catalog {
+        tools: filtered,
+        allowed_actions: catalog.allowed_actions.clone(),
+        tools_file_set: catalog.tools_file_set,
+    })
+}
+
+async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &str) -> Catalog {
+    if let Some(emb) = embedding_filtered_catalog(rpc, catalog, goal).await {
+        eprintln!(
+            "[agent] embedding filter: {} -> {} tools (goal: {})",
+            catalog.tools.len(),
+            emb.tools.len(),
+            &goal[..goal.len().min(60)]
+        );
+        return emb;
+    }
+    llm::filtered_catalog(catalog, goal, context)
+}
 
 pub enum Entry {
     /// Fresh goal: seed the transcript from goal + catalog.
@@ -139,7 +285,7 @@ pub async fn run(
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
-    let effective = llm::filtered_catalog(catalog, &doc.goal, &doc.context);
+    let effective = effective_catalog(rpc, catalog, &doc.goal, &doc.context).await;
     let llm_catalog = &effective;
     let dispatch_catalog = catalog;
     match entry {
