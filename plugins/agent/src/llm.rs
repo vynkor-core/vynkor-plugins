@@ -181,7 +181,7 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
     let is_calendar = hay.contains("календ") || hay.contains("встреч") || hay.contains("событ") || hay.contains("напомин") || hay.contains("schedule") || hay.contains("calendar") || hay.contains("event");
     let is_fs = hay.contains("файл") || hay.contains("папк") || hay.contains("директ") || hay.contains("fs_") || hay.contains("filesystem");
     let is_notes = hay.contains("заметк") || hay.contains("note");
-    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("mpris") || hay.contains("media");
+    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("голос") || hay.contains("аудио") || hay.contains("озвуч") || hay.contains("говор") || hay.contains("mpris") || hay.contains("media");
     let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
     let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
     let is_memory = hay.contains("помни") || hay.contains("память") || hay.contains("вспомн") || hay.contains("запомн") || hay.contains("обо мне") || hay.contains("про меня") || hay.contains("обо_мне") || hay.contains("факт") || hay.contains("memory") || hay.contains("вектор") || hay.contains("vector") || hay.contains("векторн");
@@ -192,7 +192,7 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
     for tool in &catalog.tools {
         let name = tool.name.as_str();
         let keep = if name.starts_with("tg_") {
-            is_any_telegram || hay.contains("tg") || hay.is_empty()
+            is_any_telegram || hay.contains("tg") || is_media || hay.is_empty()
         } else if name.starts_with("email_") {
             is_email
         } else if name.starts_with("event_") || name.starts_with("schedule_") {
