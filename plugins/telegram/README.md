@@ -26,6 +26,12 @@ Full MTProto user-client for vynkor (N-account, Rust + Grammers). Acts as your d
 | `tg_pin_message` | `{account?, peer, message_id, silent?}` | `{peer, message_id, pinned}` | ⚠️ |
 | `tg_upload_media` | `{account?, peer, file_path, caption?}` | `{peer, message_id, file_path}` | — |
 | `tg_download_media` | `{account?, peer, message_id, output_path}` | `{peer, message_id, output_path}` | — |
+| `tg_send_voice` | `{account?, peer, file_path, caption?}` | `{peer, message_id, file_path}` | — |
+| `tg_send_sticker` | `{account?, peer, file_path}` | `{peer, message_id, file_path}` | — |
+| `tg_send_animation` | `{account?, peer, file_path, caption?}` | `{peer, message_id, file_path}` | — |
+| `tg_delete_messages` | `{account?, peer, message_ids[]}` | `{peer, deleted, errors}` | ⚠️ |
+| `tg_forward_messages` | `{account?, from_peer, to_peer, message_ids[]}` | `{from_peer, to_peer, new_ids}` | ⚠️ |
+| `tg_transcribe_voice` | `{account?, peer, message_id}` | `{peer, message_id, text}` — via `stt` plugin | — |
 
 ## Peer formats
 
@@ -57,6 +63,25 @@ TELEGRAM_PLUGIN_SESSION_DIR=~/.local/share/vyn/telegram
 
 Secrets resolved vault-first via `secrets` plugin; env is fallback.
 
+## Antiban (`src/mtproto/antiban.rs`)
+
+Per-account token bucket (8 rps burst capacity, 8/s refill) gates every action via `check_antiban()`. On a real `FLOOD_WAIT_X` from Telegram:
+
+1. Grammers itself auto-sleeps once for waits ≤60s (`ClientConfiguration::flood_sleep_threshold`, default 60s) — transparent, no plugin code involved.
+2. If it still surfaces as an error (wait >60s, or a second flood on the same call), `handle_action` catches it centrally by pattern-matching `FLOOD_WAIT (value: N)` out of the error string (one interception point for all ~28 handlers, not threaded through each) and calls `Antiban::on_flood_wait(account, n)` — sleeps a jittered `0.2..0.8 × n` seconds, increments the account's consecutive-flood counter.
+3. Three consecutive flood-waits trip the circuit breaker: `check_antiban()` then fails fast (`antiban: circuit open for account X`) instead of hammering Telegram.
+4. The breaker half-opens after a 5-minute cooldown — one request is let through; if it floods again the breaker re-trips and the cooldown clock restarts. It does **not** require a process restart to recover.
+
+## Live updates & reconnect (`src/events/mod.rs`)
+
+One `spawn_live_listener` task per account owns the whole `UpdateStream` and pushes `new_message`/other updates onto a channel merged into `main.rs`'s `serve()` select loop (single client per account, no duplicate listeners — a double-spawn here previously pegged the runtime at ~99% CPU and starved the action handler, see git history on `fix(telegram): stop CPU-starve loop...`).
+
+`UpdateStream::next()` surfaces transient RPC errors (network blips, timeouts) without losing its internal state, so on error the listener backs off (1s, doubling, capped at 30s) and retries the *same* stream indefinitely — it never permanently dies from a transient failure.
+
+## Session auth (`src/mtproto/session.rs`)
+
+`SessionPool::connect()` calls `client.is_authorized()` right after opening the session file and fails the connect (clear error, account not registered in the pool) if the session is stale/logged-out, instead of silently registering a broken client that would make every action fail opaque while `status` still reports `engine_ready: true`.
+
 ## Build
 
 ```bash
@@ -81,14 +106,6 @@ cargo clippy -p telegram-plugin -- -D warnings
 
 ## Next (deferred)
 
-P1: `tg_edit/delete/forward/react/pin` with `requires_confirmation` gate.
-P2: media upload/download via `filesystem` jail, vector-db RAG.
-
-## Dev scripts
-
-Helper scripts for manual testing (not shipped, dev-only):
-- `get_messages.py` — fetch message history via Telethon
-- `read_messages.py` — read recent messages
-- `run_test.sh` — run integration tests
+P2: vector-db RAG over message history (hooks prepared, not wired).
 
 See `PLANS.md` for full plan and `../../docs/PLUGIN_AUTHORING.md` for loop pattern.
