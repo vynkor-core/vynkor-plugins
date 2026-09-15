@@ -29,7 +29,47 @@ pub async fn handle_stt_transcribe(
     client: &mut VynkorClient,
     params_json: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let params = request::parse_request(params_json)?;
+    let mut params = request::parse_request(params_json)?;
+    if params.provider == request::Provider::Sherpa && params.format == request::AudioFormat::Ogg {
+        let wav_bytes = tokio::task::spawn_blocking({
+            let ogg = params.audio.clone();
+            move || {
+                let dir = std::env::temp_dir();
+                let ogg_path = dir.join(format!("stt_in_{}.ogg", std::process::id()));
+                let wav_path = dir.join(format!("stt_out_{}.wav", std::process::id()));
+                std::fs::write(&ogg_path, &ogg).map_err(|e| format!("failed to write temp ogg: {e}"))?;
+                let status = std::process::Command::new("ffmpeg")
+                    .args([
+                        "-y",
+                        "-i",
+                        ogg_path.to_str().unwrap(),
+                        "-ar",
+                        "16000",
+                        "-ac",
+                        "1",
+                        "-f",
+                        "wav",
+                        wav_path.to_str().unwrap(),
+                    ])
+                    .output()
+                    .map_err(|e| format!("ffmpeg not found or failed to start: {e}"))?;
+                if !status.status.success() {
+                    return Err(format!(
+                        "ffmpeg failed: {}",
+                        String::from_utf8_lossy(&status.stderr)
+                    ));
+                }
+                let wav = std::fs::read(&wav_path).map_err(|e| format!("failed to read wav: {e}"))?;
+                let _ = std::fs::remove_file(&ogg_path);
+                let _ = std::fs::remove_file(&wav_path);
+                Ok::<Vec<u8>, String>(wav)
+            }
+        })
+        .await
+        .map_err(|e| format!("ffmpeg task failed: {e}"))??;
+        params.audio = wav_bytes;
+        params.format = request::AudioFormat::Wav;
+    }
 
     let result = match params.provider {
         ProviderKind::Sherpa => {

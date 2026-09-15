@@ -124,6 +124,7 @@ pub fn parse_request(params_json: &[u8]) -> Result<TranscribeParams, String> {
     struct Raw {
         provider: Option<String>,
         audio_base64: Option<String>,
+        file_path: Option<String>,
         format: Option<String>,
         sample_rate_hz: Option<u32>,
         num_channels: Option<u16>,
@@ -145,9 +146,22 @@ pub fn parse_request(params_json: &[u8]) -> Result<TranscribeParams, String> {
         None => return Err("missing required field: provider".to_string()),
     };
 
-    let audio = match raw.audio_base64 {
-        None => return Err("missing required field: audio_base64".to_string()),
-        Some(b64) => {
+    let inferred_format = raw.format.clone().or_else(|| {
+        raw.file_path.as_ref().and_then(|p| {
+            let ext = p.rsplit('.').next()?.to_lowercase();
+            match ext.as_str() {
+                "ogg" => Some("ogg".to_string()),
+                "mp3" => Some("mp3".to_string()),
+                "wav" => Some("wav".to_string()),
+                "pcm" => Some("pcm".to_string()),
+                _ => None,
+            }
+        })
+    });
+    let has_file_path = raw.file_path.is_some();
+    let audio = match (raw.audio_base64, raw.file_path) {
+        (None, None) => return Err("missing required field: audio_base64 or file_path".to_string()),
+        (Some(b64), _) => {
             if b64.is_empty() {
                 return Err("audio_base64 must not be empty".to_string());
             }
@@ -166,11 +180,25 @@ pub fn parse_request(params_json: &[u8]) -> Result<TranscribeParams, String> {
             }
             bytes
         }
+        (None, Some(path)) => {
+            let p = path.trim();
+            if p.is_empty() {
+                return Err("file_path must not be empty".to_string());
+            }
+            let bytes = std::fs::read(p).map_err(|e| format!("failed to read file_path '{}': {e}", p))?;
+            if bytes.is_empty() {
+                return Err(format!("file_path '{}' is empty", p));
+            }
+            if bytes.len() > 25 * 1024 * 1024 {
+                return Err(format!("file_path '{}' exceeds 25 MiB", p));
+            }
+            bytes
+        }
     };
-
-    let format = match (provider, raw.format.as_deref()) {
+    let format = match (provider, inferred_format.as_deref()) {
         (Provider::Sherpa, None | Some("wav")) => AudioFormat::Wav,
         (Provider::Sherpa, Some("pcm")) => AudioFormat::Pcm,
+        (Provider::Sherpa, Some("ogg") | Some("mp3")) if has_file_path => AudioFormat::Ogg,
         (Provider::Sherpa, Some(other)) => {
             return Err(format!("sherpa supports formats wav|pcm, got: {other}"))
         }

@@ -278,7 +278,20 @@ async fn handle_get_history(config: &Config, params: &Value) -> Result<HandleRes
         total += 1;
         let media_type = msg.media().map(|m| match m {
             grammers_client::types::Media::Contact(_) => "contact",
-            grammers_client::types::Media::Document(_) => "document",
+            grammers_client::types::Media::Document(doc) => {
+                let mime = doc.mime_type().unwrap_or("");
+                if mime == "audio/ogg" {
+                    "voice"
+                } else if mime.starts_with("audio/") {
+                    "audio"
+                } else if mime.starts_with("video/") {
+                    "video"
+                } else if mime.starts_with("image/") {
+                    "photo"
+                } else {
+                    "document"
+                }
+            }
             grammers_client::types::Media::Geo(_) => "geo",
             grammers_client::types::Media::Photo(_) => "photo",
             grammers_client::types::Media::Poll(_) => "poll",
@@ -318,6 +331,30 @@ async fn handle_get_message(config: &Config, params: &Value) -> Result<HandleRes
     let mut messages = client.iter_messages(peer).limit(1);
     while let Some(msg) = messages.next().await.map_err(|e| format!("message iter: {e}"))? {
         if msg.id() == id as i32 {
+            let media_type = msg.media().map(|m| match m {
+                grammers_client::types::Media::Contact(_) => "contact",
+                grammers_client::types::Media::Document(doc) => {
+                    let mime = doc.mime_type().unwrap_or("");
+                    if mime == "audio/ogg" {
+                        "voice"
+                    } else if mime.starts_with("audio/") {
+                        "audio"
+                    } else if mime.starts_with("video/") {
+                        "video"
+                    } else if mime.starts_with("image/") {
+                        "photo"
+                    } else {
+                        "document"
+                    }
+                }
+                grammers_client::types::Media::Geo(_) => "geo",
+                grammers_client::types::Media::Photo(_) => "photo",
+                grammers_client::types::Media::Poll(_) => "poll",
+                grammers_client::types::Media::Sticker(_) => "sticker",
+                grammers_client::types::Media::Venue(_) => "venue",
+                grammers_client::types::Media::WebPage(_) => "webpage",
+                _ => "unknown",
+            }).unwrap_or("none");
             return Ok(HandleResult {
                 data: serde_json::to_vec(&serde_json::json!({
                     "found": true,
@@ -326,6 +363,8 @@ async fn handle_get_message(config: &Config, params: &Value) -> Result<HandleRes
                         "text": msg.text(),
                         "date": msg.date().to_rfc3339(),
                         "outgoing": msg.outgoing(),
+                        "has_media": msg.media().is_some(),
+                        "media_type": media_type,
                     }
                 })).unwrap(),
                 event: None,
@@ -621,10 +660,16 @@ async fn handle_download_media(config: &Config, params: &Value) -> Result<Handle
     let peer_str = optional_peer(params);
     let message_id = params
         .get("message_id")
+        .or_else(|| params.get("id"))
         .and_then(|v| v.as_u64())
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_download_media: message_id required".to_string())?;
-    let output_path = required_str(params, "output_path", "tg_download_media")?;
+    let output_path = params
+        .get("output_path")
+        .or_else(|| params.get("path"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "tg_download_media: output_path required".to_string())?;
     let account = resolve_account(params, config);
     check_antiban(config, account).await?;
     let client = get_client(config, account)?;
@@ -660,11 +705,13 @@ async fn handle_transcribe_voice(config: &Config, params: &Value) -> Result<Hand
     let peer_str = optional_peer(params);
     let message_id = params
         .get("message_id")
+        .or_else(|| params.get("id"))
         .and_then(|v| v.as_u64())
         .filter(|id| *id != 0)
         .ok_or_else(|| "tg_transcribe_voice: message_id required".to_string())?;
     let output_path = params
         .get("output_path")
+        .or_else(|| params.get("path"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("/tmp/tg_voice_{}_{}.ogg", peer_str.replace(':', "_"), message_id));

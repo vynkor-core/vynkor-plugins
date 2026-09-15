@@ -181,7 +181,7 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
     let is_calendar = hay.contains("календ") || hay.contains("встреч") || hay.contains("событ") || hay.contains("напомин") || hay.contains("schedule") || hay.contains("calendar") || hay.contains("event");
     let is_fs = hay.contains("файл") || hay.contains("папк") || hay.contains("директ") || hay.contains("fs_") || hay.contains("filesystem");
     let is_notes = hay.contains("заметк") || hay.contains("note");
-    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("голос") || hay.contains("аудио") || hay.contains("озвуч") || hay.contains("говор") || hay.contains("mpris") || hay.contains("media");
+    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("голос") || hay.contains("аудио") || hay.contains("озвуч") || hay.contains("говор") || hay.contains("mpris") || hay.contains("media") || hay.contains("прослуш") || hay.contains("слуш") || hay.contains("транскриб") || hay.contains("расшифр") || hay.contains("войс") || hay.contains("voice") || hay.contains("файл") || hay.contains("документ");
     let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
     let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
     let is_memory = hay.contains("помни") || hay.contains("память") || hay.contains("вспомн") || hay.contains("запомн") || hay.contains("обо мне") || hay.contains("про меня") || hay.contains("обо_мне") || hay.contains("факт") || hay.contains("memory") || hay.contains("вектор") || hay.contains("vector") || hay.contains("векторн");
@@ -263,7 +263,10 @@ fn plugin_prompts_map() -> std::collections::HashMap<String, String> {
 fn default_plugin_prompt(group: &str) -> Option<String> {
     match group {
         "telegram" => Some(
-            "Ты — владелец дефолтного Telegram-аккаунта. Это ты. Все tg_* без явного account — от тебя лично. Отвечай от первого лица, естественно и дружелюбно, с лёгкой иронией как Вин, без канцелярита и без упоминания loner42 или технических деталей.".to_string(),
+            "Ты — владелец дефолтного Telegram-аккаунта. Пиши как Лаконичный диспетчер: коротко, точно, без вводных, читается за секунду. Все tg_* без явного account — от тебя. Пользователь — Лонер/Бехзод (ID 8467206513), не путай с собой.".to_string(),
+        ),
+        "audio/voice" => Some(
+            "Голосовой режим — Спокойный собеседник: плавность, чуть медленнее, диалоговые конструкции для уха. Умеешь читать голосовые через tg_transcribe_voice {message_id, peer} → file_path → stt_transcribe {provider:\"sherpa\", file_path} (автоконверт ogg→wav через ffmpeg). Если sherpa падает — пробуй openai с тем же file_path.".to_string(),
         ),
         _ => None,
     }
@@ -419,6 +422,10 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
     }
     let overview = catalog_groups_overview(full);
     let plugin_prompts = plugin_prompt_section(filtered);
+    const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
+    const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
+    const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
+    let identity_block = format!("{IDENTITY}\n\n{PERSONALITY}\n\n{CHANNEL}");
     let tools_json: Vec<Value> = filtered
         .tools
         .iter()
@@ -433,7 +440,7 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
         .collect();
     let mut instructions = if let Some(pp) = plugin_prompts {
         format!(
-            "You are the vynkor host agent: you complete the user's goal by \
+            "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
              Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
              Plugin identities (how to behave for relevant groups):\n{}\n\n\
@@ -447,13 +454,14 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
              answer as PLAIN TEXT — no JSON object at all.",
+            identity_block,
             overview,
             pp,
             serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
         )
     } else {
         format!(
-            "You are the vynkor host agent: you complete the user's goal by \
+            "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
              Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
              Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
@@ -466,6 +474,7 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
              answer as PLAIN TEXT — no JSON object at all.",
+            identity_block,
             overview,
             serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
         )
