@@ -90,7 +90,7 @@ fn event_envelope(event_type: &str, payload: &Value) -> Envelope {
     }
 }
 
-async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorError> {
+async fn serve(mut client: VynkorClient, config: Config, mut global_event_rx: mpsc::Receiver<telegram_plugin::EventToPublish>) -> Result<(), VynkorError> {
     let jwt_token = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
     let ack = client
         .register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt_token)
@@ -144,6 +144,9 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                 }
             }
             Some(env) = outbound_rx.recv() => { let _ = client.send("kernel", env).await; }
+            Some(ev) = global_event_rx.recv() => {
+                let _ = outbound_tx.send(event_envelope(&ev.event_type, &ev.payload)).await;
+            }
         }
     }
     tracing::info!("shutting down");
@@ -164,22 +167,19 @@ async fn main() -> Result<(), VynkorError> {
         }
     };
 
+    let (global_event_tx, global_event_rx) = tokio::sync::mpsc::channel::<telegram_plugin::EventToPublish>(64);
+
     if let Some(pool) = &config.pool {
         for (account, updates_rx) in config.accounts.iter().zip(updates_receivers) {
             if let Some(client) = pool.get(&account.id) {
-                let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(64);
-                telegram_plugin::events::spawn_live_listener(client, updates_rx, event_tx);
-                tokio::spawn(async move {
-                    while let Some(_ev) = event_rx.recv().await {
-                        tracing::debug!("new_message event ready");
-                    }
-                });
+                let tx = global_event_tx.clone();
+                telegram_plugin::events::spawn_live_listener(client, updates_rx, tx);
             }
         }
     }
 
     let client = VynkorClient::connect_from_env().await?;
-    serve(client, config).await
+    serve(client, config, global_event_rx).await
 }
 
 #[cfg(test)]

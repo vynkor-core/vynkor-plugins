@@ -141,36 +141,71 @@ pub async fn handle_action(
     params_json: &[u8],
 ) -> Result<HandleResult, String> {
     let params: Value = serde_json::from_slice(params_json).unwrap_or(Value::Null);
+    let result = handle_action_inner(config, action, &params).await;
+    if let Err(ref err) = result {
+        if let Some(seconds) = parse_flood_wait_seconds(err) {
+            if let Some(pool) = config.pool.as_ref() {
+                let account = resolve_account(&params, config).to_string();
+                tracing::warn!(
+                    "telegram flood-wait {seconds}s on account {account} ({action}): arming antiban"
+                );
+                pool.antiban.on_flood_wait(&account, seconds).await;
+            }
+        }
+    }
+    result
+}
+
+/// Every grammers `InvocationError` from a FLOOD_WAIT displays as
+/// `... rpc error 420: FLOOD_WAIT (value: N) ...` (see `RpcError`/
+/// `InvocationError`'s `Display` impls upstream). Rather than threading a
+/// flood-wait hook through every one of the ~25 handlers below, we catch it
+/// once here at the single return point and arm the antiban breaker
+/// ([`mtproto::Antiban::on_flood_wait`]) for whichever account the failed
+/// call resolved to.
+fn parse_flood_wait_seconds(err: &str) -> Option<u64> {
+    let idx = err.find("FLOOD_WAIT")?;
+    let marker = "(value: ";
+    let start = idx + err[idx..].find(marker)? + marker.len();
+    let end = start + err[start..].find(')')?;
+    err[start..end].trim().parse().ok()
+}
+
+async fn handle_action_inner(
+    config: &Config,
+    action: &str,
+    params: &Value,
+) -> Result<HandleResult, String> {
     match action {
         "status" => handle_status(config).await,
-        "tg_list_dialogs" => handle_list_dialogs(config, &params).await,
-        "tg_get_history" => handle_get_history(config, &params).await,
-        "tg_get_message" => handle_get_message(config, &params).await,
-        "tg_search" => handle_search(config, &params).await,
-        "tg_send_message" => handle_send_message(config, &params).await,
-        "tg_edit_message" => handle_edit_message(config, &params).await,
-        "tg_delete_message" => handle_delete_message(config, &params).await,
-        "tg_delete_messages" => handle_delete_messages(config, &params).await,
-        "tg_forward_message" => handle_forward_message(config, &params).await,
-        "tg_forward_messages" => handle_forward_messages(config, &params).await,
-        "tg_add_reaction" => handle_add_reaction(config, &params).await,
-        "tg_pin_message" => handle_pin_message(config, &params).await,
-        "tg_upload_media" => handle_upload_media(config, &params).await,
-        "tg_download_media" => handle_download_media(config, &params).await,
-        "tg_send_voice" => handle_send_voice(config, &params).await,
-        "tg_send_sticker" => handle_send_sticker(config, &params).await,
-        "tg_send_animation" => handle_send_animation(config, &params).await,
-        "tg_get_chat_info" => handle_get_chat_info(config, &params).await,
-        "tg_get_user" => handle_get_user(config, &params).await,
-        "tg_list_contacts" => handle_list_contacts(config, &params).await,
-        "tg_get_contact" => handle_get_contact(config, &params).await,
-        "tg_list_unread" => handle_list_unread(config, &params).await,
-        "tg_get_unread" => handle_list_unread(config, &params).await,
-        "tg_mark_read" => handle_mark_read(config, &params).await,
-        "tg_mark_all_read" => handle_mark_read(config, &params).await,
-        "tg_send_action" => handle_send_action(config, &params).await,
-        "tg_set_typing" => handle_send_action(config, &params).await,
-        "tg_transcribe_voice" => handle_transcribe_voice(config, &params).await,
+        "tg_list_dialogs" => handle_list_dialogs(config, params).await,
+        "tg_get_history" => handle_get_history(config, params).await,
+        "tg_get_message" => handle_get_message(config, params).await,
+        "tg_search" => handle_search(config, params).await,
+        "tg_send_message" => handle_send_message(config, params).await,
+        "tg_edit_message" => handle_edit_message(config, params).await,
+        "tg_delete_message" => handle_delete_message(config, params).await,
+        "tg_delete_messages" => handle_delete_messages(config, params).await,
+        "tg_forward_message" => handle_forward_message(config, params).await,
+        "tg_forward_messages" => handle_forward_messages(config, params).await,
+        "tg_add_reaction" => handle_add_reaction(config, params).await,
+        "tg_pin_message" => handle_pin_message(config, params).await,
+        "tg_upload_media" => handle_upload_media(config, params).await,
+        "tg_download_media" => handle_download_media(config, params).await,
+        "tg_send_voice" => handle_send_voice(config, params).await,
+        "tg_send_sticker" => handle_send_sticker(config, params).await,
+        "tg_send_animation" => handle_send_animation(config, params).await,
+        "tg_get_chat_info" => handle_get_chat_info(config, params).await,
+        "tg_get_user" => handle_get_user(config, params).await,
+        "tg_list_contacts" => handle_list_contacts(config, params).await,
+        "tg_get_contact" => handle_get_contact(config, params).await,
+        "tg_list_unread" => handle_list_unread(config, params).await,
+        "tg_get_unread" => handle_list_unread(config, params).await,
+        "tg_mark_read" => handle_mark_read(config, params).await,
+        "tg_mark_all_read" => handle_mark_read(config, params).await,
+        "tg_send_action" => handle_send_action(config, params).await,
+        "tg_set_typing" => handle_send_action(config, params).await,
+        "tg_transcribe_voice" => handle_transcribe_voice(config, params).await,
         other => Err(format!("unknown action: {other}")),
     }
 }
@@ -454,7 +489,7 @@ async fn handle_send_message(config: &Config, params: &Value) -> Result<HandleRe
 
     let message_id = sent.id();
     let ev = EventToPublish {
-        event_type: "plugin.telegram.message_sent".into(),
+        event_type: "message_sent".into(),
         payload: serde_json::json!({"peer": peer_str, "message_id": message_id}),
     };
 
@@ -557,19 +592,26 @@ async fn handle_forward_message(config: &Config, params: &Value) -> Result<Handl
 
 async fn handle_add_reaction(config: &Config, params: &Value) -> Result<HandleResult, String> {
     let peer_str = optional_peer(params);
-    let reaction = required_str(params, "reaction", "tg_add_reaction")?;
+    let reaction = params
+        .get("reaction")
+        .or_else(|| params.get("emoji"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| "tg_add_reaction: reaction/emoji required".to_string())?;
+    let reaction = reaction.to_string();
     let message_id = params
         .get("message_id")
+        .or_else(|| params.get("id"))
         .and_then(|v| v.as_u64())
         .filter(|id| *id != 0)
-        .ok_or_else(|| "tg_add_reaction: message_id required".to_string())?;
+        .ok_or_else(|| "tg_add_reaction: message_id/id required".to_string())?;
     let account = resolve_account(params, config);
     check_antiban(config, account).await?;
     let client = get_client(config, account)?;
     let peer = resolve_peer(&client, peer_str).await?;
 
     client
-        .send_reactions(peer, message_id as i32, reaction)
+        .send_reactions(peer, message_id as i32, reaction.clone())
         .await
         .map_err(|e| format!("add_reaction failed: {e}"))?;
 
@@ -1804,7 +1846,7 @@ mod tests {
         let err = call("tg_add_reaction", json!({"message_id": 1}))
             .await
             .unwrap_err();
-        assert!(err.contains("reaction required"), "{err}");
+        assert!(err.contains("reaction/emoji required"), "{err}");
     }
 
     #[tokio::test]

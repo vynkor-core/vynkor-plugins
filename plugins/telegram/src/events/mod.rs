@@ -4,6 +4,13 @@ use tokio::sync::mpsc;
 
 use crate::EventToPublish;
 
+/// Backoff after a stream error, before retrying `next()`. Reset to this on
+/// every success so a single blip doesn't cause a lingering slow-poll.
+const RETRY_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+/// Ceiling for the exponential backoff, so a sustained outage still retries
+/// often enough to recover promptly once connectivity returns.
+const RETRY_BACKOFF_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub fn spawn_live_listener(
     client: grammers_client::Client,
     updates_rx: tokio::sync::mpsc::UnboundedReceiver<grammers_session::updates::UpdatesLike>,
@@ -16,20 +23,27 @@ pub fn spawn_live_listener(
         };
 
         let mut stream = client.stream_updates(updates_rx, config);
+        let mut backoff = RETRY_BACKOFF_BASE;
 
+        // `UpdateStream::next()` takes `&mut self` and surfaces transient RPC
+        // errors (flood waits, timeouts) without consuming the stream — its
+        // internal message_box state survives the error. So on error we just
+        // back off and retry the same stream forever, instead of letting the
+        // task exit and silently killing live updates for the rest of the
+        // process's life.
         loop {
             match stream.next().await {
                 Ok(update) => {
+                    backoff = RETRY_BACKOFF_BASE;
                     handle_update(&client, update, &event_tx).await;
                 }
                 Err(e) => {
-                    tracing::warn!("update stream error: {e}");
-                    break;
+                    tracing::warn!("update stream error, retrying in {backoff:?}: {e}");
+                    tokio::time::sleep(backoff).await;
+                    backoff = (backoff * 2).min(RETRY_BACKOFF_MAX);
                 }
             }
         }
-
-        stream.sync_update_state();
     });
 }
 
@@ -38,20 +52,28 @@ async fn handle_update(
     update: Update,
     event_tx: &mpsc::Sender<EventToPublish>,
 ) {
-    if let Update::NewMessage(message) = update {
-        if message.outgoing() {
-            return;
-        }
+    let message = match update {
+        Update::NewMessage(m) => m,
+        _ => return,
+    };
+    if message.outgoing() {
+        return;
+    }
 
-        let peer = message.peer();
-        let peer_str = peer
-            .map(crate::peer_to_string)
-            .unwrap_or_default();
+        let peer_str = message
+            .peer()
+            .map(|p| crate::peer_to_string(p))
+            .unwrap_or_else(|_| {
+                message
+                    .sender()
+                    .map(|p| crate::peer_to_string(p))
+                    .unwrap_or_default()
+            });
 
         let sender_str = message
             .sender()
-            .map(crate::peer_to_string)
-            .unwrap_or_default();
+            .map(|p| crate::peer_to_string(p))
+            .unwrap_or_else(|| peer_str.clone());
 
         let media_type = message.media().map(|m| match m {
             grammers_client::types::Media::Contact(_) => "contact",
@@ -79,9 +101,8 @@ async fn handle_update(
 
         let _ = event_tx
             .send(EventToPublish {
-                event_type: "plugin.telegram.new_message".into(),
+                event_type: "new_message".into(),
                 payload,
             })
             .await;
-    }
 }

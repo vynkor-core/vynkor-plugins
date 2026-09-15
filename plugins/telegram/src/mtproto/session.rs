@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use grammers_client::Client;
 use grammers_client::types::Dialog;
 use grammers_mtsender::{SenderPool, SenderPoolHandle};
@@ -110,6 +110,22 @@ impl SessionPool {
         let updates_rx = pool.updates;
 
         tokio::spawn(pool.runner.run());
+
+        // A stale/invalid session file loads without error but isn't
+        // actually logged in — every subsequent action would then fail with
+        // an opaque grammers auth error while `status` still reports
+        // `engine_ready: true`. Fail fast here with a clear message instead.
+        match client.is_authorized().await {
+            Ok(true) => {}
+            Ok(false) => bail!(
+                "account {}: session not authorized — re-run the login flow",
+                account.id
+            ),
+            Err(e) => bail!(
+                "account {}: failed to verify session auth state: {e}",
+                account.id
+            ),
+        }
 
         self._handles
             .write()

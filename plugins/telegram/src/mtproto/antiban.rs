@@ -20,6 +20,10 @@ const BUCKET_CAPACITY: f64 = 8.0;
 const BUCKET_RATE: f64 = 8.0;
 /// Consecutive FloodWaits that trip an account's circuit breaker.
 const CIRCUIT_OPEN_THRESHOLD: u32 = 3;
+/// How long a tripped circuit stays open before a half-open retry is let
+/// through. Without this, a breaker trip is permanent until the whole
+/// process restarts.
+const CIRCUIT_COOLDOWN: Duration = Duration::from_secs(300);
 
 /// Simple in-memory token bucket: fills at `rate` tokens/sec up to `capacity`.
 struct TokenBucket {
@@ -73,6 +77,7 @@ struct AccountState {
     bucket: TokenBucket,
     consecutive_flood_waits: u32,
     circuit_open: bool,
+    circuit_opened_at: Option<Instant>,
 }
 
 impl AccountState {
@@ -81,6 +86,7 @@ impl AccountState {
             bucket: TokenBucket::new(BUCKET_CAPACITY, BUCKET_RATE),
             consecutive_flood_waits: 0,
             circuit_open: false,
+            circuit_opened_at: None,
         }
     }
 }
@@ -117,7 +123,20 @@ impl Antiban {
                     .entry(account.to_string())
                     .or_insert_with(AccountState::new);
                 if entry.circuit_open {
-                    bail!("antiban: circuit open for account {account}");
+                    let cooled_down = entry
+                        .circuit_opened_at
+                        .map(|opened_at| now.saturating_duration_since(opened_at) >= CIRCUIT_COOLDOWN)
+                        .unwrap_or(true);
+                    if cooled_down {
+                        // Half-open: let this one request through. If it
+                        // floods again, `on_flood_wait` re-trips the breaker
+                        // and resets the cooldown clock.
+                        entry.circuit_open = false;
+                        entry.circuit_opened_at = None;
+                        entry.consecutive_flood_waits = 0;
+                    } else {
+                        bail!("antiban: circuit open for account {account}");
+                    }
                 }
                 match entry.bucket.try_acquire_at(now) {
                     Ok(()) => {
@@ -146,6 +165,7 @@ impl Antiban {
         entry.consecutive_flood_waits += 1;
         if entry.consecutive_flood_waits >= CIRCUIT_OPEN_THRESHOLD {
             entry.circuit_open = true;
+            entry.circuit_opened_at = Some(Instant::now());
         }
     }
 
@@ -267,5 +287,30 @@ mod tests {
             antiban.on_flood_wait("personal", 0).await;
         }
         assert!(antiban.check("personal").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn circuit_half_opens_after_cooldown() {
+        let antiban = Antiban::new();
+        for _ in 0..3 {
+            antiban.on_flood_wait("personal", 0).await;
+        }
+        assert!(antiban.is_circuit_open("personal"));
+
+        // Simulate the cooldown having elapsed without a real 5-minute sleep.
+        {
+            let mut state = antiban.lock_state();
+            let entry = state.get_mut("personal").unwrap();
+            entry.circuit_opened_at = Some(Instant::now() - CIRCUIT_COOLDOWN - Duration::from_secs(1));
+        }
+
+        assert!(
+            antiban.check("personal").await.is_ok(),
+            "half-open request should be let through after cooldown"
+        );
+        assert!(
+            !antiban.is_circuit_open("personal"),
+            "breaker should be cleared once the half-open request succeeds"
+        );
     }
 }
