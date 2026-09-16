@@ -19,6 +19,28 @@ use crate::Rpc;
 /// Per-command timeout for discovery round-trips (ms).
 const DISCOVERY_TIMEOUT_MS: u32 = 5_000;
 
+/// `ActionSpecV2` (`vynkor-wire::manifest::ActionSpecV2`) carries no
+/// tool-level `description` field — only `name`/`permission`/`input`/
+/// `output` (the legacy v1 `ActionSpec` had one; V2 dropped it). Without a
+/// fallback here every V2-declared tool embeds as `"name — "`, which the
+/// embedding-similarity filter (`agent::engine::embedding_filtered_catalog`)
+/// then reliably drops for any goal text that doesn't literally contain the
+/// tool name. Until `vynkor-wire` grows a real field, stitch a description
+/// together from the per-parameter docs plugin authors already write.
+fn description_from_parameters(parameters: &Value) -> String {
+    parameters
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|props| {
+            props
+                .values()
+                .filter_map(|p| p.get("description").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })
+        .unwrap_or_default()
+}
+
 fn spec_from_action_spec(s: &Value) -> Option<ToolSpec> {
     let name = s.get("name").and_then(Value::as_str)?;
     let parameters = match s.get("params_schema") {
@@ -29,9 +51,14 @@ fn spec_from_action_spec(s: &Value) -> Option<ToolSpec> {
         Some(p @ Value::Object(_)) => p.clone(),
         _ => Value::Null,
     };
+    let mut description =
+        s.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+    if description.is_empty() {
+        description = description_from_parameters(&parameters);
+    }
     Some(ToolSpec {
         name: name.to_string(),
-        description: s.get("description").and_then(Value::as_str).unwrap_or_default().to_string(),
+        description,
         parameters,
         requires_confirmation: s
             .get("requires_confirmation")
@@ -110,6 +137,25 @@ mod tests {
         let t = spec_from_action_spec(&missing).unwrap();
         assert_eq!(t.parameters, Value::Null);
         assert_eq!(t.risk, "");
+    }
+
+    #[test]
+    fn missing_top_level_description_falls_back_to_param_docs() {
+        // ActionSpecV2 (vynkor-wire::manifest) has no description field —
+        // this is the shape a V2-declared tool (e.g. daemon_say) actually
+        // arrives in.
+        let s = json!({
+            "name": "daemon_say",
+            "input": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to synthesize and play through tts + sound."}
+                }
+            },
+            "params_schema": "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to synthesize and play through tts + sound.\"}}}"
+        });
+        let t = spec_from_action_spec(&s).unwrap();
+        assert_eq!(t.description, "Text to synthesize and play through tts + sound.");
     }
 
     #[test]
