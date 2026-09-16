@@ -4,7 +4,9 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::store::{ActionSpec, Condition, RuleDoc, Trigger, MAX_RULES};
+use crate::store::{ActionSpec, Condition, RuleDoc, Trigger};
+#[cfg(test)]
+use crate::store::MAX_RULES;
 
 pub const MAX_NAME_BYTES: usize = 200;
 pub const MAX_CONDITIONS: usize = 8;

@@ -169,3 +169,114 @@ pub fn now_ms() -> i64 {
         .map(|d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rule_with(conditions: Vec<Condition>, cooldown_ms: u64, last_fired_ms: i64) -> RuleDoc {
+        RuleDoc {
+            id: "1".to_string(),
+            name: "test".to_string(),
+            enabled: true,
+            trigger: Trigger { event_type: "plugin.test.fired".to_string() },
+            conditions,
+            action: ActionSpec {
+                target_action: "noop".to_string(),
+                params_json: Value::Null,
+            },
+            requires_confirmation: false,
+            cooldown_ms,
+            last_fired_ms,
+            last_error: String::new(),
+            fire_count: 0,
+            created_at_ms: 0,
+            updated_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn empty_conditions_always_hold() {
+        let rule = rule_with(vec![], 0, 0);
+        assert!(rule.conditions_hold(&serde_json::json!({"anything": 1})));
+        assert!(rule.conditions_hold(&Value::Null));
+    }
+
+    #[test]
+    fn empty_path_matches_whole_payload() {
+        let payload = serde_json::json!({"a": 1});
+        let matching = rule_with(
+            vec![Condition { path: String::new(), equals: payload.clone() }],
+            0,
+            0,
+        );
+        assert!(matching.conditions_hold(&payload));
+
+        let mismatching = rule_with(
+            vec![Condition { path: String::new(), equals: serde_json::json!({"a": 2}) }],
+            0,
+            0,
+        );
+        assert!(!mismatching.conditions_hold(&payload));
+    }
+
+    #[test]
+    fn missing_pointer_path_does_not_hold() {
+        let rule = rule_with(
+            vec![Condition { path: "/nope".to_string(), equals: serde_json::json!(1) }],
+            0,
+            0,
+        );
+        assert!(!rule.conditions_hold(&serde_json::json!({"a": 1})));
+    }
+
+    #[test]
+    fn type_mismatch_does_not_hold() {
+        let rule = rule_with(
+            vec![Condition { path: "/a".to_string(), equals: serde_json::json!("1") }],
+            0,
+            0,
+        );
+        // payload has a.a == 1 (number), condition expects "1" (string) — no match.
+        assert!(!rule.conditions_hold(&serde_json::json!({"a": 1})));
+    }
+
+    #[test]
+    fn multiple_conditions_are_and_combined() {
+        let rule = rule_with(
+            vec![
+                Condition { path: "/a".to_string(), equals: serde_json::json!(1) },
+                Condition { path: "/b".to_string(), equals: serde_json::json!(2) },
+            ],
+            0,
+            0,
+        );
+        assert!(rule.conditions_hold(&serde_json::json!({"a": 1, "b": 2})));
+        assert!(!rule.conditions_hold(&serde_json::json!({"a": 1, "b": 3})));
+        assert!(!rule.conditions_hold(&serde_json::json!({"a": 1})));
+    }
+
+    #[test]
+    fn zero_cooldown_always_ok() {
+        let rule = rule_with(vec![], 0, 1_000_000);
+        assert!(rule.cooldown_ok(1_000_000));
+        assert!(rule.cooldown_ok(0));
+    }
+
+    #[test]
+    fn cooldown_boundary_is_inclusive() {
+        let rule = rule_with(vec![], 10_000, 1_000_000);
+        // exactly on the boundary: elapsed == cooldown_ms -> ok.
+        assert!(rule.cooldown_ok(1_010_000));
+        // one ms short of the boundary -> not ok.
+        assert!(!rule.cooldown_ok(1_009_999));
+        // well past the boundary -> ok.
+        assert!(rule.cooldown_ok(2_000_000));
+    }
+
+    #[test]
+    fn cooldown_ok_when_never_fired() {
+        let rule = rule_with(vec![], 5_000, 0);
+        assert!(rule.cooldown_ok(now_ms()));
+    }
+}
