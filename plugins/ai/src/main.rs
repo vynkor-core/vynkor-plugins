@@ -5,23 +5,55 @@
 //! v0.3 adds a SQLite store (`VYN_DATA_DIR/ai.db`) holding declared +
 //! auto-discovered models, agent profiles, and per-call token usage.
 //!
-//! Doesn't use the SDK's `Plugin::run`/`serve` loop: `Plugin::on_message`
-//! only gets `&mut self`, not `&mut VynkorClient`, and there is no way to
-//! get a second client for the outbound `send_action` call into `network`
-//! — the kernel rejects a second connection under the same `plugin_id`
-//! (`vynkor/src/plugins/registry.rs`) and rejects any traffic from an
-//! unregistered connection (`vynkor/src/ipc/protocol.rs`). So this plugin
-//! drives its own loop, near-identical to the SDK's `serve()`, but calls
-//! the `chat_completion` handler with the loop's own `&mut VynkorClient` in
-//! hand. Sequential, one request at a time — same model `network` and
-//! `ping-pong-rs` already use.
+//! Doesn't use the SDK's `Plugin::run`/`serve` loop or its
+//! `concurrent::serve_concurrent` (used by `database`/`network`): neither
+//! gives a handler task a second connection for the outbound `send_action`
+//! call into `network` — the kernel rejects a second registration under the
+//! same `plugin_id` (`vynkor/src/plugins/registry.rs`), and
+//! `concurrent::ConcurrentHandler::on_action` deliberately never touches the
+//! client at all (see that module's doc comment). `ai`'s handlers need
+//! exactly that: an outbound call per request.
+//!
+//! So this plugin drives its own concurrent loop (`outbound.rs` has the
+//! full rationale): one task owns the single `VynkorClient` exclusively,
+//! `tokio::select!`ing between inbound frames, completed inbound-request
+//! replies, and outbound-call requests from spawned handler tasks. Each
+//! inbound `ActionRequest` (`chat_completion`, `embedding`, ...) is spawned
+//! onto its own task immediately, so N goals in flight run their provider
+//! HTTP round-trips concurrently instead of queuing behind each other — and
+//! critically, the loop keeps answering kernel `Ping`s the whole time, so a
+//! slow provider call no longer trips the supervisor's watchdog and gets
+//! the whole plugin SIGKILLed (see `docs/`/incident notes: this used to
+//! happen every 5-30 minutes under normal use).
+//!
+//! Before this, the plugin was sequential, one request at a time — same
+//! model `network` and `ping-pong-rs` used before their own migration to
+//! `concurrent::serve_concurrent`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use ai_plugin::outbound::{ActionCaller, OutboundCall, OutboundHandle};
 use ai_plugin::{config, db, discovery, handler};
-use vynkor_sdk::proto::{envelope, ActionResponse, ActionStatus, Envelope, PluginManifest, Pong};
+use tokio::sync::{mpsc, oneshot};
+use vynkor_sdk::proto::{
+    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, PluginManifest, Pong,
+};
 use vynkor_sdk::{VynkorClient, VynkorError};
+
+/// How often the loop sweeps `pending` for outbound calls that timed out
+/// without a matching `ActionResponse` ever arriving (e.g. `network` itself
+/// wedged). Coarse on purpose — timeouts here are seconds, not
+/// milliseconds, so 500ms of slack is invisible to callers.
+const PENDING_SWEEP_INTERVAL: Duration = Duration::from_millis(500);
+/// Mirrors `VynkorClient::send_action`'s own default (`timeout_ms == 0`).
+const DEFAULT_OUTBOUND_TIMEOUT: Duration = Duration::from_secs(30);
+/// Bound on in-flight inbound requests / outbound calls / queued replies.
+/// Generous: a stalled provider should back up here, loudly, rather than
+/// silently unbounded-queue.
+const CHANNEL_CAPACITY: usize = 256;
 
 const PLUGIN_ID: &str = "ai";
 const PLUGIN_VERSION: &str = "0.1.2";
@@ -58,18 +90,18 @@ fn unix_millis() -> u64 {
 }
 
 async fn handle_action_request(
-    client: &mut VynkorClient,
-    req: vynkor_sdk::proto::ActionRequest,
+    caller: &mut impl ActionCaller,
+    req: ActionRequest,
     db: &db::AiDb,
     cfg: &config::AiConfig,
 ) -> Envelope {
     let outcome = match req.action.as_str() {
-        "chat_completion" => handler::handle_chat_completion(client, &req.params_json, db).await,
-        "embedding" => handler::handle_embedding(client, &req.params_json, db).await,
+        "chat_completion" => handler::handle_chat_completion(caller, &req.params_json, db).await,
+        "embedding" => handler::handle_embedding(caller, &req.params_json, db).await,
         "list_models" => handler::handle_list_models(db),
         "list_agents" => handler::handle_list_agents(db),
         "usage_stats" => handler::handle_usage_stats(db),
-        "refresh_models" => handler::handle_refresh_models(client, db, &cfg.discovery).await,
+        "refresh_models" => handler::handle_refresh_models(caller, db, &cfg.discovery).await,
         other => {
             return Envelope {
                 payload: Some(envelope::Payload::ActionResponse(ActionResponse {
@@ -167,34 +199,135 @@ async fn serve(
         }
     }
 
+    run_loop(client, db, Arc::new(cfg)).await
+}
+
+/// The concurrent message loop itself, split out from [`serve`] so tests can
+/// drive it directly against a pre-registered client (mirrors
+/// `concurrent::run_concurrent_loop`'s own test seam) without the
+/// registration handshake and startup model refresh.
+async fn run_loop(
+    mut client: VynkorClient,
+    db: Arc<db::AiDb>,
+    cfg: Arc<config::AiConfig>,
+) -> Result<(), VynkorError> {
+    // Replies to inbound ActionRequests (chat_completion, ...), completed by
+    // spawned handler tasks — the loop below is the only thing that ever
+    // touches `client`, so tasks hand their result back over this channel
+    // instead of sending it themselves.
+    let (resp_tx, mut resp_rx) = mpsc::channel::<Envelope>(CHANNEL_CAPACITY);
+    // Outbound calls a handler task wants made on its behalf (see
+    // `outbound.rs`) — `OutboundHandle` is the `ActionCaller` handler tasks
+    // actually hold.
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<OutboundCall>(CHANNEL_CAPACITY);
+    // In-flight outbound calls this loop has sent to the kernel on a
+    // handler's behalf, keyed by the `action_id` it minted, waiting for the
+    // matching `ActionResponse` to route back through the oneshot.
+    let mut pending: HashMap<String, (oneshot::Sender<Result<ActionResponse, VynkorError>>, Instant)> =
+        HashMap::new();
+    let mut sweep = tokio::time::interval(PENDING_SWEEP_INTERVAL);
+
     loop {
-        let env = match client.recv().await {
-            Ok(env) => env,
-            Err(_) => break, // disconnect / EOF
-        };
-        match env.payload {
-            Some(envelope::Payload::Ping(ping)) => {
-                let pong = Envelope {
-                    payload: Some(envelope::Payload::Pong(Pong {
-                        original_timestamp: ping.timestamp,
-                        server_timestamp: unix_millis(),
+        tokio::select! {
+            envelope = client.recv() => {
+                let env = match envelope {
+                    Ok(env) => env,
+                    Err(_) => break, // disconnect / EOF
+                };
+                match env.payload {
+                    Some(envelope::Payload::Ping(ping)) => {
+                        let pong = Envelope {
+                            payload: Some(envelope::Payload::Pong(Pong {
+                                original_timestamp: ping.timestamp,
+                                server_timestamp: unix_millis(),
+                            })),
+                            ..Default::default()
+                        };
+                        // Answered straight off the select! loop, never
+                        // queued behind a handler task — this is the whole
+                        // point: no chat_completion in flight can ever
+                        // delay a Pong past the watchdog's deadline again.
+                        let _ = client.send("kernel", pong).await;
+                    }
+                    Some(envelope::Payload::PluginShutdown(_)) => break,
+                    Some(envelope::Payload::Event(event)) => {
+                        // ai declares no event subscriptions; ack defensively
+                        // so the kernel doesn't retry anything unexpectedly
+                        // delivered.
+                        let _ = client.ack_event(&event.event_id).await;
+                    }
+                    Some(envelope::Payload::ActionRequest(req)) => {
+                        // Someone (agent, tts, ...) is calling *us* — spawn a
+                        // task so it runs concurrently with everything else.
+                        let db = db.clone();
+                        let cfg = cfg.clone();
+                        let resp_tx = resp_tx.clone();
+                        let mut caller = OutboundHandle::new(outbound_tx.clone());
+                        tokio::spawn(async move {
+                            let resp = handle_action_request(&mut caller, req, &db, &cfg).await;
+                            let _ = resp_tx.send(resp).await;
+                        });
+                    }
+                    Some(envelope::Payload::ActionResponse(resp)) => {
+                        // The reply to a call *we* made on a handler task's
+                        // behalf (network's http_request, secrets' secret_get,
+                        // ...) — route it back to whichever task is waiting.
+                        if let Some((reply, _)) = pending.remove(&resp.action_id) {
+                            let _ = reply.send(Ok(resp));
+                        } else {
+                            eprintln!(
+                                "[{PLUGIN_ID}] stray ActionResponse for unknown action_id {}",
+                                resp.action_id
+                            );
+                        }
+                    }
+                    other => {
+                        println!("[{PLUGIN_ID}] unhandled message: {other:?}");
+                    }
+                }
+            }
+            Some(resp) = resp_rx.recv() => {
+                let _ = client.send("kernel", resp).await;
+            }
+            Some(call) = outbound_rx.recv() => {
+                let action_id = uuid::Uuid::new_v4().to_string();
+                let timeout = if call.timeout_ms == 0 {
+                    DEFAULT_OUTBOUND_TIMEOUT
+                } else {
+                    Duration::from_millis(call.timeout_ms as u64)
+                };
+                let env = Envelope {
+                    payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                        action_id: action_id.clone(),
+                        action: call.action,
+                        params_json: call.params_json,
+                        timeout_ms: call.timeout_ms,
+                        streaming: false,
+                        ..Default::default()
                     })),
                     ..Default::default()
                 };
-                let _ = client.send("kernel", pong).await;
+                match client.send("kernel", env).await {
+                    Ok(()) => {
+                        pending.insert(action_id, (call.reply, Instant::now() + timeout));
+                    }
+                    Err(e) => {
+                        let _ = call.reply.send(Err(e));
+                    }
+                }
             }
-            Some(envelope::Payload::PluginShutdown(_)) => break,
-            Some(envelope::Payload::Event(event)) => {
-                // ai declares no event subscriptions; ack defensively so the
-                // kernel doesn't retry anything unexpectedly delivered.
-                let _ = client.ack_event(&event.event_id).await;
-            }
-            Some(envelope::Payload::ActionRequest(req)) => {
-                let resp = handle_action_request(&mut client, req, &db, &cfg).await;
-                let _ = client.send("kernel", resp).await;
-            }
-            other => {
-                println!("[{PLUGIN_ID}] unhandled message: {other:?}");
+            _ = sweep.tick() => {
+                let now = Instant::now();
+                let expired: Vec<String> = pending
+                    .iter()
+                    .filter(|(_, (_, deadline))| *deadline <= now)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                for id in expired {
+                    if let Some((reply, _)) = pending.remove(&id) {
+                        let _ = reply.send(Err(VynkorError::Timeout));
+                    }
+                }
             }
         }
     }
@@ -226,4 +359,177 @@ async fn main() -> Result<(), VynkorError> {
     let cfg = config::from_env();
 
     serve(client, db, cfg).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    use tokio::net::UnixStream;
+    use vynkor_sdk::proto::Ping;
+
+    fn chat_params(tag: &str) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "provider": "openai",
+            "base_url": "http://fake/v1",
+            "model": "test-model",
+            "api_key_env": "TEST_KEY",
+            "messages": [{"role": "user", "content": tag}],
+        }))
+        .unwrap()
+    }
+
+    fn ok_completion_body() -> String {
+        serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        })
+        .to_string()
+    }
+
+    async fn recv_action_request(kernel: &mut VynkorClient) -> ActionRequest {
+        loop {
+            let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+                .await
+                .expect("timed out waiting for ActionRequest")
+                .unwrap();
+            if let Some(envelope::Payload::ActionRequest(req)) = env.payload {
+                return req;
+            }
+        }
+    }
+
+    /// Collect `count` outbound `http_request` calls, transparently
+    /// answering any `secret_get` calls (key_resolve's vault hop, which
+    /// every `chat_completion` makes first) with "not found" so the caller
+    /// falls back to its env var. Returns once `count` `http_request` calls
+    /// have arrived, still unanswered.
+    async fn collect_http_requests(kernel: &mut VynkorClient, count: usize) -> Vec<ActionRequest> {
+        let mut out = Vec::new();
+        while out.len() < count {
+            let req = recv_action_request(kernel).await;
+            match req.action.as_str() {
+                "secret_get" => {
+                    let resp = Envelope {
+                        payload: Some(envelope::Payload::ActionResponse(ActionResponse {
+                            action_id: req.action_id,
+                            status: ActionStatus::ActionOk as i32,
+                            data_json: serde_json::to_vec(&serde_json::json!({"found": false}))
+                                .unwrap(),
+                            error: String::new(),
+                        })),
+                        ..Default::default()
+                    };
+                    kernel.send("client", resp).await.unwrap();
+                }
+                "http_request" => out.push(req),
+                other => panic!("unexpected outbound action: {other}"),
+            }
+        }
+        out
+    }
+
+    async fn recv_action_response(kernel: &mut VynkorClient) -> ActionResponse {
+        loop {
+            let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+                .await
+                .expect("timed out waiting for ActionResponse")
+                .unwrap();
+            if let Some(envelope::Payload::ActionResponse(resp)) = env.payload {
+                return resp;
+            }
+        }
+    }
+
+    /// Round-trips a `Ping`, failing the test if `Pong` doesn't come back
+    /// promptly — this is the exact liveness check the kernel's watchdog
+    /// performs, and the exact one used to go unanswered (and get the whole
+    /// plugin SIGKILLed) while a slow chat_completion was in flight.
+    async fn assert_ping_answered_promptly(kernel: &mut VynkorClient) {
+        let env = Envelope {
+            payload: Some(envelope::Payload::Ping(Ping { timestamp: 42 })),
+            ..Default::default()
+        };
+        kernel.send("client", env).await.unwrap();
+        loop {
+            let env = tokio::time::timeout(Duration::from_millis(500), kernel.recv())
+                .await
+                .expect("Pong did not arrive promptly — Ping got stuck behind a handler task")
+                .unwrap();
+            if let Some(envelope::Payload::Pong(pong)) = env.payload {
+                assert_eq!(pong.original_timestamp, 42);
+                return;
+            }
+        }
+    }
+
+    /// Regression test for the incident this module's doc comment
+    /// describes: two `chat_completion` calls used to serialize behind one
+    /// exclusive client, and a slow provider round-trip blocked `Ping`
+    /// replies past the watchdog's deadline. Proves both properties of the
+    /// fix: N inbound requests run concurrently (both outbound `http_request`
+    /// calls are in flight before either is answered), and `Ping` is
+    /// answered immediately regardless.
+    #[tokio::test]
+    async fn concurrent_chat_completions_dont_block_each_other_or_ping() {
+        std::env::set_var(ai_plugin::request::ALLOWED_KEY_ENVS_ENV, "TEST_KEY");
+        std::env::set_var("TEST_KEY", "test-key-value");
+
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let plugin_client = VynkorClient::from_stream(plugin_side, None);
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+
+        let db = Arc::new(db::AiDb::open(None).unwrap());
+        let cfg = Arc::new(config::AiConfig::default());
+        tokio::spawn(run_loop(plugin_client, db, cfg));
+
+        for (id, tag) in [("req1", "one"), ("req2", "two")] {
+            let env = Envelope {
+                payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                    action_id: id.to_string(),
+                    action: "chat_completion".to_string(),
+                    params_json: chat_params(tag),
+                    timeout_ms: 5000,
+                    streaming: false,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            };
+            kernel.send("client", env).await.unwrap();
+        }
+
+        // Both handler tasks must reach their outbound http_request call
+        // before either is answered — sequential dispatch would only ever
+        // show the second one after the first's full round trip completed.
+        let reqs = collect_http_requests(&mut kernel, 2).await;
+        let (first, second) = (&reqs[0], &reqs[1]);
+        assert_ne!(first.action_id, second.action_id);
+
+        // Both provider calls are still unanswered right now — this is
+        // exactly the state that used to starve the watchdog's Ping.
+        assert_ping_answered_promptly(&mut kernel).await;
+
+        for req in [first, second] {
+            let net = serde_json::json!({"status": 200, "body": ok_completion_body(), "body_encoding": ""});
+            let resp = Envelope {
+                payload: Some(envelope::Payload::ActionResponse(ActionResponse {
+                    action_id: req.action_id.clone(),
+                    status: ActionStatus::ActionOk as i32,
+                    data_json: serde_json::to_vec(&net).unwrap(),
+                    error: String::new(),
+                })),
+                ..Default::default()
+            };
+            kernel.send("client", resp).await.unwrap();
+        }
+
+        let mut got = HashSet::new();
+        for _ in 0..2 {
+            let resp = recv_action_response(&mut kernel).await;
+            assert_eq!(resp.status, ActionStatus::ActionOk as i32, "error: {}", resp.error);
+            got.insert(resp.action_id);
+        }
+        assert_eq!(got, ["req1".to_string(), "req2".to_string()].into_iter().collect());
+    }
 }

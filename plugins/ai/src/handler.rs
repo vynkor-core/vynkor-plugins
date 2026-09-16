@@ -4,11 +4,10 @@
 //! map the response back to `ai`'s normalized shape. Also hosts the
 //! discovery/listing actions backed by the database.
 
-use vynkor_sdk::VynkorClient;
-
 use crate::config::DiscoverySource;
 use crate::db::{AiDb, UsageRow};
 use crate::discovery;
+use crate::outbound::ActionCaller;
 use crate::provider::{
     anthropic::AnthropicProvider, openai_compat::OpenAiCompatProvider, EmbeddingProvider, Provider,
 };
@@ -30,7 +29,7 @@ struct NetworkHttpResponse {
 /// `ActionResponse.data_json` on success, or a human-readable error
 /// (never containing the resolved API key) on failure.
 pub async fn handle_chat_completion(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     params_json: &[u8],
     db: &AiDb,
 ) -> Result<Vec<u8>, String> {
@@ -49,7 +48,7 @@ pub async fn handle_chat_completion(
     }
 
     let api_key =
-        crate::key_resolve::resolve_api_key(client, &params.api_key_env).await?;
+        crate::key_resolve::resolve_api_key(caller, &params.api_key_env).await?;
 
     let provider: &dyn Provider = match params.provider {
         RequestProvider::Anthropic => &AnthropicProvider,
@@ -60,8 +59,8 @@ pub async fn handle_chat_completion(
     let http_req_json = serde_json::to_vec(&http_req)
         .map_err(|e| format!("failed to encode outbound http request: {e}"))?;
 
-    let action_resp = client
-        .send_action("http_request", &http_req_json, params.timeout_ms as u32)
+    let action_resp = caller
+        .call_action("http_request", &http_req_json, params.timeout_ms as u32)
         .await
         .map_err(|e| format!("network plugin call failed: {e}"))?;
 
@@ -106,7 +105,7 @@ pub async fn handle_chat_completion(
 }
 
 pub async fn handle_embedding(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     params_json: &[u8],
     db: &AiDb,
 ) -> Result<Vec<u8>, String> {
@@ -124,7 +123,7 @@ pub async fn handle_embedding(
         ));
     }
 
-    let api_key = crate::key_resolve::resolve_api_key(client, &params.api_key_env).await?;
+    let api_key = crate::key_resolve::resolve_api_key(caller, &params.api_key_env).await?;
 
     let provider: &dyn EmbeddingProvider = &OpenAiCompatProvider;
 
@@ -132,8 +131,8 @@ pub async fn handle_embedding(
     let http_req_json = serde_json::to_vec(&http_req)
         .map_err(|e| format!("failed to encode outbound http request: {e}"))?;
 
-    let action_resp = client
-        .send_action("http_request", &http_req_json, params.timeout_ms as u32)
+    let action_resp = caller
+        .call_action("http_request", &http_req_json, params.timeout_ms as u32)
         .await
         .map_err(|e| format!("network plugin call failed: {e}"))?;
 
@@ -310,11 +309,11 @@ pub fn handle_usage_stats(db: &AiDb) -> Result<Vec<u8>, String> {
 /// `refresh_models` — pull the configured providers' model lists and upsert
 /// them into the database.
 pub async fn handle_refresh_models(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     db: &AiDb,
     sources: &[DiscoverySource],
 ) -> Result<Vec<u8>, String> {
-    let result = discovery::refresh_models(client, db, sources).await?;
+    let result = discovery::refresh_models(caller, db, sources).await?;
     serde_json::to_vec(&result).map_err(|e| format!("failed to encode response: {e}"))
 }
 

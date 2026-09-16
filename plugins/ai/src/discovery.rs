@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use vynkor_sdk::proto::ActionStatus;
-use vynkor_sdk::VynkorClient;
 
 use crate::config::DiscoverySource;
 use crate::db::{AiDb, Model};
+use crate::outbound::ActionCaller;
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Discovered {
@@ -36,13 +36,13 @@ fn now_millis() -> i64 {
 /// Pull the model list of every configured discovery source and upsert the
 /// results into `db`. Returns per-source errors, never a hard failure.
 pub async fn refresh_models(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     db: &AiDb,
     sources: &[DiscoverySource],
 ) -> Result<Discovered, String> {
     let mut result = Discovered::default();
     for src in sources {
-        match fetch_ids(client, src).await {
+        match fetch_ids(caller, src).await {
             Ok(ids) => {
                 let base = completion_base(&src.provider, &src.base_url);
                 let discovered_at = Some(now_millis());
@@ -104,7 +104,7 @@ fn store_provider(provider: &str) -> String {
 }
 
 async fn fetch_ids(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     src: &DiscoverySource,
 ) -> Result<Vec<String>, String> {
     let (url, headers) = match src.provider.as_str() {
@@ -113,7 +113,7 @@ async fn fetch_ids(
             HashMap::new(),
         ),
         "openai" => {
-            let key = crate::key_resolve::resolve_api_key(client, &src.api_key_env)
+            let key = crate::key_resolve::resolve_api_key(caller, &src.api_key_env)
                 .await
                 .unwrap_or_default();
             let mut h = HashMap::new();
@@ -125,7 +125,7 @@ async fn fetch_ids(
         other => return Err(format!("unsupported discovery provider: {other}")),
     };
 
-    let body = http_get(client, &url, &headers, 15_000).await?;
+    let body = http_get(caller, &url, &headers, 15_000).await?;
     match src.provider.as_str() {
         "ollama" => parse_ollama_tags(&body),
         _ => parse_openai_models(&body),
@@ -133,7 +133,7 @@ async fn fetch_ids(
 }
 
 async fn http_get(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     url: &str,
     headers: &HashMap<String, String>,
     timeout_ms: u64,
@@ -149,8 +149,8 @@ async fn http_get(
         "follow_redirects": true,
         "max_redirects": 5,
     });
-    let resp = client
-        .send_action(
+    let resp = caller
+        .call_action(
             "http_request",
             &serde_json::to_vec(&params).unwrap_or_default(),
             timeout_ms as u32,

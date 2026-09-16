@@ -57,7 +57,10 @@ pub struct Usage {
     pub output_tokens: u64,
 }
 
-pub trait Provider {
+/// `Send + Sync` so `&dyn Provider` can be held across an `.await` inside a
+/// `tokio::spawn`ed handler task (the concurrent loop in `main.rs` spawns
+/// one task per inbound request).
+pub trait Provider: Send + Sync {
     /// Build the `network` `http_request` params for this completion call.
     /// `api_key` is the resolved secret value (never logged, never echoed
     /// back in any error).
@@ -77,7 +80,8 @@ pub struct EmbeddingResult {
     pub usage: Usage,
 }
 
-pub trait EmbeddingProvider {
+/// See [`Provider`]'s doc comment for why this needs `Send + Sync`.
+pub trait EmbeddingProvider: Send + Sync {
     fn build_embedding_request(
         &self,
         params: &crate::request::EmbeddingParams,

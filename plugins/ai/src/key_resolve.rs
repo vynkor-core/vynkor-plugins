@@ -6,7 +6,8 @@
 //! immediately. The resolved key value never appears in any error or log line.
 
 use vynkor_sdk::proto::ActionStatus;
-use vynkor_sdk::VynkorClient;
+
+use crate::outbound::ActionCaller;
 
 /// `secrets`' `secret_get` response shape — see the secrets plugin.
 #[derive(serde::Deserialize)]
@@ -22,15 +23,15 @@ const SECRETS_TIMEOUT_MS: u32 = 3000;
 /// Resolve the provider API key for `handle`: vault first, env var second.
 /// Returns `Err` only when neither source has a non-empty value.
 pub async fn resolve_api_key(
-    client: &mut VynkorClient,
+    caller: &mut impl ActionCaller,
     handle: &str,
 ) -> Result<String, String> {
     // Hop 1: the `secrets` plugin's vault. Any failure here — network-level
     // error, non-OK status, malformed reply, not found, or an empty value —
     // is logged (without the value) and falls through to the env fallback.
     let params = serde_json::json!({"name": handle});
-    match client
-        .send_action(
+    match caller
+        .call_action(
             "secret_get",
             &params.to_string().into_bytes(),
             SECRETS_TIMEOUT_MS,
