@@ -301,9 +301,15 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
     for (group, mut names) in groups {
         names.sort();
         let count = names.len();
-        let sample = names.iter().take(6).cloned().collect::<Vec<_>>().join(", ");
-        let extra = if count > 6 { format!(", +{} more", count - 6) } else { String::new() };
-        lines.push(format!("- {} ({} tools): {}{}", group, count, sample, extra));
+        // Every name listed, not just a head sample: in text-protocol mode
+        // (native tools rejected/off, see `engine.rs`'s `native_tools_disabled`
+        // degrade path) this overview is the ONLY place a tool's name reaches
+        // the model — a truncated sample made tools outside the first 6 per
+        // group uncallable in practice, even when explicitly named in the
+        // goal text (e.g. tg_get_unread, alphabetically past telegram's
+        // first 6, silently invisible to text-protocol models).
+        let all = names.join(", ");
+        lines.push(format!("- {} ({} tools): {}", group, count, all));
     }
     lines.join("\n")
 }

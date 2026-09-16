@@ -41,43 +41,39 @@ fn embedding_filter_enabled() -> bool {
     )
 }
 
+/// Sentinel doc id holding a hash of the catalog's exact (name, description)
+/// content. Never matches a real tool name, so it's harmless if it ever
+/// surfaces in a `vec_query` result — [`embedding_filtered_catalog`] only
+/// keeps hits present in `catalog.tools`.
+const CATALOG_HASH_ID: &str = "__catalog_hash__";
+
+/// Hash every tool's exact embedded text (name + description), order-
+/// independent, so renaming/adding/removing a tool OR editing an existing
+/// tool's description (without changing the count) both invalidate the
+/// cache — unlike the old `stats.count`-within-5 heuristic, which missed
+/// small catalog edits entirely (see BUG: tg_get_unread/tg_transcribe_voice
+/// silently invisible to the LLM after being added to the allowlist).
+fn catalog_content_hash(catalog: &Catalog) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut texts: Vec<String> =
+        catalog.tools.iter().map(|t| format!("{} — {}", t.name, t.description)).collect();
+    texts.sort_unstable();
+    let mut hasher = DefaultHasher::new();
+    texts.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), String> {
-    let list_resp = rpc.call("vec_list", json!({}), 5000).await;
-    let has_collection = match list_resp {
-        Ok(v) => v
-            .get("collections")
-            .and_then(|c| c.as_array())
-            .is_some_and(|arr| arr.iter().any(|x| x.as_str() == Some(TOOLS_COLLECTION))),
-        Err(_) => false,
-    };
-    if has_collection {
-        let q: Value = rpc
-            .call(
-                "vec_query",
-                json!({"collection": TOOLS_COLLECTION, "top_k": 1, "text": "test"}),
-                8000,
-            )
-            .await
-            .unwrap_or(json!({"results": []}));
-        let count = q
-            .get("results")
-            .and_then(|r| r.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        if count > 0 {
-            let stats: Value = rpc
-                .call(
-                    "vec_stats",
-                    json!({"collection": TOOLS_COLLECTION}),
-                    5000,
-                )
-                .await
-                .unwrap_or(json!({"count": 0}));
-            let cnt = stats.get("count").and_then(|c| c.as_u64()).unwrap_or(0) as usize;
-            if cnt >= catalog.tools.len().saturating_sub(5) {
-                return Ok(());
-            }
-        }
+    let expected_hash = catalog_content_hash(catalog);
+    let cached_hash = rpc
+        .call("vec_get", json!({"collection": TOOLS_COLLECTION, "id": CATALOG_HASH_ID}), 5000)
+        .await
+        .ok()
+        .filter(|v| v.get("found").and_then(Value::as_bool) == Some(true))
+        .and_then(|v| v.get("metadata").and_then(|m| m.get("hash")).and_then(Value::as_str).map(str::to_string));
+    if cached_hash.as_deref() == Some(expected_hash.as_str()) {
+        return Ok(());
     }
     let docs: Vec<Value> = catalog
         .tools
@@ -93,6 +89,18 @@ async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), Stri
             .await
             .map_err(|e| format!("vec_upsert_batch failed: {e}"))?;
     }
+    rpc.call(
+        "vec_upsert",
+        json!({
+            "collection": TOOLS_COLLECTION,
+            "id": CATALOG_HASH_ID,
+            "text": CATALOG_HASH_ID,
+            "metadata": {"hash": expected_hash},
+        }),
+        5000,
+    )
+    .await
+    .map_err(|e| format!("vec_upsert (hash sentinel) failed: {e}"))?;
     Ok(())
 }
 
@@ -437,5 +445,53 @@ mod tests {
         let cut = truncate_chars(&long, 5);
         assert!(cut.starts_with("жжжжж"));
         assert!(cut.ends_with("[truncated]"));
+    }
+
+    fn spec(name: &str, description: &str) -> crate::tools::ToolSpec {
+        crate::tools::ToolSpec {
+            name: name.to_string(),
+            description: description.to_string(),
+            parameters: Value::Null,
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 1000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: crate::tools::Source::Minimal,
+        }
+    }
+
+    fn cat(tools: Vec<crate::tools::ToolSpec>) -> Catalog {
+        Catalog { tools, allowed_actions: vec![], tools_file_set: false }
+    }
+
+    #[test]
+    fn catalog_hash_is_order_independent() {
+        let a = cat(vec![spec("a", "does a"), spec("b", "does b")]);
+        let b = cat(vec![spec("b", "does b"), spec("a", "does a")]);
+        assert_eq!(catalog_content_hash(&a), catalog_content_hash(&b));
+    }
+
+    #[test]
+    fn catalog_hash_changes_when_a_tool_is_added() {
+        let before = cat(vec![spec("a", "does a")]);
+        let after = cat(vec![spec("a", "does a"), spec("b", "does b")]);
+        assert_ne!(catalog_content_hash(&before), catalog_content_hash(&after));
+    }
+
+    #[test]
+    fn catalog_hash_changes_when_a_description_is_edited_without_changing_count() {
+        // Regression: the old count-within-5 heuristic missed exactly this
+        // case — same number of tools, different content.
+        let before = cat(vec![spec("a", "old description")]);
+        let after = cat(vec![spec("a", "new description")]);
+        assert_ne!(catalog_content_hash(&before), catalog_content_hash(&after));
+    }
+
+    #[test]
+    fn catalog_hash_stable_for_identical_content() {
+        let a = cat(vec![spec("a", "does a"), spec("b", "does b")]);
+        let b = cat(vec![spec("a", "does a"), spec("b", "does b")]);
+        assert_eq!(catalog_content_hash(&a), catalog_content_hash(&b));
     }
 }
