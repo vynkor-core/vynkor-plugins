@@ -51,6 +51,10 @@ pub enum Source {
     /// Operator-curated entry from `AGENT_PLUGIN_TOOLS_FILE`; wins over
     /// kernel data because the operator wrote it deliberately.
     File,
+    /// Operator entry whose gaps were filled from the owning plugin's
+    /// manifest (see [`merge_from_kernel`]) — the operator keeps the fields
+    /// they wrote, the plugin supplies the rest.
+    Merged,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -169,6 +173,48 @@ fn parse_spec(v: &serde_json::Value, index: usize) -> Result<ToolSpec, String> {
 }
 
 
+/// Fill an operator entry's gaps from the owning plugin's manifest spec.
+///
+/// The two layers describe different things and neither is wholly
+/// authoritative: the plugin owns its parameter schema, risk label and
+/// confirmation demand; the operator owns the description, because that
+/// text is what `engine::embedding_filtered_catalog` embeds to decide
+/// whether the tool is offered for a goal at all — it is written in the
+/// language the operator's goals are written in, which a shipped plugin
+/// cannot know. So merge per field instead of letting one layer win
+/// wholesale: an operator entry may shrink to `{name, description}` and
+/// still get a real schema.
+///
+/// `requires_confirmation` is OR-ed, never assigned. Merging may only add
+/// friction — a kernel `false` must not clear an operator `true`, and a
+/// plugin that demands confirmation gets it even if the operator entry
+/// predates that demand.
+///
+/// Dispatch limits (`timeout_ms`, `cooldown_ms`, `max_per_goal`) are
+/// deliberately untouched: those are operator policy, not plugin facts.
+fn merge_from_kernel(spec: &mut ToolSpec, kernel: &ToolSpec) {
+    let mut filled = false;
+    if spec.description.trim().is_empty() && !kernel.description.trim().is_empty() {
+        spec.description = kernel.description.clone();
+        filled = true;
+    }
+    if !spec.parameters.is_object() && kernel.parameters.is_object() {
+        spec.parameters = kernel.parameters.clone();
+        filled = true;
+    }
+    if spec.risk.trim().is_empty() && !kernel.risk.trim().is_empty() {
+        spec.risk = kernel.risk.clone();
+        filled = true;
+    }
+    if kernel.requires_confirmation && !spec.requires_confirmation {
+        spec.requires_confirmation = true;
+        filled = true;
+    }
+    if filled {
+        spec.source = Source::Merged;
+    }
+}
+
 fn parse_approvals_file(raw: &str) -> Result<std::collections::BTreeMap<String, bool>, String> {
     let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("approvals file is not valid JSON: {e}"))?;
     let obj = v.as_object().ok_or_else(|| "approvals file must be an object {\"tool\": bool}" .to_string())?;
@@ -264,10 +310,12 @@ impl Catalog {
     /// allowlisted tool still [`Source::Minimal`], fill description/schemas/
     /// confirmation from the owning plugin's registered manifest via the
     /// kernel's read-only `list_plugins` + `get_manifest` commands. File
-    /// entries always win (operator-curated); on any discovery failure we
-    /// log loudly and keep the static catalog, so an older kernel degrades
-    /// gracefully instead of breaking goals. `AGENT_PLUGIN_DISCOVERY=off`
-    /// skips the kernel round-trips entirely.
+    /// entries keep every field the operator actually wrote and take the
+    /// rest from the plugin (see [`merge_from_kernel`]), so an operator
+    /// entry can be trimmed to `{name, description}` without losing its
+    /// schema. On any discovery failure we log loudly and keep the static
+    /// catalog, so an older kernel degrades gracefully instead of breaking
+    /// goals. `AGENT_PLUGIN_DISCOVERY=off` skips the round-trips entirely.
     pub async fn load_with_discovery(rpc: &crate::Rpc) -> Result<Catalog, String> {
         let mut cat = Self::load()?;
         if std::env::var(DISCOVERY_ENV).as_deref() == Ok("off") {
@@ -276,10 +324,11 @@ impl Catalog {
         match crate::discovery::discover(rpc).await {
             Ok(map) => {
                 for tool in cat.tools.iter_mut() {
-                    if tool.source == Source::Minimal {
-                        if let Some(found) = map.get(&tool.name) {
-                            *tool = found.clone();
-                        }
+                    let Some(found) = map.get(&tool.name) else { continue };
+                    match tool.source {
+                        Source::Minimal => *tool = found.clone(),
+                        Source::File | Source::Merged => merge_from_kernel(tool, found),
+                        Source::Kernel => {}
                     }
                 }
             }
@@ -308,6 +357,92 @@ mod tests {
             max_per_goal: 16,
             source: Source::Minimal,
         }
+    }
+
+    fn kernel_spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.to_string(),
+            description: "kernel description".into(),
+            parameters: json!({"type": "object", "properties": {"peer": {"type": "string"}}}),
+            requires_confirmation: false,
+            risk: "medium".into(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: Source::Kernel,
+        }
+    }
+
+    fn file_spec(name: &str) -> ToolSpec {
+        ToolSpec {
+            name: name.to_string(),
+            description: String::new(),
+            parameters: serde_json::Value::Null,
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: Source::File,
+        }
+    }
+
+    #[test]
+    fn merge_fills_only_the_fields_the_operator_left_empty() {
+        let mut tool = file_spec("tg_send_message");
+        tool.description = "Отправь сообщение в телеграм".into();
+        merge_from_kernel(&mut tool, &kernel_spec("tg_send_message"));
+        assert_eq!(
+            tool.description, "Отправь сообщение в телеграм",
+            "an operator description is the retrieval signal — never overwrite it"
+        );
+        assert_eq!(tool.parameters["properties"]["peer"]["type"], "string");
+        assert_eq!(tool.risk, "medium");
+        assert_eq!(tool.source, Source::Merged);
+    }
+
+    #[test]
+    fn merge_leaves_a_fully_specified_file_entry_alone() {
+        let mut tool = file_spec("a");
+        tool.description = "op".into();
+        tool.parameters = json!({"type": "object", "properties": {"own": {}}});
+        tool.risk = "low".into();
+        let before = tool.clone();
+        merge_from_kernel(&mut tool, &kernel_spec("a"));
+        assert_eq!(tool, before, "nothing was empty, so nothing may change — including source");
+    }
+
+    #[test]
+    fn merge_never_lowers_a_confirmation_requirement() {
+        let mut tool = file_spec("secret_delete");
+        tool.description = "op".into();
+        tool.parameters = json!({"type": "object"});
+        tool.risk = "high".into();
+        let mut kernel = kernel_spec("secret_delete");
+        kernel.requires_confirmation = true;
+        merge_from_kernel(&mut tool, &kernel);
+        assert!(
+            tool.requires_confirmation,
+            "the owning plugin demanding confirmation must win — merging may only add friction"
+        );
+
+        let mut tool = file_spec("b");
+        tool.description = "op".into();
+        tool.parameters = json!({"type": "object"});
+        tool.risk = "low".into();
+        tool.requires_confirmation = true;
+        merge_from_kernel(&mut tool, &kernel_spec("b"));
+        assert!(tool.requires_confirmation, "a kernel `false` must not clear an operator `true`");
+    }
+
+    #[test]
+    fn merge_keeps_operator_dispatch_limits() {
+        let mut tool = file_spec("a");
+        tool.timeout_ms = 90_000;
+        tool.cooldown_ms = 500;
+        tool.max_per_goal = 2;
+        merge_from_kernel(&mut tool, &kernel_spec("a"));
+        assert_eq!((tool.timeout_ms, tool.cooldown_ms, tool.max_per_goal), (90_000, 500, 2));
     }
 
     #[test]

@@ -123,14 +123,23 @@ plugin's per-caller namespaces.
 The catalog is built from three layers, merged per allowlisted action name
 with this precedence:
 
-1. **Operator tools file** (`AGENT_PLUGIN_TOOLS_FILE`, optional) — wins:
-   hand-written descriptions/schemas are deliberate.
+1. **Operator tools file** (`AGENT_PLUGIN_TOOLS_FILE`, optional) — wins
+   **per field, not per tool**: every field the operator actually wrote
+   stands, and only the gaps are filled from layer 2. So an entry may be
+   as small as `{"name": ..., "description": ...}` and still reach the
+   model with the owning plugin's schema and risk label attached. The
+   description is the field worth keeping here: it is what the embedding
+   filter matches goals against, and it is written in the operator's
+   language, which a shipped plugin cannot know. The one field that is
+   never lowered is `requires_confirmation` — it is OR-ed, so a plugin
+   demanding confirmation always gets it.
 2. **Kernel manifests** — on every goal start the agent calls the kernel's
-   read-only `list_plugins` + `get_manifest` commands and fills any tool
-   that has no file entry from the owning plugin's registered manifest:
-   description, `params_schema` (decoded into a JSON object for the
-   prompt), `risk`, and `requires_confirmation`. This is the default path;
-   no file is needed. These commands are exempt from
+   read-only `list_plugins` + `get_manifest` commands and fills, from the
+   owning plugin's registered manifest, every field the file entry left
+   empty: description, `params_schema` (decoded into a JSON object for the
+   prompt), `risk`, and `requires_confirmation`. A tool with no file entry
+   at all is taken wholesale. This is the default path; no file is needed.
+   These commands are exempt from
    `PERMISSION_KERNEL_ADMIN` (read-only, public distribution data) — see
    the kernel's `READONLY_COMMANDS` — so the agent holds no admin.
 3. **Minimal spec** — an allowlisted name with neither source still
@@ -139,8 +148,9 @@ with this precedence:
 `AGENT_PLUGIN_ALLOWED_ACTIONS` stays the security boundary regardless of
 source: comma-separated exact action names, default-deny, and nothing
 outside it is ever dispatched whatever the manifests say. `tools_list`
-reports each tool's `source` (`file` / `kernel` / `minimal`) so operators
-can see exactly what the model sees. On older kernels without the commands
+reports each tool's `source` so operators can see exactly what the model
+sees: `file` (the entry needed nothing), `merged` (operator entry plus
+manifest fill-in), `kernel` (no file entry), `minimal` (neither). On older kernels without the commands
 the agent logs loudly and degrades to layers 1+3; `AGENT_PLUGIN_DISCOVERY=off`
 skips the round-trips entirely.
 

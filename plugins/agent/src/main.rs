@@ -966,11 +966,16 @@ mod tests {
             .iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["notify_send", "fs_read"]);
 
-        // notify_send comes from the operator tools file…
+        // notify_send has an operator entry, so its description and schema
+        // stay exactly as written — but the entry left `risk` empty, and
+        // that gap is filled from the plugin's manifest. Per-field merge,
+        // not one layer winning wholesale.
         let notify = res["tools"].as_array().unwrap().iter()
             .find(|t| t["name"] == "notify_send").unwrap();
-        assert_eq!(notify["source"], "file");
+        assert_eq!(notify["source"], "merged");
         assert_eq!(notify["description"], "file curated notification");
+        assert_eq!(notify["parameters"], serde_json::json!({"type": "object"}));
+        assert_eq!(notify["risk"], "low");
 
         // …fs_read has no file entry, so discovery filled it from the
         // registered manifest — schema, risk and confirmation flag included.
