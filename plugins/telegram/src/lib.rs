@@ -3,6 +3,7 @@
 //! Architecture: single-reader loop + RPC proxy (see PLUGIN_AUTHORING.md §1).
 
 pub mod events;
+pub mod manifest;
 pub mod mtproto;
 
 use std::sync::Arc;

@@ -52,6 +52,7 @@ fn manifest() -> vynkor_sdk::proto::PluginManifest {
             "PERMISSION_EVENT_PUBLISH".into(),
         ],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+        action_specs: telegram_plugin::manifest::action_specs(),
         ..Default::default()
     }
 }
