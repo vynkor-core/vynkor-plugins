@@ -1,0 +1,98 @@
+{
+  "plugin_id": "capture",
+  "version": "0.1.0",
+  "permissions": ["PERMISSION_SCREEN"],
+  "kernel_compatibility_range": { "min": "0.1.0", "max": "*" },
+  "binary": "capture",
+  "events": [],
+  "files": ["capture", "plugin.json"],
+  "actions": [
+    {
+      "name": "capture_screenshot",
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": {
+          "region": {
+            "description": "'full' (default), 'select' (interactive), or {x,y,w,h}."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" },
+          "format": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "capture_record_start",
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": {
+          "region": { "description": "'full' (default) or {x,y,w,h}." },
+          "max_duration_ms": { "type": "integer", "description": "Default 1800000 (30 min)." }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": { "recording_id": { "type": "string" } }
+      }
+    },
+    {
+      "name": "capture_record_stop",
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": { "recording_id": { "type": "string" } },
+        "required": ["recording_id"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "duration_ms": { "type": "integer" }
+        }
+      }
+    },
+    {
+      "name": "capture_ocr",
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "base64": { "type": "string" },
+          "lang": { "type": "string", "description": "Default 'eng'." }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": { "text": { "type": "string" } }
+      }
+    },
+    {
+      "name": "capture_status",
+      "permission": "PERMISSION_SCREEN",
+      "input": { "type": "object", "properties": {}, "additionalProperties": true },
+      "output": {
+        "type": "object",
+        "properties": {
+          "session_type": { "type": "string" },
+          "screenshot_backend": { "type": ["string", "null"] },
+          "record_backend": { "type": ["string", "null"] },
+          "ocr_available": { "type": "boolean" },
+          "portal_available": { "type": "boolean" }
+        }
+      }
+    }
+  ]
+}
