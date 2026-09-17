@@ -307,6 +307,18 @@ fn prompt_from_dir(group: &str) -> Option<String> {
     prompt_file_at(&prompts_dir()?, &group_file_stem(group))
 }
 
+/// Resolve one core persona block: the prompts directory overrides the
+/// compile-time default. Taking `dir` as a parameter keeps this testable
+/// without mutating process env — the repo has an open cross-module env
+/// race in tests (see commit 244de69).
+fn core_block_at(dir: Option<&Path>, stem: &str, fallback: &str) -> String {
+    dir.and_then(|d| prompt_file_at(d, stem)).unwrap_or_else(|| fallback.to_string())
+}
+
+fn core_block(stem: &str, fallback: &str) -> String {
+    core_block_at(prompts_dir().as_deref(), stem, fallback)
+}
+
 fn default_plugin_prompt(group: &str) -> Option<String> {
     match group {
         "telegram" => Some(
@@ -486,7 +498,12 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
     const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
     const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
     const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
-    let identity_block = format!("{IDENTITY}\n\n{PERSONALITY}\n\n{CHANNEL}");
+    let identity_block = format!(
+        "{}\n\n{}\n\n{}",
+        core_block("_identity", IDENTITY),
+        core_block("_personality", PERSONALITY),
+        core_block("_channel", CHANNEL),
+    );
     let tools_json: Vec<Value> = filtered
         .tools
         .iter()
@@ -1146,5 +1163,32 @@ mod tests {
         std::fs::write(dir.path().join("blank.md"), "   \n\t\n").unwrap();
         assert!(prompt_file_at(dir.path(), "absent").is_none());
         assert!(prompt_file_at(dir.path(), "blank").is_none());
+    }
+
+    #[test]
+    fn core_block_prefers_file_over_builtin_const() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("_identity.md"), "custom identity").unwrap();
+        assert_eq!(
+            core_block_at(Some(dir.path()), "_identity", "builtin identity"),
+            "custom identity"
+        );
+    }
+
+    #[test]
+    fn core_block_falls_back_when_dir_unset_or_file_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(core_block_at(None, "_identity", "builtin identity"), "builtin identity");
+        assert_eq!(
+            core_block_at(Some(dir.path()), "_identity", "builtin identity"),
+            "builtin identity"
+        );
+    }
+
+    #[test]
+    fn core_block_falls_back_on_blank_file_rather_than_blanking_persona() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("_channel.md"), "  \n ").unwrap();
+        assert_eq!(core_block_at(Some(dir.path()), "_channel", "builtin channel"), "builtin channel");
     }
 }
