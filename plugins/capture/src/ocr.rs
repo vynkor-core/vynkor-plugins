@@ -9,13 +9,31 @@ use serde_json::Value;
 use crate::error::CaptureError;
 use crate::spawner::Spawner;
 
+/// Validates that a parameter value does not start with '-' to prevent flag injection.
+fn reject_flaggy(s: &str, field: &str) -> Result<(), CaptureError> {
+    if s.starts_with('-') {
+        return Err(CaptureError::BadParams(format!(
+            "{field} must not start with '-'"
+        )));
+    }
+    Ok(())
+}
+
 pub async fn capture_ocr(spawner: &dyn Spawner, params: &Value) -> Result<Value, CaptureError> {
     let lang = params.get("lang").and_then(Value::as_str).unwrap_or("eng").to_string();
+    reject_flaggy(&lang, "lang")?;
+
     let path_param = params.get("path").and_then(Value::as_str);
     let base64_param = params.get("base64").and_then(Value::as_str);
 
+    // Keep tempfile alive for the entire function duration via RAII
+    let mut _temp_guard: Option<tempfile::NamedTempFile> = None;
+
     let input_path = match (path_param, base64_param) {
-        (Some(p), None) => p.to_string(),
+        (Some(p), None) => {
+            reject_flaggy(p, "path")?;
+            p.to_string()
+        }
         (None, Some(b64)) => {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
@@ -24,7 +42,7 @@ pub async fn capture_ocr(spawner: &dyn Spawner, params: &Value) -> Result<Value,
                 .map_err(|e| CaptureError::Backend(format!("temp file: {e}")))?;
             std::fs::write(tmp.path(), &bytes).map_err(|e| CaptureError::Backend(format!("temp file write: {e}")))?;
             let path = tmp.path().to_string_lossy().to_string();
-            let _ = tmp.keep().map_err(|e| CaptureError::Backend(format!("temp file keep: {e}")))?;
+            _temp_guard = Some(tmp);
             path
         }
         (Some(_), Some(_)) => {
@@ -90,7 +108,8 @@ mod tests {
         assert_eq!(v["text"], "x");
         let calls = sp.capturing_calls.lock().unwrap().clone();
         assert_eq!(calls[0].0, "tesseract");
-        assert!(std::path::Path::new(&calls[0].1[0]).exists());
+        // Verify the path is a temp-dir path (proving a temp file was created)
+        assert!(calls[0].1[0].starts_with(&std::env::temp_dir().to_string_lossy().to_string()));
     }
 
     #[tokio::test]
@@ -113,5 +132,24 @@ mod tests {
         } else {
             eprintln!("skipping: tesseract not on PATH");
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_path_starting_with_dash() {
+        let sp = FakeSpawner::new();
+        let err = capture_ocr(&sp, &serde_json::json!({"path": "--something"})).await.unwrap_err();
+        assert!(matches!(err, CaptureError::BadParams(_)));
+        let err_msg = format!("{:?}", err);
+        assert!(err_msg.contains("path"), "Error should mention 'path', got: {}", err_msg);
+    }
+
+    #[tokio::test]
+    async fn rejects_lang_starting_with_dash() {
+        let sp = FakeSpawner::new();
+        sp.set_capturing("tesseract", 0, "x");
+        let err = capture_ocr(&sp, &serde_json::json!({"path": "/a.png", "lang": "-eng"})).await.unwrap_err();
+        assert!(matches!(err, CaptureError::BadParams(_)));
+        let err_msg = format!("{:?}", err);
+        assert!(err_msg.contains("lang"), "Error should mention 'lang', got: {}", err_msg);
     }
 }
