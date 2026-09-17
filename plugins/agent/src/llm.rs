@@ -11,6 +11,8 @@
 //! wins; anything that doesn't parse as a well-formed tool call is treated
 //! as the final answer so prose is never lost.
 
+use std::path::{Path, PathBuf};
+
 use serde_json::{json, Value};
 
 use crate::store::{LlmPlan, Turn};
@@ -260,6 +262,51 @@ fn plugin_prompts_map() -> std::collections::HashMap<String, String> {
         .unwrap_or_default()
 }
 
+/// Operator env var: directory of per-layer prompt files. A group's prompt
+/// lives at `<dir>/<group>.md`; the reserved `_`-prefixed stems carry the
+/// core persona (`_identity`, `_personality`, `_channel`) and the facts
+/// block (`_facts`).
+///
+/// This exists because `AGENT_PLUGIN_PLUGIN_PROMPTS` is a single-line JSON
+/// object embedded in a YAML scalar: no newlines, heavy escaping, and a
+/// diff nobody can review. The env var still wins so an operator can hot-fix
+/// a prompt without touching the filesystem.
+pub const PROMPTS_DIR_ENV: &str = "AGENT_PLUGIN_PROMPTS_DIR";
+
+/// Three group keys contain a `/` (`audio/voice`, `calendar/scheduler`,
+/// `web/network` — see the prefix map in `plugin_prompt_section`), which
+/// cannot appear in a filename. Flatten to `-`.
+fn group_file_stem(group: &str) -> String {
+    group.replace('/', "-")
+}
+
+/// Read `<dir>/<stem>.md`. A missing file, an unreadable file, and a
+/// whitespace-only file all read as "not configured", so a half-populated
+/// directory degrades to the next layer instead of blanking the prompt.
+fn prompt_file_at(dir: &Path, stem: &str) -> Option<String> {
+    let raw = std::fs::read_to_string(dir.join(format!("{stem}.md"))).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn prompts_dir() -> Option<PathBuf> {
+    let raw = std::env::var(PROMPTS_DIR_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
+fn prompt_from_dir(group: &str) -> Option<String> {
+    prompt_file_at(&prompts_dir()?, &group_file_stem(group))
+}
+
 fn default_plugin_prompt(group: &str) -> Option<String> {
     match group {
         "telegram" => Some(
@@ -344,7 +391,15 @@ fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
     }
     let mut parts = Vec::new();
     for g in groups {
-        if let Some(prompt) = env_map.get(&g).cloned().or_else(|| default_plugin_prompt(&g)) {
+        // Precedence: env JSON (hot-fix, wins) > prompts dir (the normal
+        // place) > built-in default. Each layer replaces rather than
+        // appends — see this plan's follow-on notes for merge semantics.
+        let resolved = env_map
+            .get(&g)
+            .cloned()
+            .or_else(|| prompt_from_dir(&g))
+            .or_else(|| default_plugin_prompt(&g));
+        if let Some(prompt) = resolved {
             if !prompt.trim().is_empty() {
                 parts.push(format!("**{}**: {}", g, prompt.trim()));
             }
@@ -1068,5 +1123,28 @@ mod tests {
             outcome_to_reply(&text_proto),
             Reply::ToolCall { name: "b".into(), params: json!({}) }
         );
+    }
+
+    #[test]
+    fn group_file_stem_flattens_slash_bearing_groups() {
+        assert_eq!(group_file_stem("telegram"), "telegram");
+        assert_eq!(group_file_stem("audio/voice"), "audio-voice");
+        assert_eq!(group_file_stem("calendar/scheduler"), "calendar-scheduler");
+        assert_eq!(group_file_stem("web/network"), "web-network");
+    }
+
+    #[test]
+    fn prompt_file_at_reads_and_trims_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("telegram.md"), "\n  be terse  \n").unwrap();
+        assert_eq!(prompt_file_at(dir.path(), "telegram").as_deref(), Some("be terse"));
+    }
+
+    #[test]
+    fn prompt_file_at_treats_missing_and_blank_files_as_unset() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("blank.md"), "   \n\t\n").unwrap();
+        assert!(prompt_file_at(dir.path(), "absent").is_none());
+        assert!(prompt_file_at(dir.path(), "blank").is_none());
     }
 }
