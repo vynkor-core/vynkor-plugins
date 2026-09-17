@@ -23,33 +23,204 @@
     },
     {
       "name": "tg_list_dialogs",
-      "description": "List dialogs with names/usernames + unread; query/limit/account/unread_only/fields(minimal/full or comma list like peer,name,unread_count), 10s cache"
+      "description": "List dialogs with names/usernames + unread; query/limit/account/unread_only/fields(minimal/full or comma list like peer,name,unread_count), 10s cache",
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return. Default 20, clamped to 1..100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "query": {
+            "type": "string",
+            "description": "Filter dialogs by title/username substring. Aliases: q, search."
+          },
+          "unread_only": {
+            "type": "boolean",
+            "description": "Return only dialogs with unread messages. Alias: only_unread."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated field allowlist to trim the response payload."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        }
+      }
     },
     {
       "name": "tg_get_history",
-      "description": "Get message history from a peer"
+      "description": "Get message history from a peer",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return. Default 20, clamped to 1..100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated field allowlist to trim the response payload."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer"
+        ]
+      }
     },
     {
       "name": "tg_get_message",
-      "description": "Get a single message by peer and id"
+      "description": "Get a single message by peer and id",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Message id to fetch."
+          },
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages. Optional; defaults to 'self'."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
     },
     {
       "name": "tg_search",
-      "description": "Search messages across dialogs"
+      "description": "Search messages across dialogs",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Text to search for across all chats."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return. Default 20, clamped to 1..100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
     },
     {
       "name": "tg_send_message",
-      "description": "Send a text message to a peer"
+      "description": "Send a text message to a peer",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "text": {
+            "type": "string",
+            "description": "Message body. Max 4096 characters."
+          },
+          "reply_to": {
+            "type": "integer",
+            "description": "Reply to this message id."
+          },
+          "no_typing": {
+            "type": "boolean",
+            "description": "Skip the typing indicator before sending. Alias: skip_typing."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "text"
+        ]
+      }
     },
     {
       "name": "tg_edit_message",
       "description": "Edit a sent message",
-      "requires_confirmation": true
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message to edit."
+          },
+          "text": {
+            "type": "string",
+            "description": "Replacement body. Max 4096 characters."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "message_id",
+          "text"
+        ]
+      }
     },
     {
       "name": "tg_delete_message",
       "description": "Delete a message",
-      "requires_confirmation": true
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message to delete. Use tg_delete_messages for several."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "message_id"
+        ]
+      }
     },
     {
       "name": "tg_delete_messages",
@@ -59,7 +230,33 @@
     {
       "name": "tg_forward_message",
       "description": "Forward a message to another peer",
-      "requires_confirmation": true
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "from_peer": {
+            "type": "string",
+            "description": "Source peer. Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "to_peer": {
+            "type": "string",
+            "description": "Destination peer. Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message to forward. Use tg_forward_messages for several."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "from_peer",
+          "to_peer",
+          "message_id"
+        ]
+      }
     },
     {
       "name": "tg_forward_messages",
@@ -68,20 +265,122 @@
     },
     {
       "name": "tg_add_reaction",
-      "description": "Add a reaction to a message"
+      "description": "Add a reaction to a message",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message to react to. Alias: id."
+          },
+          "reaction": {
+            "type": "string",
+            "description": "Emoji to send, e.g. '❤️'. Alias: emoji."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "message_id",
+          "reaction"
+        ]
+      }
     },
     {
       "name": "tg_pin_message",
       "description": "Pin a message in a chat",
-      "requires_confirmation": true
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message to pin."
+          },
+          "silent": {
+            "type": "boolean",
+            "description": "Pin without notifying chat members. Default false."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "message_id"
+        ]
+      }
     },
     {
       "name": "tg_upload_media",
-      "description": "Upload a file as media to a peer"
+      "description": "Upload a file as media to a peer",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Absolute path of the local file to upload."
+          },
+          "caption": {
+            "type": "string",
+            "description": "Optional caption for the uploaded media."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "file_path"
+        ]
+      }
     },
     {
       "name": "tg_download_media",
-      "description": "Download media from a message"
+      "description": "Download media from a message",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the message holding the media. Alias: id."
+          },
+          "output_path": {
+            "type": "string",
+            "description": "Absolute path to write the downloaded file to. Alias: path."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer",
+          "message_id",
+          "output_path"
+        ]
+      }
     },
     {
       "name": "tg_send_voice",
@@ -97,7 +396,27 @@
     },
     {
       "name": "tg_get_chat_info",
-      "description": "Get chat info by peer — fields filter, 10s cache, returns name, username, peer_type, id, phone etc."
+      "description": "Get chat info by peer — fields filter, 10s cache, returns name, username, peer_type, id, phone etc.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated field allowlist to trim the response payload."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer"
+        ]
+      }
     },
     {
       "name": "tg_get_user",
@@ -113,7 +432,34 @@
     },
     {
       "name": "tg_list_unread",
-      "description": "List unread dialogs — limit/account/fields/include_messages(false by default)/message_limit, 10s cache"
+      "description": "List unread dialogs — limit/account/fields/include_messages(false by default)/message_limit, 10s cache",
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return. Default 20, clamped to 1..100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "include_messages": {
+            "type": "boolean",
+            "description": "Include the unread message bodies, not just counts."
+          },
+          "message_limit": {
+            "type": "integer",
+            "description": "Max messages per dialog when include_messages is true."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated field allowlist to trim the response payload."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        }
+      }
     },
     {
       "name": "tg_get_unread",
@@ -121,11 +467,40 @@
     },
     {
       "name": "tg_mark_read",
-      "description": "Mark chat as read — peer required for one chat (max_id/message_id optional, 0=all), or without peer marks all unread dialogs"
+      "description": "Mark chat as read — peer required for one chat (max_id/message_id optional, 0=all), or without peer marks all unread dialogs",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Target peer: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages."
+          },
+          "max_id": {
+            "type": "integer",
+            "description": "Mark read up to this message id. Aliases: message_id, id. Default 0 = all."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "peer"
+        ]
+      }
     },
     {
       "name": "tg_mark_all_read",
-      "description": "Alias for tg_mark_read without peer — marks all unread dialogs as read"
+      "description": "Alias for tg_mark_read without peer — marks all unread dialogs as read",
+      "input": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        }
+      }
     },
     {
       "name": "tg_send_action",
