@@ -1,0 +1,26 @@
+[package]
+name = "capture-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "capture_plugin"
+path = "src/lib.rs"
+
+[[bin]]
+name = "capture"
+path = "src/main.rs"
+
+[dependencies]
+vynkor-sdk = "0.0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+base64 = "0.22"
+libc = "0.2"
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+thiserror = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+tempfile = "3"

@@ -3,3 +3,4 @@ plugins/network/KERNEL_PROTOCOL_TODO.md
 models/
 .omo/
 .env
+.worktrees/

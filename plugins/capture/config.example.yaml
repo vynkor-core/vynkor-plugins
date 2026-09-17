@@ -1,0 +1,4 @@
+# capture plugin — no required config; every setting below has a working default.
+
+# Where screenshots/recordings are written. Default: ~/.local/share/vynkor/capture/
+# CAPTURE_PLUGIN_DIR: /home/you/.local/share/vynkor/capture
