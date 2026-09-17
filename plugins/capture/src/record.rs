@@ -89,24 +89,27 @@ pub async fn start(
     }
 
     let region = parse_region(params)?;
+    if matches!(region, Region::Select) {
+        return Err(CaptureError::BadParams(
+            "region: \"select\" is not supported for recording (interactive selection is \
+             screenshot-only); use an explicit {x,y,w,h} rect"
+                .into(),
+        ));
+    }
     let max_duration_ms = params
         .get("max_duration_ms")
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_MAX_DURATION_MS);
 
-    let session = detect_session(&|k| std::env::var(k).ok());
-    let Some((bin, base_args)) = record_args(session, region, "") else {
-        return Err(CaptureError::NotSupported("record"));
-    };
     let ext = "mp4";
     let filename = record_filename(ext);
     let path = data_dir().join(&filename);
     let path_str = path.to_string_lossy().to_string();
-    // `record_args` was called with an empty placeholder path (the real
-    // path isn't known until `record_filename`/`data_dir` run, just
-    // above) — every backend pushes that placeholder as one argv element,
-    // so replace the empty string with the real path now.
-    let args: Vec<String> = base_args.into_iter().map(|a| if a.is_empty() { path_str.clone() } else { a }).collect();
+
+    let session = detect_session(&|k| std::env::var(k).ok());
+    let Some((bin, args)) = record_args(session, region, &path_str) else {
+        return Err(CaptureError::NotSupported("record"));
+    };
 
     let process = spawner.run_detached(bin, &args).await.map_err(|e| {
         if e.contains("ERR_CAPTURE_PROVIDER_MISSING") {
@@ -193,12 +196,11 @@ fn unix_millis() -> u64 {
 mod tests {
     use super::*;
     use crate::spawner::FakeSpawner;
-    use std::sync::Mutex as StdMutex;
-
-    static ENV_LOCK: StdMutex<()> = StdMutex::new(());
+    use crate::ENV_LOCK;
 
     #[tokio::test]
     async fn wlroots_record_args_full_region() {
+        let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("WAYLAND_DISPLAY", "wayland-1");
         std::env::set_var("XDG_CURRENT_DESKTOP", "Hyprland");
         let (bin, args) = record_args(SessionType::Wlroots, Region::Full, "/o.mp4").unwrap();
@@ -210,6 +212,7 @@ mod tests {
 
     #[test]
     fn x11_record_args_rect_region_puts_video_size_before_input() {
+        let _g = ENV_LOCK.lock().unwrap();
         std::env::set_var("DISPLAY", ":0");
         let (bin, args) = record_args(
             SessionType::X11,
@@ -280,5 +283,22 @@ mod tests {
     fn not_supported_session_has_no_record_args() {
         assert!(record_args(SessionType::Gnome, Region::Full, "/o.mp4").is_none());
         assert!(record_args(SessionType::Kde, Region::Full, "/o.mp4").is_none());
+    }
+
+    #[tokio::test]
+    async fn start_rejects_select_region_explicitly() {
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::set_var("WAYLAND_DISPLAY", "wayland-1");
+        std::env::set_var("XDG_CURRENT_DESKTOP", "Hyprland");
+        let fake = Arc::new(FakeSpawner::new());
+        fake.allow_detached("wf-recorder");
+        let sp: Arc<dyn Spawner> = fake;
+        let state = Arc::new(RecordState::new());
+        let err = start(state, sp, &serde_json::json!({"region": "select"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CaptureError::BadParams(_)), "{err:?}");
+        std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("XDG_CURRENT_DESKTOP");
     }
 }

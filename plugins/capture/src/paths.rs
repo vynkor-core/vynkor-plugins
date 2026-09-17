@@ -16,6 +16,16 @@ pub fn data_dir() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(default_dir);
     let _ = std::fs::create_dir_all(&dir);
+    // Best-effort tightening to owner-only: this directory holds
+    // screenshots/recordings that may contain sensitive on-screen content
+    // and should not inherit the default (often world-readable) umask.
+    // Not a hard requirement — e.g. the dir may already exist with
+    // different ownership — so a failure here doesn't fail the caller.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+    }
     dir
 }
 
@@ -42,11 +52,7 @@ fn unix_millis() -> u128 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // std::env::set_var races across parallel test threads within this
-    // process; serialize the env-mutating tests in this module only.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::ENV_LOCK;
 
     #[test]
     fn data_dir_honors_override_and_creates_it() {

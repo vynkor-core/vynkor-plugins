@@ -136,7 +136,18 @@ pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result
             match spawner.run_capturing("slurp", &[]).await {
                 Ok((0, geom)) if !geom.is_empty() => {
                     let args = vec!["-g".to_string(), geom, path_str.clone()];
-                    return run_candidate(spawner, cand.bin, args, ext, &path, &path_str).await;
+                    match run_candidate(spawner, cand.bin, args, ext, &path, &path_str).await {
+                        // slurp exists but grim itself doesn't (or vice
+                        // versa's binary went missing between probes) —
+                        // fall through to the rest of the chain / the
+                        // portal, same as every other candidate below,
+                        // instead of giving up on the whole call. Since
+                        // `candidates_for(Wlroots)` only ever has this one
+                        // candidate, `continue` simply falls out of the
+                        // loop and lands on the post-loop portal call.
+                        Err(CaptureError::NotSupported(_)) => continue,
+                        other => return other,
+                    }
                 }
                 Ok(_) => return Err(CaptureError::Cancelled("slurp")),
                 Err(e) if e.contains("ERR_CAPTURE_PROVIDER_MISSING") => continue,
@@ -172,7 +183,7 @@ pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result
 /// code is authoritative (nonzero -> `Cancelled`, not a fallthrough).
 async fn run_candidate(
     spawner: &dyn Spawner,
-    bin: &str,
+    bin: &'static str,
     args: Vec<String>,
     ext: &str,
     path: &std::path::Path,
@@ -186,7 +197,7 @@ async fn run_candidate(
         }
     })?;
     if code != 0 {
-        return Err(CaptureError::Cancelled(bin_static(bin)));
+        return Err(CaptureError::Cancelled(bin));
     }
     let (width, height) = image_dimensions_best_effort(path);
     Ok(serde_json::json!({
@@ -212,26 +223,10 @@ fn image_dimensions_best_effort(path: &std::path::Path) -> (u32, u32) {
     (width, height)
 }
 
-fn bin_static(bin: &str) -> &'static str {
-    match bin {
-        "grim" => "grim",
-        "gnome-screenshot" => "gnome-screenshot",
-        "spectacle" => "spectacle",
-        "maim" => "maim",
-        "scrot" => "scrot",
-        "import" => "import",
-        _ => "screenshot",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // std::env::set_var races across parallel test threads within this
-    // process; serialize the env-mutating tests in this module only.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::ENV_LOCK;
 
     #[test]
     fn parse_defaults_to_full() {

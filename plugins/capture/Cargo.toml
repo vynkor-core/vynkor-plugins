@@ -22,7 +22,5 @@ base64 = "0.22"
 libc = "0.2"
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 thiserror = "1"
-futures-util = { version = "0.3", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tempfile = "3"
-
-[dev-dependencies]
