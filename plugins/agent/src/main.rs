@@ -447,6 +447,19 @@ mod tests {
                 .expect("shim loop died");
         }
 
+        /// Script the NEXT `chat_completion` call to fail, as if the
+        /// provider rejected the request (e.g. a model without native
+        /// tool-use support rejecting the `tools` param). Used to exercise
+        /// the engine's native-tools degrade path deterministically.
+        async fn push_ai_failure(&self, message: &str) {
+            self.tx
+                .send(Cmd::PushAiReplyValue {
+                    reply: serde_json::json!({"__fail__": message}),
+                })
+                .await
+                .expect("shim loop died");
+        }
+
         /// Script a full normalized `chat_completion` payload — e.g. with a
         /// native `tool_calls` array.
         async fn push_ai_reply_value(&self, reply: Value) {
@@ -582,7 +595,10 @@ mod tests {
                             } else if req.action == "chat_completion" {
                                 ai_requests.lock().await.push(params.clone());
                                 match ai_replies.pop_front() {
-                                    Some(reply) => Ok(reply),
+                                    Some(reply) => match reply.get("__fail__").and_then(Value::as_str) {
+                                        Some(msg) => Err(msg.to_string()),
+                                        None => Ok(reply),
+                                    },
                                     None => Err("no scripted ai reply".to_string()),
                                 }
                             } else {
@@ -902,6 +918,78 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(names, vec!["notify_send", "fs_read"]);
         assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+
+    #[tokio::test]
+    async fn native_seed_does_not_duplicate_tool_catalog_as_text() {
+        // Default NativeMode::Auto + non-empty catalog => native from the
+        // first request. The seed prompt must not also carry the JSON
+        // catalog `catalog_tools_param` already put in the `tools` param —
+        // that's the duplication this change removes.
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply("All done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "notify me"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+
+        let requests = shim.ai_requests().await;
+        assert!(requests[0]["tools"].as_array().is_some(), "native tools param missing");
+        let seed = requests[0]["messages"][0]["content"].as_str().unwrap();
+        assert!(
+            !seed.contains("requires_confirmation"),
+            "native seed still embeds the JSON tool catalog: {seed}"
+        );
+        // Still carries enough for the model to know what's callable and
+        // how to reply if it ever falls back to text.
+        assert!(seed.contains("notify_send"), "tool groups overview must still name the tool: {seed}");
+        assert!(seed.contains("EXACTLY ONE JSON object"), "reply protocol must remain: {seed}");
+    }
+
+    #[tokio::test]
+    async fn text_mode_seed_unchanged_when_native_tools_off() {
+        let shim = start_plugin(Config::default()).await;
+        std::env::set_var("AGENT_PLUGIN_NATIVE_TOOLS", "off");
+        shim.push_ai_reply("All done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "notify me"})).await.unwrap();
+        std::env::remove_var("AGENT_PLUGIN_NATIVE_TOOLS");
+        assert_eq!(res["status"], "completed", "{res}");
+
+        let requests = shim.ai_requests().await;
+        assert!(
+            requests[0].get("tools").map(|t| t.as_array().unwrap().is_empty()).unwrap_or(true),
+            "text mode must not send a native tools param"
+        );
+        let seed = requests[0]["messages"][0]["content"].as_str().unwrap();
+        assert!(seed.contains("requires_confirmation"), "text-mode seed must carry the full JSON catalog: {seed}");
+        assert!(seed.contains("notify_send"));
+    }
+
+    #[tokio::test]
+    async fn native_rejection_injects_text_catalog_before_degraded_retry() {
+        // THE TRAP: the seed went out native-only (no text catalog). If the
+        // provider then rejects the `tools` param, the degraded text-only
+        // retry must not be left with neither channel informed — the
+        // engine must inject the text catalog into the transcript first.
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_failure("model does not support tools").await;
+        shim.push_ai_reply("All done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "notify me"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+
+        let requests = shim.ai_requests().await;
+        assert_eq!(requests.len(), 2, "expected native attempt + degraded retry");
+        assert!(requests[0]["tools"].as_array().is_some(), "first attempt must be native");
+        assert!(
+            requests[1].get("tools").map(|t| t.as_array().unwrap().is_empty()).unwrap_or(true),
+            "retry after degradation must not resend tools natively"
+        );
+        let retry_msgs = requests[1]["messages"].as_array().unwrap();
+        assert!(
+            retry_msgs.iter().any(|m| m["content"].as_str().unwrap_or_default().contains("requires_confirmation")),
+            "degraded retry transcript must carry the injected text tool catalog: {retry_msgs:?}"
+        );
     }
 
     #[tokio::test]

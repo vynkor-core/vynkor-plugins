@@ -299,7 +299,13 @@ pub async fn run(
     match entry {
         Entry::Fresh => {
             doc.status = store::STATUS_RUNNING.to_string();
-            doc.transcript = llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog);
+            // A fresh doc is never degraded yet, so this must (and does)
+            // compute the exact same answer the loop's first iteration will
+            // reach via `want_native_tools` below — the seed and the first
+            // `tools` param are always in sync.
+            let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+            doc.transcript =
+                llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog, native_seed);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;
@@ -336,11 +342,7 @@ pub async fn run(
             return Ok(());
         }
 
-        let want_native = match llm::native_mode() {
-            llm::NativeMode::Off => false,
-            llm::NativeMode::On => true,
-            llm::NativeMode::Auto => !llm_catalog.tools.is_empty(),
-        } && !doc.native_tools_disabled;
+        let want_native = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
         let tools = if want_native {
             llm::catalog_tools_param(llm_catalog)
         } else {
@@ -356,6 +358,11 @@ pub async fn run(
                 // for the rest of the goal instead of failing it.
                 eprintln!("[agent] native tools rejected ({e}); degrading goal to text protocol");
                 doc.native_tools_disabled = true;
+                // The seed never carried the text catalog (it went out
+                // native-only) — inject it now, once, before the text-only
+                // retry, so the model isn't left with neither channel
+                // informed for the rest of the goal.
+                push_turn(doc, "user", llm::degraded_tool_catalog_block(llm_catalog))?;
                 match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[]).await {
                     Ok(o) => o,
                     Err(e2) => {

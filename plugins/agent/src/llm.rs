@@ -81,6 +81,20 @@ pub fn native_mode() -> NativeMode {
     parse_native_mode(&std::env::var(NATIVE_TOOLS_ENV).unwrap_or_default())
 }
 
+/// Whether this turn should ride ai's native `tools` param, given the
+/// current [`NativeMode`] and whether the goal already degraded to the
+/// text protocol. Shared between the seed (which must decide up front,
+/// before the loop's own first check) and the loop itself, so both agree
+/// on the same answer for a freshly-seeded goal.
+pub fn want_native_tools(catalog: &Catalog, disabled: bool) -> bool {
+    let base = match native_mode() {
+        NativeMode::Off => false,
+        NativeMode::On => true,
+        NativeMode::Auto => !catalog.tools.is_empty(),
+    };
+    base && !disabled
+}
+
 /// The model leg's reply in `ai`'s normalized shape: assistant text plus
 /// any native tool invocations (empty unless `tools` was sent).
 #[derive(Debug, Clone, PartialEq)]
@@ -451,28 +465,66 @@ fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
 /// callers), so the portable place for operator-free instructions is a
 /// leading user message.
 pub fn opening_messages(goal: &str, context: &str, catalog: &Catalog) -> Vec<Turn> {
-    opening_messages_with_full(goal, context, catalog, catalog)
+    opening_messages_with_full(goal, context, catalog, catalog, false)
 }
 
-pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog, full: &Catalog) -> Vec<Turn> {
-    if cfg!(test) {
-        let tools_json: Vec<Value> = filtered
-            .tools
-            .iter()
-            .map(|t| {
-                json!({
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.parameters,
-                    "requires_confirmation": t.requires_confirmation,
-                })
+/// Render the full pretty-printed tool catalog exactly as it used to be
+/// embedded in every seed prompt. Shared by the text-protocol seed path and
+/// [`degraded_tool_catalog_block`] so the two never drift.
+fn tools_json_string(catalog: &Catalog) -> String {
+    let tools_json: Vec<Value> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            json!({
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.parameters,
+                "requires_confirmation": t.requires_confirmation,
             })
-            .collect();
+        })
+        .collect();
+    serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Short note that stands in for the JSON tool catalog when tools travel
+/// natively — costs a sentence instead of ~KBs of JSON, and never leaves
+/// the model in the dark about *how* tools reach it.
+const NATIVE_TOOLS_NOTE: &str =
+    "provided via this request's native tool-calling channel (see the `tools` \
+     parameter) — not duplicated here as JSON.";
+
+/// Build the instructions message that carries the tool catalog to a
+/// freshly-seeded goal. `native` must match what the engine's *first* loop
+/// iteration will actually send ([`want_native_tools`] with `disabled:
+/// false`, since a fresh goal is never degraded yet): when true, the
+/// expensive JSON catalog is skipped — it already rides the native `tools`
+/// param, so repeating it in text would double the cost for nothing. When
+/// the provider later rejects native tools, the engine calls
+/// [`degraded_tool_catalog_block`] to inject the catalog this function
+/// skipped, exactly once, before retrying text-only — so the degraded path
+/// is never left with neither channel informed.
+pub fn opening_messages_with_full(
+    goal: &str,
+    context: &str,
+    filtered: &Catalog,
+    full: &Catalog,
+    native: bool,
+) -> Vec<Turn> {
+    if cfg!(test) {
+        let tools_section = if native {
+            format!("Available tools: {NATIVE_TOOLS_NOTE}")
+        } else {
+            format!(
+                "Available tools (JSON array; `parameters` is a JSON Schema for the \
+                 `params` object):\n{}",
+                tools_json_string(filtered),
+            )
+        };
         let mut instructions = format!(
             "You are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
-             Available tools (JSON array; `parameters` is a JSON Schema for the \
-             `params` object):\n{}\n\n\
+             {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
@@ -481,7 +533,7 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
              answer as PLAIN TEXT — no JSON object at all.",
-            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+            tools_section,
         );
         let has_launch = filtered.tools.iter().any(|t| t.name == "launch");
         let has_list = filtered.tools.iter().any(|t| t.name == "launch_list");
@@ -538,26 +590,22 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
         core_block("_channel", CHANNEL),
         facts_section,
     );
-    let tools_json: Vec<Value> = filtered
-        .tools
-        .iter()
-        .map(|t| {
-            json!({
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.parameters,
-                "requires_confirmation": t.requires_confirmation,
-            })
-        })
-        .collect();
+    let tools_section = if native {
+        format!("Detailed tools for this goal: {NATIVE_TOOLS_NOTE}")
+    } else {
+        format!(
+            "Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
+             `params` object — only these are valid to call now):\n{}",
+            tools_json_string(filtered),
+        )
+    };
     let mut instructions = if let Some(pp) = plugin_prompts {
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
              Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
              Plugin identities (how to behave for relevant groups):\n{}\n\n\
-             Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
-             `params` object — only these are valid to call now):\n{}\n\n\
+             {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
@@ -569,15 +617,14 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
             identity_block,
             overview,
             pp,
-            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+            tools_section,
         )
     } else {
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
              Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
-             Detailed tools for this goal (JSON array; `parameters` is a JSON Schema for the \
-             `params` object — only these are valid to call now):\n{}\n\n\
+             {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
@@ -588,7 +635,7 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
              answer as PLAIN TEXT — no JSON object at all.",
             identity_block,
             overview,
-            serde_json::to_string_pretty(&tools_json).unwrap_or_else(|_| "[]".to_string()),
+            tools_section,
         )
     };
     // only when the goal loop can actually launch apps: name-based lookup is
@@ -625,6 +672,30 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
     };
     msgs.push(Turn { role: "user".into(), content: goal_msg });
     msgs
+}
+
+/// The text catalog a native seed deliberately left out, for the engine to
+/// inject into the transcript the moment a provider rejects the native
+/// `tools` param — see `engine.rs`'s degrade branch. Carries both the full
+/// JSON catalog and the reply-protocol rules so a goal that never had them
+/// in text (because it started native) isn't left with neither channel
+/// informed once native tool-calling stops being an option.
+pub fn degraded_tool_catalog_block(filtered: &Catalog) -> String {
+    format!(
+        "Native tool-calling was rejected by the provider for this goal; \
+         falling back to the text protocol for the rest of it. Detailed \
+         tools for this goal (JSON array; `parameters` is a JSON Schema \
+         for the `params` object — only these are valid to call now):\n{}\n\n\
+         Reply rules:\n\
+         - To call a tool, reply with EXACTLY ONE JSON object and nothing \
+         else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
+         - Only tool names from the list above are valid.\n\
+         - After each call you receive a message starting with \
+         \"[TOOL RESULT\" containing the outcome.\n\
+         - When the goal is achieved (or impossible), reply with the final \
+         answer as PLAIN TEXT — no JSON object at all.",
+        tools_json_string(filtered),
+    )
 }
 
 /// One `chat_completion` round-trip over the current transcript. When
@@ -1019,6 +1090,110 @@ mod tests {
         let no_ctx = opening_messages("just g", "", &cat);
         assert!(!no_ctx[1].content.contains("[SESSION MEMORY]"));
         assert!(!no_ctx[0].content.contains("Session memory:"));
+    }
+
+    fn sample_catalog() -> Catalog {
+        Catalog {
+            tools: vec![crate::tools::ToolSpec {
+                name: "notify_send".into(),
+                description: "Send a notification".into(),
+                parameters: json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+                requires_confirmation: false,
+                risk: String::new(),
+                timeout_ms: 30_000,
+                cooldown_ms: 0,
+                max_per_goal: 16,
+                source: crate::tools::Source::Kernel,
+            }],
+            allowed_actions: vec!["notify_send".into()],
+            tools_file_set: true,
+        }
+    }
+
+    #[test]
+    fn native_seed_omits_tool_json_but_keeps_reply_protocol() {
+        let cat = sample_catalog();
+        let msgs = opening_messages_with_full("water the plants", "", &cat, &cat, true);
+        // The expensive part — the pretty-printed JSON catalog — must not
+        // ride the seed text when tools travel natively.
+        assert!(
+            !msgs[0].content.contains("requires_confirmation"),
+            "native seed still duplicates the JSON catalog: {}",
+            msgs[0].content
+        );
+        // But the reply-protocol contract (fallback for models that ignore
+        // the native `tools` param) must still be there.
+        assert!(msgs[0].content.contains("EXACTLY ONE JSON object"));
+        assert!(msgs[0].content.contains("vynkor host agent"));
+    }
+
+    #[test]
+    fn text_seed_still_carries_full_tool_json_unchanged() {
+        let cat = sample_catalog();
+        let native = opening_messages_with_full("g", "", &cat, &cat, false);
+        let legacy = opening_messages("g", "", &cat);
+        assert_eq!(native, legacy, "native=false must match the legacy opening_messages() wrapper exactly");
+        assert!(native[0].content.contains("requires_confirmation"));
+        assert!(native[0].content.contains("notify_send"));
+    }
+
+    #[test]
+    fn native_seed_is_meaningfully_smaller_than_text_seed() {
+        // Representative catalog: 15 tools with realistic descriptions and
+        // schemas, matching the scale the live system pays 8x per goal
+        // (AGENT_PLUGIN_MAX_STEPS=8, transcript re-sent every step).
+        let tools: Vec<crate::tools::ToolSpec> = (0..15)
+            .map(|i| crate::tools::ToolSpec {
+                name: format!("tool_{i}"),
+                description: format!(
+                    "Performs operation number {i} against the host, with several \
+                     configurable parameters describing scope, target and options."
+                ),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "target": {"type": "string", "description": "what to act on"},
+                        "scope": {"type": "string", "enum": ["one", "all"]},
+                        "options": {"type": "object", "properties": {"force": {"type": "boolean"}}},
+                    },
+                    "required": ["target"],
+                }),
+                requires_confirmation: i % 3 == 0,
+                risk: "low".into(),
+                timeout_ms: 30_000,
+                cooldown_ms: 0,
+                max_per_goal: 16,
+                source: crate::tools::Source::Kernel,
+            })
+            .collect();
+        let cat = Catalog {
+            allowed_actions: tools.iter().map(|t| t.name.clone()).collect(),
+            tools,
+            tools_file_set: true,
+        };
+        let text_seed = opening_messages_with_full("do the thing", "", &cat, &cat, false);
+        let native_seed = opening_messages_with_full("do the thing", "", &cat, &cat, true);
+        let text_len = text_seed[0].content.len();
+        let native_len = native_seed[0].content.len();
+        eprintln!(
+            "[measured] seed prompt bytes — text-mode: {text_len}, native-mode: {native_len}, \
+             saved: {} ({:.1}%)",
+            text_len - native_len,
+            100.0 * (text_len - native_len) as f64 / text_len as f64,
+        );
+        assert!(
+            native_len < text_len / 2,
+            "expected native seed to be less than half the text seed: text={text_len} native={native_len}"
+        );
+    }
+
+    #[test]
+    fn degraded_tool_catalog_block_carries_full_json_and_reply_rules() {
+        let cat = sample_catalog();
+        let block = degraded_tool_catalog_block(&cat);
+        assert!(block.contains("requires_confirmation"));
+        assert!(block.contains("notify_send"));
+        assert!(block.contains("EXACTLY ONE JSON object"));
     }
 
     #[test]
