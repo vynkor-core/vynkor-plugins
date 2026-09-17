@@ -2117,7 +2117,31 @@ git commit -m "feat(capture): add video record start/stop with busy-slot + auto-
 - Produces: the finished plugin binary; no further tasks depend on this
   one.
 
-- [ ] **Step 1: Replace `App`, `manifest()`, and `handle_action_request` in `src/main.rs`**
+- [ ] **Step 1: Rewrite `src/main.rs` to use the SDK's concurrent loop instead of Task 1's sequential one**
+
+**Why this changed from a sequential loop:** Task 7 wired a real, live
+`org.freedesktop.portal.Screenshot` D-Bus fallback into
+`capture_screenshot` that can block up to 120 seconds waiting for a user
+to interact with an OS dialog. Task 1's scaffold used a plain sequential
+`recv → await handler → reply → next recv` loop (fine for `sound`/
+`clipboard`-style plugins whose calls are all fast). Under that loop, one
+slow `capture_screenshot` call would also block every other concurrent
+action request AND the kernel's keepalive `Ping` — exactly the failure
+mode `ai`'s `main.rs` doc comment describes hitting in production
+("used to happen every 5-30 minutes... plugin SIGKILLed" by the
+supervisor watchdog after missing pings). Fix: use `vynkor-sdk`'s
+`ConcurrentHandler` trait + `serve_concurrent` (the same facility
+`network`/`database` already use — see `plugins/network/src/main.rs`'s
+`impl ConcurrentHandler for NetworkPlugin` for the working precedent this
+follows) so every `ActionRequest` is spawned onto its own task and Pings
+keep answering regardless of how long one capture call takes. Unlike
+`ai` (which needs a hand-rolled loop because it makes outbound calls
+*into other plugins*), `capture` only spawns local processes and talks to
+D-Bus directly — no second kernel registration conflict — so the
+off-the-shelf `ConcurrentHandler`/`serve_concurrent` path applies
+directly, no custom loop needed.
+
+Replace the entire contents of `src/main.rs` with:
 
 ```rust
 use std::sync::Arc;
@@ -2125,7 +2149,14 @@ use std::sync::Arc;
 use capture_plugin::error::CaptureError;
 use capture_plugin::record::RecordState;
 use capture_plugin::spawner::{RealSpawner, Spawner};
-use capture_plugin::{ocr, portal as _, record, screenshot, session};
+use capture_plugin::{ocr, record, screenshot, session};
+use serde_json::Value;
+use vynkor_sdk::concurrent::{response_envelope, serve_concurrent};
+use vynkor_sdk::proto::{ActionRequest, Envelope, PluginManifest};
+use vynkor_sdk::{ConcurrentHandler, VynkorClient, VynkorError};
+
+const PLUGIN_ID: &str = "capture";
+const PLUGIN_VERSION: &str = "0.1.0";
 
 struct App {
     spawner: Arc<dyn Spawner>,
@@ -2151,85 +2182,88 @@ fn manifest() -> PluginManifest {
         ..Default::default()
     }
 }
-```
 
-(keep the existing `use vynkor_sdk::proto::...` import line from Task 1's
-`main.rs` — only `App`, `manifest()`, and the body of
-`handle_action_request` change; `serve`, `unix_millis`, and `main` stay as
-written in Task 1.)
+impl ConcurrentHandler for App {
+    fn id(&self) -> &str {
+        PLUGIN_ID
+    }
 
-Replace `handle_action_request`'s body:
+    fn version(&self) -> &str {
+        PLUGIN_VERSION
+    }
 
-```rust
-async fn handle_action_request(app: &App, req: ActionRequest) -> ActionResponse {
-    let params: Value = match serde_json::from_slice(&req.params_json) {
-        Ok(v) => v,
-        Err(e) => {
-            return ActionResponse {
-                action_id: req.action_id,
-                status: ActionStatus::ActionError as i32,
-                data_json: Vec::new(),
-                error: format!("invalid params_json: {e}"),
-            };
-        }
-    };
+    fn manifest(&self) -> PluginManifest {
+        manifest()
+    }
 
-    let result: Result<Value, CaptureError> = match req.action.as_str() {
-        "capture_screenshot" => screenshot::capture_screenshot(app.spawner.as_ref(), &params).await,
-        "capture_record_start" => record::start(Arc::clone(&app.record_state), Arc::clone(&app.spawner), &params).await,
-        "capture_record_stop" => record::stop(&app.record_state, &params).await,
-        "capture_ocr" => ocr::capture_ocr(app.spawner.as_ref(), &params).await,
-        "capture_status" => {
-            let s = session::build_status_report();
-            Ok(serde_json::json!({
-                "session_type": s.session_type,
-                "screenshot_backend": s.screenshot_backend,
-                "record_backend": s.record_backend,
-                "ocr_available": s.ocr_available,
-                "portal_available": s.portal_available,
-            }))
-        }
-        other => {
-            return ActionResponse {
-                action_id: req.action_id,
-                status: ActionStatus::ActionNotFound as i32,
-                data_json: Vec::new(),
-                error: format!("unknown action: {other}"),
-            };
-        }
-    };
+    async fn on_action(&self, req: ActionRequest) -> Vec<Envelope> {
+        let params: Value = match serde_json::from_slice(&req.params_json) {
+            Ok(v) => v,
+            Err(e) => {
+                return vec![response_envelope(req.action_id, Err(format!("invalid params_json: {e}")))];
+            }
+        };
 
-    match result {
-        Ok(data) => ActionResponse {
-            action_id: req.action_id,
-            status: ActionStatus::ActionOk as i32,
-            data_json: data.to_string().into_bytes(),
-            error: String::new(),
-        },
-        Err(error) => ActionResponse {
-            action_id: req.action_id,
-            status: ActionStatus::ActionError as i32,
-            data_json: Vec::new(),
-            error: error.to_string(),
-        },
+        let result: Result<Value, CaptureError> = match req.action.as_str() {
+            "capture_screenshot" => screenshot::capture_screenshot(self.spawner.as_ref(), &params).await,
+            "capture_record_start" => record::start(Arc::clone(&self.record_state), Arc::clone(&self.spawner), &params).await,
+            "capture_record_stop" => record::stop(&self.record_state, &params).await,
+            "capture_ocr" => ocr::capture_ocr(self.spawner.as_ref(), &params).await,
+            "capture_status" => {
+                let s = session::build_status_report();
+                Ok(serde_json::json!({
+                    "session_type": s.session_type,
+                    "screenshot_backend": s.screenshot_backend,
+                    "record_backend": s.record_backend,
+                    "ocr_available": s.ocr_available,
+                    "portal_available": s.portal_available,
+                }))
+            }
+            other => {
+                return vec![response_envelope(req.action_id, Err(format!("unknown action: {other}")))];
+            }
+        };
+
+        let wire_result = result
+            .map(|data| data.to_string().into_bytes())
+            .map_err(|e| e.to_string());
+        vec![response_envelope(req.action_id, wire_result)]
     }
 }
-```
 
-And update `main()`:
-
-```rust
 #[tokio::main]
 async fn main() -> Result<(), VynkorError> {
     let app = Arc::new(App::new());
     let client = VynkorClient::connect_from_env().await?;
-    serve(client, app).await
+    let jwt_token = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
+    serve_concurrent(client, &jwt_token, app).await?;
+    println!("[{PLUGIN_ID}] shutting down");
+    Ok(())
 }
 ```
 
-Also update the existing test module's `start_plugin()` helper (Task 1's
-`tests` block) — its `let app = Arc::new(App);` becomes `let app =
-Arc::new(App::new());` since `App` is no longer a unit struct.
+Note what this drops relative to Task 1's scaffold: no manual `Ping`/
+`PluginShutdown`/`Event` handling, no manual `register_full` call, no
+manual `unix_millis` helper — `serve_concurrent` and the loop it drives
+handle registration, `Ping`→`Pong`, shutdown, and default event
+acking internally (see `ConcurrentHandler`'s doc comments in
+`vynkor-sdk`'s `concurrent.rs` if you want the details: `on_action` is
+the only method this plugin needs to override, since `id`/`manifest` are
+required and everything else — `on_init`/`on_event`/`on_message`/
+`on_shutdown`/`accept` — has a default that's already correct for a
+plugin with no event subscriptions and no per-caller concurrency cap).
+
+Also rewrite the existing test module (Task 1's `tests` block, currently
+using a hand-rolled `UnixStream::pair` + manual register-ack shim around
+the old sequential `serve` fn) to drive `run_concurrent_loop` instead —
+follow `plugins/network/src/main.rs`'s own test module for the exact
+shim shape against `run_concurrent_loop` (it already solves "drive a
+`ConcurrentHandler` over a fake kernel socket pair" for this exact SDK
+version; copy its pattern rather than re-deriving one). The two
+existing test cases (`e2e_capture_status_round_trip`,
+`e2e_unknown_action_is_not_found`) keep their same assertions — only the
+harness underneath them changes from driving `serve` to driving
+`run_concurrent_loop`.
 
 - [ ] **Step 2: Write `plugin.json`**
 
