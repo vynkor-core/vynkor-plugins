@@ -3,3 +3,4 @@
 //! never a shell. See README.md for the full backend-chain table.
 
 pub mod error;
+pub mod paths;
