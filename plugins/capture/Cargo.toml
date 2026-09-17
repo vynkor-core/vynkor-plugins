@@ -21,6 +21,7 @@ async-trait = "0.1"
 base64 = "0.22"
 libc = "0.2"
 zbus = { version = "4", default-features = false, features = ["tokio"] }
+thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3"
