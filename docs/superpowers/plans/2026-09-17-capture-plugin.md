@@ -1102,7 +1102,6 @@ struct Candidate {
     /// True when this candidate needs stdout captured first (`slurp`) to
     /// build the real command's args — handled specially in the runner.
     needs_slurp: bool,
-    needs_slop: bool,
 }
 
 fn grim_args(region: Region, path: &str) -> Option<Vec<String>> {
@@ -1160,13 +1159,13 @@ fn import_args(region: Region, path: &str) -> Option<Vec<String>> {
 
 fn candidates_for(session: SessionType) -> &'static [Candidate] {
     match session {
-        SessionType::Wlroots => &[Candidate { bin: "grim", build: grim_args, needs_slurp: true, needs_slop: false }],
-        SessionType::Gnome => &[Candidate { bin: "gnome-screenshot", build: gnome_screenshot_args, needs_slurp: false, needs_slop: false }],
-        SessionType::Kde => &[Candidate { bin: "spectacle", build: spectacle_args, needs_slurp: false, needs_slop: false }],
+        SessionType::Wlroots => &[Candidate { bin: "grim", build: grim_args, needs_slurp: true }],
+        SessionType::Gnome => &[Candidate { bin: "gnome-screenshot", build: gnome_screenshot_args, needs_slurp: false }],
+        SessionType::Kde => &[Candidate { bin: "spectacle", build: spectacle_args, needs_slurp: false }],
         SessionType::X11 | SessionType::Unknown => &[
-            Candidate { bin: "maim", build: maim_args, needs_slurp: false, needs_slop: false },
-            Candidate { bin: "scrot", build: scrot_args, needs_slurp: false, needs_slop: false },
-            Candidate { bin: "import", build: import_args, needs_slurp: false, needs_slop: false },
+            Candidate { bin: "maim", build: maim_args, needs_slurp: false },
+            Candidate { bin: "scrot", build: scrot_args, needs_slurp: false },
+            Candidate { bin: "import", build: import_args, needs_slurp: false },
         ],
     }
 }
@@ -1179,10 +1178,8 @@ pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result
     let path_str = path.to_string_lossy().to_string();
 
     let session = detect_session(&|k| std::env::var(k).ok());
-    let mut last_missing = true;
 
     for cand in candidates_for(session) {
-        let mut region_for_build = region;
         if region == Region::Select && cand.needs_slurp {
             // grim's chain: slurp draws the box, grim consumes -g <geom>.
             match spawner.run_capturing("slurp", &[]).await {
@@ -1191,48 +1188,18 @@ pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result
                     return run_and_finish(spawner, cand.bin, args, ext, path, &path_str).await;
                 }
                 Ok(_) => return Err(CaptureError::Cancelled("slurp")),
-                Err(e) if e.contains("ERR_CAPTURE_PROVIDER_MISSING") => {
-                    last_missing = true;
-                    continue;
-                }
-                Err(e) => return Err(CaptureError::Backend(e)),
-            }
-        }
-        if region_for_build == Region::Select && cand.needs_slop {
-            match spawner.run_capturing("slop", &["-f".to_string(), "%x,%y %wx%h".to_string()]).await {
-                Ok((0, geom)) if !geom.is_empty() => {
-                    region_for_build = crate::screenshot::parse_geom_as_rect(&geom)?;
-                }
-                Ok(_) => return Err(CaptureError::Cancelled("slop")),
-                Err(e) if e.contains("ERR_CAPTURE_PROVIDER_MISSING") => {
-                    last_missing = true;
-                    continue;
-                }
+                Err(e) if e.contains("ERR_CAPTURE_PROVIDER_MISSING") => continue,
                 Err(e) => return Err(CaptureError::Backend(e)),
             }
         }
 
-        let Some(args) = (cand.build)(region_for_build, &path_str) else {
+        let Some(args) = (cand.build)(region, &path_str) else {
             continue; // this backend can't express the requested region
         };
         return run_and_finish(spawner, cand.bin, args, ext, path, &path_str).await;
     }
 
-    let _ = last_missing;
     Err(CaptureError::NotSupported("screenshot"))
-}
-
-/// Parse `slop -f "%x,%y %wx%h"` output ("100,200 300x400") into a `Rect`.
-/// Only used by the (currently unreachable in v1's candidate tables, kept
-/// for the X11 `needs_slop` branch above should a future candidate set it)
-/// slop path.
-fn parse_geom_as_rect(geom: &str) -> Result<Region, CaptureError> {
-    let (pos, size) = geom.split_once(' ').ok_or_else(|| CaptureError::Backend(format!("unparseable geometry '{geom}'")))?;
-    let (x, y) = pos.split_once(',').ok_or_else(|| CaptureError::Backend(format!("unparseable geometry '{geom}'")))?;
-    let (w, h) = size.split_once('x').ok_or_else(|| CaptureError::Backend(format!("unparseable geometry '{geom}'")))?;
-    let parse_i32 = |s: &str| s.trim().parse::<i32>().map_err(|_| CaptureError::Backend(format!("unparseable geometry '{geom}'")));
-    let parse_u32 = |s: &str| s.trim().parse::<u32>().map_err(|_| CaptureError::Backend(format!("unparseable geometry '{geom}'")));
-    Ok(Region::Rect { x: parse_i32(x)?, y: parse_i32(y)?, w: parse_u32(w)?, h: parse_u32(h)? })
 }
 
 async fn run_and_finish(
@@ -1316,12 +1283,6 @@ mod tests {
     fn parse_rejects_zero_size_rect() {
         let err = parse(&serde_json::json!({"region": {"x": 0, "y": 0, "w": 0, "h": 10}})).unwrap_err();
         assert!(matches!(err, CaptureError::BadParams(_)));
-    }
-
-    #[test]
-    fn parse_geom_as_rect_parses_slop_output() {
-        let r = parse_geom_as_rect("100,200 300x400").unwrap();
-        assert_eq!(r, Region::Rect { x: 100, y: 200, w: 300, h: 400 });
     }
 
     #[test]
@@ -1510,7 +1471,6 @@ and add `use futures_util::StreamExt;` to the top of `portal.rs`.
 In `plugins/capture/src/screenshot.rs`, replace the function's final line:
 
 ```rust
-    let _ = last_missing;
     Err(CaptureError::NotSupported("screenshot"))
 }
 ```
@@ -1518,7 +1478,6 @@ In `plugins/capture/src/screenshot.rs`, replace the function's final line:
 with:
 
 ```rust
-    let _ = last_missing;
     let interactive = region != Region::Full;
     crate::portal::screenshot_via_portal(interactive, &path).await?;
     let (width, height) = image_dimensions_best_effort(&path);
@@ -1862,15 +1821,14 @@ pub async fn start(
     let filename = record_filename(ext);
     let path = data_dir().join(&filename);
     let path_str = path.to_string_lossy().to_string();
+    // `record_args` was called with an empty placeholder path (the real
+    // path isn't known until `record_filename`/`data_dir` run, just
+    // above) — every backend pushes that placeholder as one argv element,
+    // so replace the empty string with the real path now.
     let args: Vec<String> = args
         .into_iter()
         .map(|a| if a.is_empty() { path_str.clone() } else { a })
         .collect();
-    // record_args builds args with the path as its own final element
-    // already; the map above only matters if a future backend leaves a
-    // placeholder — wf-recorder/ffmpeg branches above always push the
-    // real path directly, so this is a no-op today and documents the
-    // contract for whoever adds a third backend.
 
     let process = spawner
         .run_detached(bin, &args)
