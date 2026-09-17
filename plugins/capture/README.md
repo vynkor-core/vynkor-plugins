@@ -43,6 +43,14 @@ names the capability), `ERR_CAPTURE_BUSY` (a recording is already
 active), `ERR_CAPTURE_CANCELLED` (interactive selection dismissed),
 `ERR_CAPTURE_BACKEND` (a detected backend failed at call time).
 
+## Testing
+
+This crate's `screenshot`/`record` modules each hold their own
+env-mutating-test lock; run the full suite with
+`cargo test -- --test-threads=1` to avoid a rare cross-module env-var race
+between them (each module's own tests already document this internally
+for scoped runs).
+
 ## Recording lifecycle
 
 One active recording at a time. `max_duration_ms` (default 30 min)
