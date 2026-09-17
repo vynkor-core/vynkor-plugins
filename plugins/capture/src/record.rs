@@ -55,6 +55,14 @@ fn record_args(session: SessionType, region: Region, path: &str) -> Option<(&'st
         SessionType::X11 => {
             let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".to_string());
             let mut args = vec!["-f".into(), "x11grab".into()];
+            // `-video_size` is an ffmpeg *input* option for x11grab and
+            // must precede the `-i` it configures — placed after `-i` it
+            // silently becomes an output option instead (rescale, not
+            // crop), so it goes in this input-options block before `-i`.
+            if let Region::Rect { w, h, .. } = region {
+                args.push("-video_size".into());
+                args.push(format!("{w}x{h}"));
+            }
             let input = if let Region::Rect { x, y, .. } = region {
                 format!("{display}+{x},{y}")
             } else {
@@ -62,10 +70,6 @@ fn record_args(session: SessionType, region: Region, path: &str) -> Option<(&'st
             };
             args.push("-i".into());
             args.push(input);
-            if let Region::Rect { w, h, .. } = region {
-                args.push("-video_size".into());
-                args.push(format!("{w}x{h}"));
-            }
             args.push("-y".into());
             args.push(path.to_string());
             Some(("ffmpeg", args))
@@ -202,6 +206,32 @@ mod tests {
         assert_eq!(args, vec!["-f".to_string(), "/o.mp4".to_string()]);
         std::env::remove_var("WAYLAND_DISPLAY");
         std::env::remove_var("XDG_CURRENT_DESKTOP");
+    }
+
+    #[test]
+    fn x11_record_args_rect_region_puts_video_size_before_input() {
+        std::env::set_var("DISPLAY", ":0");
+        let (bin, args) = record_args(
+            SessionType::X11,
+            Region::Rect { x: 10, y: 20, w: 300, h: 400 },
+            "/o.mp4",
+        )
+        .unwrap();
+        assert_eq!(bin, "ffmpeg");
+        assert_eq!(
+            args,
+            vec![
+                "-f".to_string(),
+                "x11grab".to_string(),
+                "-video_size".to_string(),
+                "300x400".to_string(),
+                "-i".to_string(),
+                ":0+10,20".to_string(),
+                "-y".to_string(),
+                "/o.mp4".to_string(),
+            ]
+        );
+        std::env::remove_var("DISPLAY");
     }
 
     #[tokio::test]
