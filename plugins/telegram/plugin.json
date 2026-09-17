@@ -463,7 +463,34 @@
     },
     {
       "name": "tg_get_unread",
-      "description": "Alias for tg_list_unread — get all unread messages across chats"
+      "description": "Alias for tg_list_unread — get all unread messages across chats",
+      "input": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Max items to return. Default 20, clamped to 1..100.",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "include_messages": {
+            "type": "boolean",
+            "description": "Include the unread message bodies, not just counts."
+          },
+          "message_limit": {
+            "type": "integer",
+            "description": "Max messages per dialog when include_messages is true."
+          },
+          "fields": {
+            "type": "string",
+            "description": "Comma-separated field allowlist to trim the response payload."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        }
+      }
     },
     {
       "name": "tg_mark_read",
@@ -512,7 +539,31 @@
     },
     {
       "name": "tg_transcribe_voice",
-      "description": "Download voice/media message to file for STT — peer, message_id, output_path? -> output_path, then call stt_transcribe"
+      "description": "Download voice/media message to file for STT — peer, message_id, output_path? -> output_path, then call stt_transcribe",
+      "input": {
+        "type": "object",
+        "properties": {
+          "peer": {
+            "type": "string",
+            "description": "Peer holding the voice message: 'user:ID', 'group:ID', 'channel:ID', '@username' (the @ is required for non-contacts), or 'self' for Saved Messages. Optional; defaults to 'self'."
+          },
+          "message_id": {
+            "type": "integer",
+            "description": "Id of the voice/media message to download. Alias: id."
+          },
+          "output_path": {
+            "type": "string",
+            "description": "Where to write the downloaded audio. Alias: path. Defaults to /tmp/tg_voice_<peer>_<message_id>.ogg."
+          },
+          "account": {
+            "type": "string",
+            "description": "Account slug; defaults to the plugin's configured default account."
+          }
+        },
+        "required": [
+          "message_id"
+        ]
+      }
     }
   ],
   "events": [
