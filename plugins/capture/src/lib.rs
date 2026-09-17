@@ -7,3 +7,4 @@ pub mod paths;
 pub mod session;
 pub mod spawner;
 pub mod screenshot;
+pub mod portal;

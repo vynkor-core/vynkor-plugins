@@ -155,7 +155,15 @@ pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result
         }
     }
 
-    Err(CaptureError::NotSupported("screenshot"))
+    let interactive = region != Region::Full;
+    crate::portal::screenshot_via_portal(interactive, &path).await?;
+    let (width, height) = image_dimensions_best_effort(&path);
+    Ok(serde_json::json!({
+        "path": path_str,
+        "width": width,
+        "height": height,
+        "format": ext,
+    }))
 }
 
 /// Spawn one candidate binary and turn its outcome into the call's result:
@@ -308,6 +316,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "now reaches the live xdg-desktop-portal Screenshot fallback added in Task 7 — not mockable via the Spawner trait, and unsafe to run unattended (real D-Bus call, real interactive dialog on hosts with a portal). See portal.rs's URI-parsing unit tests for the coverage boundary."]
     async fn not_supported_when_no_backend_present() {
         let _g = ENV_LOCK.lock().unwrap();
         clear_session_env();
