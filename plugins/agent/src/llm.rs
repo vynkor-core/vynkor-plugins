@@ -319,6 +319,28 @@ fn core_block(stem: &str, fallback: &str) -> String {
     core_block_at(prompts_dir().as_deref(), stem, fallback)
 }
 
+/// Operator env var: literal facts text. Overrides `<prompts_dir>/_facts.md`
+/// so a fact can be corrected without filesystem access.
+pub const FACTS_ENV: &str = "AGENT_PLUGIN_FACTS";
+
+/// Authoritative data about the user and environment — ids, account names,
+/// who-is-who — kept out of behavioral prose so it can be corrected in one
+/// line and reused by every group rather than duplicated per group prompt.
+fn facts_block_at(dir: Option<&Path>, literal: Option<&str>) -> Option<String> {
+    if let Some(text) = literal {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    dir.and_then(|d| prompt_file_at(d, "_facts"))
+}
+
+fn facts_block() -> Option<String> {
+    let literal = std::env::var(FACTS_ENV).ok();
+    facts_block_at(prompts_dir().as_deref(), literal.as_deref())
+}
+
 fn default_plugin_prompt(group: &str) -> Option<String> {
     match group {
         "telegram" => Some(
@@ -498,11 +520,23 @@ pub fn opening_messages_with_full(goal: &str, context: &str, filtered: &Catalog,
     const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
     const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
     const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
+    // Appended to the persona rather than threaded through both format!
+    // arms below: the facts are context for every group, not a group of
+    // their own.
+    let facts_section = facts_block()
+        .map(|facts| {
+            format!(
+                "\n\nFacts (authoritative data about the user and environment — \
+                 prefer these over inference, and never contradict them):\n{facts}"
+            )
+        })
+        .unwrap_or_default();
     let identity_block = format!(
-        "{}\n\n{}\n\n{}",
+        "{}\n\n{}\n\n{}{}",
         core_block("_identity", IDENTITY),
         core_block("_personality", PERSONALITY),
         core_block("_channel", CHANNEL),
+        facts_section,
     );
     let tools_json: Vec<Value> = filtered
         .tools
@@ -1190,5 +1224,30 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("_channel.md"), "  \n ").unwrap();
         assert_eq!(core_block_at(Some(dir.path()), "_channel", "builtin channel"), "builtin channel");
+    }
+
+    #[test]
+    fn facts_literal_env_wins_over_facts_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("_facts.md"), "from file").unwrap();
+        assert_eq!(
+            facts_block_at(Some(dir.path()), Some("from env")).as_deref(),
+            Some("from env")
+        );
+    }
+
+    #[test]
+    fn blank_facts_env_falls_through_to_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("_facts.md"), "from file").unwrap();
+        assert_eq!(facts_block_at(Some(dir.path()), Some("   ")).as_deref(), Some("from file"));
+        assert_eq!(facts_block_at(Some(dir.path()), None).as_deref(), Some("from file"));
+    }
+
+    #[test]
+    fn facts_absent_everywhere_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(facts_block_at(None, None).is_none());
+        assert!(facts_block_at(Some(dir.path()), None).is_none());
     }
 }

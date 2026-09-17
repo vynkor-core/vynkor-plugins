@@ -164,6 +164,12 @@ Env vars set in the kernel's config under this plugin's `env:` list — see
 | `AGENT_PLUGIN_AI_MAX_TOKENS` | `1024` | Per-completion token cap. |
 | `AGENT_PLUGIN_MAX_STEPS` | `6` | Default loop budget (1..=16). |
 | `AGENT_PLUGIN_DB_TIMEOUT_MS` | `5000` | Per-call timeout for `database` round-trips. |
+| `AGENT_PLUGIN_PROMPTS_DIR` | *(unset)* | Directory of prompt files. Group prompts at `<dir>/<group>.md` (`/` in a group name becomes `-`, so `audio/voice` → `audio-voice.md`). Reserved stems: `_identity.md`, `_personality.md`, `_channel.md` override the built-in persona constants; `_facts.md` supplies the facts block. A missing or blank file falls through to the next layer, never to an empty prompt. |
+| `AGENT_PLUGIN_FACTS` | *(unset)* | Literal facts text; overrides `_facts.md`. |
+
+Group-prompt precedence: `AGENT_PLUGIN_PLUGIN_PROMPTS` (wins) >
+`<prompts dir>/<group>.md` > built-in default. Each layer replaces the
+next; there is no append.
 
 ## Security
 
