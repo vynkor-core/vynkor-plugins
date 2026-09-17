@@ -269,6 +269,13 @@ async fn start_goal(db: &Db, rpc: &Rpc, params: GoalStartParams) -> Result<Actio
 
     engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh).await?;
 
+    // Best-effort retention: bound the store so it doesn't grow forever.
+    // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
+    // (store::retention_limit()); a prune failure never fails goal_start.
+    if let Err(e) = db.prune(store::retention_limit()).await {
+        eprintln!("[agent] goal retention prune failed: {e}");
+    }
+
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
@@ -340,8 +347,8 @@ pub async fn handle_action(
             None => ok(json!({"found": false, "goal": null}), None),
         },
         AgentRequest::GoalList { limit } => {
-            let docs = db.list(limit).await?;
-            ok(json!({"total": docs.len(), "goals": docs}), None)
+            let goals = db.list_summaries(limit).await?;
+            ok(json!({"total": goals.len(), "goals": goals}), None)
         }
         AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, &id, approve).await,
         AgentRequest::ToolsList => {

@@ -947,6 +947,18 @@ mod tests {
             .iter().map(|g| g["goal"].as_str().unwrap()).collect();
         assert_eq!(goals.first(), Some(&"second"));
 
+        // goal_list is a light projection: id/status/goal/timestamps/
+        // step_count/final_answer/error, never the transcript and never
+        // the full steps array. goal_get still returns everything.
+        for g in list["goals"].as_array().unwrap() {
+            assert!(g.get("transcript").is_none(), "{g}");
+            assert!(g.get("steps").is_none(), "{g}");
+            assert!(g.get("step_count").is_some(), "{g}");
+            assert!(g.get("status").is_some(), "{g}");
+            assert!(g.get("created_at_ms").is_some(), "{g}");
+            assert!(g.get("updated_at_ms").is_some(), "{g}");
+        }
+
         let missing = shim.call("goal_get", serde_json::json!({"id": "999"})).await.unwrap();
         assert_eq!(missing["found"], false);
 

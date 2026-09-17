@@ -72,10 +72,17 @@ storage failures, `ai` transport errors (land as status `error`, not
 
 ```json
 {"id": "7"}        // → {"found": true, "goal": {full doc incl. transcript}}
-{}                 // list: {"total": 2, "goals": [newest first]}
+{}                 // list: {"total": 2, "goals": [newest first, summaries]}
 ```
 
-Missing reads are `{found: false}`; corrupt stored docs fail loudly.
+`goal_get` is the detail view — a single id, full document, transcript and
+all. `goal_list` is a light projection per goal — `id`, `title`, `goal`,
+`status`, `final_answer`, `error`, `pending_tool`, `step_count`,
+`max_steps`, `created_at_ms`, `updated_at_ms` — and never returns
+`transcript` or the full `steps` array; those are what make a goal doc
+large enough to blow `database`'s per-call response cap once a few dozen
+goals have accumulated. Missing reads are `{found: false}`; corrupt stored
+docs fail loudly.
 
 ### `goal_resume`
 
@@ -176,6 +183,7 @@ Env vars set in the kernel's config under this plugin's `env:` list — see
 | `AGENT_PLUGIN_DB_TIMEOUT_MS` | `5000` | Per-call timeout for `database` round-trips. |
 | `AGENT_PLUGIN_PROMPTS_DIR` | *(unset)* | Directory of prompt files. Group prompts at `<dir>/<group>.md` (`/` in a group name becomes `-`, so `audio/voice` → `audio-voice.md`). Reserved stems: `_identity.md`, `_personality.md`, `_channel.md` override the built-in persona constants; `_facts.md` supplies the facts block. A missing or blank file falls through to the next layer, never to an empty prompt. |
 | `AGENT_PLUGIN_FACTS` | *(unset)* | Literal facts text; overrides `_facts.md`. |
+| `AGENT_PLUGIN_GOAL_RETENTION_LIMIT` | *(unset = unlimited)* | Max goal docs kept in the store. Checked (best-effort, never fails `goal_start`) after each new goal; when the store exceeds the limit, the oldest-by-`updated_at_ms` goals beyond it are deleted — but a goal still `running` or `needs_confirmation` is never pruned, even past the limit, so the store can stay above the cap while goals are in flight. Unset or empty is a true no-op: no keys are even listed. |
 
 Group-prompt precedence: `AGENT_PLUGIN_PLUGIN_PROMPTS` (wins) >
 `<prompts dir>/<group>.md` > built-in default. Each layer replaces the

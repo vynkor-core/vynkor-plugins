@@ -97,6 +97,44 @@ impl GoalDoc {
             STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR
         )
     }
+
+    /// Light per-goal projection for `goal_list` — everything an operator
+    /// needs to pick a goal to inspect, never the `transcript` and never the
+    /// full `steps` array (those two fields are what make a goal doc big
+    /// enough to blow `db_batch_get`'s response cap at realistic limits).
+    /// `goal_get` still returns the full document.
+    pub fn to_summary(&self) -> GoalSummary {
+        GoalSummary {
+            id: self.id.clone(),
+            title: self.title.clone(),
+            goal: self.goal.clone(),
+            status: self.status.clone(),
+            final_answer: self.final_answer.clone(),
+            error: self.error.clone(),
+            pending_tool: self.pending_tool.clone(),
+            step_count: self.steps.len(),
+            max_steps: self.max_steps,
+            created_at_ms: self.created_at_ms,
+            updated_at_ms: self.updated_at_ms,
+        }
+    }
+}
+
+/// `goal_list` response shape: id, status, goal text, timestamps, step
+/// count, final_answer, error — no `transcript`, no `steps` array.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalSummary {
+    pub id: String,
+    pub title: String,
+    pub goal: String,
+    pub status: String,
+    pub final_answer: String,
+    pub error: String,
+    pub pending_tool: String,
+    pub step_count: usize,
+    pub max_steps: u32,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 pub fn now_ms() -> i64 {
@@ -152,9 +190,8 @@ impl Db {
         Ok(Some(doc))
     }
 
-    /// Newest first. A corrupt entry fails the whole listing loudly rather
-    /// than silently vanishing.
-    pub async fn list(&self, limit: usize) -> Result<Vec<GoalDoc>, String> {
+    /// All stored goal keys, newest first (by numeric id suffix).
+    async fn sorted_keys(&self) -> Result<Vec<String>, String> {
         let v = self.call("db_keys", serde_json::json!({"prefix": KEY_PREFIX})).await?;
         let mut keys: Vec<String> = v
             .get("keys")
@@ -164,27 +201,127 @@ impl Db {
             })
             .ok_or_else(|| format!("database.db_keys returned unexpected payload: {v}"))?;
         keys.sort_by_key(|k| std::cmp::Reverse(key_num(k)));
-        keys.truncate(limit);
+        Ok(keys)
+    }
 
-        let batch = self.call("db_batch_get", serde_json::json!({"keys": keys})).await?;
-        let values = batch
-            .get("values")
-            .and_then(Value::as_object)
-            .ok_or_else(|| format!("database.db_batch_get returned unexpected payload: {batch}"))?;
+    /// Keys per `db_batch_get` call — small enough that a batch of full
+    /// goal docs (transcript + step log included) stays under database's
+    /// `max_response_bytes` cap even at the worst-case doc size seen in
+    /// production.
+    const BATCH_CHUNK: usize = 20;
 
-        let mut docs = Vec::new();
-        for key in &keys {
-            let value = values.get(key).cloned().unwrap_or(Value::Null);
-            let doc: GoalDoc = serde_json::from_value(value)
-                .map_err(|e| format!("stored goal \"{key}\" is corrupt: {e}"))?;
-            docs.push(doc);
+    /// Fetch and project the given keys to [`GoalSummary`], `BATCH_CHUNK`
+    /// keys at a time. This bounds the per-call payload but, unlike a
+    /// server-side projection, still moves the full document over the wire
+    /// before this process throws the bulk of it away — see the module doc
+    /// for what that does and doesn't fix.
+    async fn fetch_summaries(&self, keys: &[String]) -> Result<Vec<GoalSummary>, String> {
+        let mut out = Vec::with_capacity(keys.len());
+        for chunk in keys.chunks(Self::BATCH_CHUNK) {
+            let batch = self.call("db_batch_get", serde_json::json!({"keys": chunk})).await?;
+            let values = batch.get("values").and_then(Value::as_object).ok_or_else(|| {
+                format!("database.db_batch_get returned unexpected payload: {batch}")
+            })?;
+            for key in chunk {
+                let value = values.get(key).cloned().unwrap_or(Value::Null);
+                let doc: GoalDoc = serde_json::from_value(value)
+                    .map_err(|e| format!("stored goal \"{key}\" is corrupt: {e}"))?;
+                out.push(doc.to_summary());
+            }
         }
-        Ok(docs)
+        Ok(out)
+    }
+
+    /// Newest first, light projection (no transcript, no full steps array).
+    /// A corrupt entry fails the whole listing loudly rather than silently
+    /// vanishing.
+    pub async fn list_summaries(&self, limit: usize) -> Result<Vec<GoalSummary>, String> {
+        let mut keys = self.sorted_keys().await?;
+        keys.truncate(limit);
+        self.fetch_summaries(&keys).await
+    }
+
+    /// Delete goal docs beyond `limit` (newest-first), never touching a
+    /// goal that is still running or awaiting confirmation. `limit: None`
+    /// (env unset/empty) is a no-op — checked before any key is fetched, so
+    /// an operator who never opts in pays nothing extra. Returns the number
+    /// of docs actually deleted.
+    pub async fn prune(&self, limit: Option<usize>) -> Result<usize, String> {
+        let Some(limit) = limit else { return Ok(0) };
+        let keys = self.sorted_keys().await?;
+        if keys.len() <= limit {
+            return Ok(0);
+        }
+        let summaries = self.fetch_summaries(&keys).await?;
+        let candidates = summaries
+            .into_iter()
+            .map(|s| PruneCandidate { id: s.id, status: s.status, updated_at_ms: s.updated_at_ms })
+            .collect();
+        let victims = prune_ids_at(Some(limit), candidates);
+        let mut deleted = 0usize;
+        for id in &victims {
+            let key = format!("{KEY_PREFIX}{id}");
+            let v = self.call("db_delete", serde_json::json!({"key": key})).await?;
+            if v.get("ok").and_then(Value::as_bool) == Some(true) {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
     }
 }
 
 fn key_num(key: &str) -> u64 {
     key.strip_prefix(KEY_PREFIX).and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+/// Operator env var: max goal docs to retain. Unset/empty means unlimited —
+/// no behavior change for an operator who does not opt in. Never prunes a
+/// goal that is still `running` or `needs_confirmation`, regardless of the
+/// limit, so this can undershoot the cap when a lot of goals are in flight.
+pub const RETENTION_LIMIT_ENV: &str = "AGENT_PLUGIN_GOAL_RETENTION_LIMIT";
+
+/// Thin env wrapper — not exercised directly by tests (see [`prune_ids_at`]).
+pub fn retention_limit() -> Option<usize> {
+    std::env::var(RETENTION_LIMIT_ENV).ok().and_then(|v| {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            trimmed.parse().ok()
+        }
+    })
+}
+
+/// The slice of a stored goal that pruning decisions need.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PruneCandidate {
+    pub id: String,
+    pub status: String,
+    pub updated_at_ms: i64,
+}
+
+/// Pure core of retention: given every goal and a cap, return the ids to
+/// delete. Keeps the `limit` most-recently-updated goals; anything older is
+/// a deletion candidate UNLESS it is still running or awaiting confirmation
+/// — those are never pruned, even if that means the store stays above
+/// `limit` until the goal reaches a terminal status. `limit: None` (env
+/// unset/empty) always returns no victims.
+pub fn prune_ids_at(limit: Option<usize>, mut docs: Vec<PruneCandidate>) -> Vec<String> {
+    let Some(limit) = limit else { return Vec::new() };
+    if docs.len() <= limit {
+        return Vec::new();
+    }
+    docs.sort_by_key(|d| std::cmp::Reverse(d.updated_at_ms));
+    docs.into_iter()
+        .skip(limit)
+        .filter(|d| {
+            matches!(
+                d.status.as_str(),
+                STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR
+            )
+        })
+        .map(|d| d.id)
+        .collect()
 }
 
 #[cfg(test)]
@@ -239,5 +376,81 @@ mod tests {
             tool_counts: Default::default(),
             tool_last_ms: Default::default(),
         }
+    }
+
+    #[test]
+    fn to_summary_excludes_transcript_and_full_steps() {
+        let mut doc = sample(STATUS_COMPLETED);
+        doc.transcript = vec![
+            Turn { role: "user".into(), content: "a very long goal description".into() },
+            Turn { role: "assistant".into(), content: "a very long reply".into() },
+        ];
+        doc.steps = vec![
+            StepRec { n: 1, kind: "tool_ok".into(), detail: serde_json::json!({"tool": "x"}) },
+            StepRec { n: 2, kind: "final".into(), detail: Value::Null },
+        ];
+        doc.final_answer = "done".into();
+        doc.error = "".into();
+
+        let summary = doc.to_summary();
+        assert_eq!(summary.id, "1");
+        assert_eq!(summary.status, STATUS_COMPLETED);
+        assert_eq!(summary.goal, "g");
+        assert_eq!(summary.step_count, 2);
+        assert_eq!(summary.final_answer, "done");
+
+        // The struct has no transcript/steps fields at all, so the
+        // serialized JSON can never carry them — assert that directly on
+        // the wire shape, which is what a caller actually receives.
+        let json = serde_json::to_value(&summary).unwrap();
+        assert!(json.get("transcript").is_none(), "{json}");
+        assert!(json.get("steps").is_none(), "{json}");
+        assert_eq!(json["step_count"], 2);
+    }
+
+    #[test]
+    fn prune_ids_unlimited_when_env_unset() {
+        let docs = vec![
+            PruneCandidate { id: "1".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
+            PruneCandidate { id: "2".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 2 },
+        ];
+        assert_eq!(prune_ids_at(None, docs), Vec::<String>::new());
+    }
+
+    #[test]
+    fn prune_ids_noop_when_within_limit() {
+        let docs = vec![
+            PruneCandidate { id: "1".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
+            PruneCandidate { id: "2".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 2 },
+        ];
+        assert_eq!(prune_ids_at(Some(5), docs), Vec::<String>::new());
+    }
+
+    #[test]
+    fn prune_ids_deletes_oldest_terminal_beyond_limit() {
+        let docs = vec![
+            PruneCandidate { id: "old".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
+            PruneCandidate { id: "mid".into(), status: STATUS_ERROR.into(), updated_at_ms: 2 },
+            PruneCandidate { id: "new".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 3 },
+        ];
+        let victims = prune_ids_at(Some(2), docs);
+        assert_eq!(victims, vec!["old".to_string()]);
+    }
+
+    #[test]
+    fn prune_ids_never_touches_running_or_needs_confirmation() {
+        let docs = vec![
+            PruneCandidate { id: "running".into(), status: STATUS_RUNNING.into(), updated_at_ms: 1 },
+            PruneCandidate {
+                id: "confirm".into(),
+                status: STATUS_NEEDS_CONFIRMATION.into(),
+                updated_at_ms: 2,
+            },
+            PruneCandidate { id: "new".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 3 },
+        ];
+        // Limit of 1 would normally evict both "running" and "confirm" —
+        // neither may ever be deleted, so the victim list must be empty.
+        let victims = prune_ids_at(Some(1), docs);
+        assert_eq!(victims, Vec::<String>::new());
     }
 }
