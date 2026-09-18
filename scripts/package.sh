@@ -194,6 +194,69 @@ mkdir -p "$src_root"
 cp "$manifest" "$src_root/"
 cp -r "$plugin_dir/src" "$src_root/"
 cp "$plugin_dir/Cargo.toml" "$src_root/"
+
+# Vendor local path dependencies.
+#
+# There is no cargo workspace here, so a plugin that shares code does it with
+# a relative path dependency (e.g. `vynkor-plugin-manifest = { path =
+# "../_shared/plugin-manifest" }`). That path escapes the archive root: a
+# consumer who unzips the src archive and runs `cargo build` gets
+# "unable to update .../_shared/plugin-manifest: No such file or directory".
+# The binary archive is unaffected — it ships an already-linked executable —
+# so this failure only shows up for whoever tries to build from source, which
+# is exactly the person least able to diagnose it.
+#
+# Copy each such crate under vendor/ and rewrite the path to point inside the
+# archive, keeping the src archive a single self-contained root.
+# Parse the dependency tables rather than grepping for `path =` — [lib] and
+# [[bin]] carry their own `path` keys (`src/lib.rs`), and a grep picks those
+# up and then fails claiming the plugin depends on its own source file.
+mapfile -t path_deps < <(
+  python3 - "$plugin_dir/Cargo.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    cargo = tomllib.load(fh)
+tables = ["dependencies", "dev-dependencies", "build-dependencies"]
+found = []
+for table in tables:
+    for spec in cargo.get(table, {}).values():
+        if isinstance(spec, dict) and "path" in spec:
+            found.append(spec["path"])
+# [target.'cfg(...)'.dependencies] nests one level deeper.
+for target in cargo.get("target", {}).values():
+    for table in tables:
+        for spec in target.get(table, {}).values():
+            if isinstance(spec, dict) and "path" in spec:
+                found.append(spec["path"])
+print("\n".join(sorted(set(found))))
+PY
+)
+for rel in "${path_deps[@]:-}"; do
+  [ -n "$rel" ] || continue
+  dep_src="$plugin_dir/$rel"
+  if [ ! -d "$dep_src" ]; then
+    echo "ERROR: $slug declares path dependency '$rel' but $dep_src does not exist" >&2
+    exit 1
+  fi
+  dep_name=$(basename "$rel")
+  mkdir -p "$src_root/vendor"
+  # --exclude target/: the shared crate's build cache is not source and is
+  # large enough to dominate the archive.
+  rsync -a --exclude 'target/' "$dep_src/" "$src_root/vendor/$dep_name/"
+  # Anchor on the exact quoted path so a second dependency whose path is a
+  # prefix of this one cannot be rewritten by the wrong substitution.
+  python3 - "$src_root/Cargo.toml" "$rel" "vendor/$dep_name" <<'PY'
+import sys
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path).read()
+needle = f'"{old}"'
+if needle not in text:
+    sys.exit(f"ERROR: could not rewrite path dependency {old!r} in {path}")
+open(path, "w").write(text.replace(needle, f'"{new}"'))
+PY
+  echo "    vendored path dependency $rel -> vendor/$dep_name"
+done
+
 (cd "$src_stage" && zip -rq "$src_archive_path" "$slug-src")
 
 echo "==> writing plugin.json browse copy"

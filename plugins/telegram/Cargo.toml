@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 vynkor-sdk = "0.0.3"
 vynkor-wire = "0.0.3"
+vynkor-plugin-manifest = { path = "../_shared/plugin-manifest" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

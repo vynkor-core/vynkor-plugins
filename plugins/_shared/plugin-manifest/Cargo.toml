@@ -1,0 +1,15 @@
+[package]
+name = "vynkor-plugin-manifest"
+version = "0.1.0"
+edition = "2021"
+description = "Convert an on-disk plugin.json's actions[] into wire ActionSpecs for PluginManifest.action_specs — shared by plugins registering with the vynkor kernel."
+publish = false
+
+[lib]
+name = "vynkor_plugin_manifest"
+path = "src/lib.rs"
+
+[dependencies]
+vynkor-sdk = "0.0.3"
+serde_json = "1"
+tracing = "0.1"
