@@ -123,7 +123,25 @@ async fn write_index(rpc: &Rpc, db_timeout_ms: u32, ids: &[Value]) -> Result<(),
 /// Recall facts relevant to `goal_text`. Best-effort by design: any failure
 /// logs loudly and yields no block — a broken vector-db must never stop a
 /// goal from starting.
+///
+/// Skips the `vec_query` round-trip entirely when [`INDEX_KEY`] is empty —
+/// the same index `remember` populates and `memory_clear`/`memory_forget`/
+/// `memory_list` already treat as the source of truth. An empty index means
+/// nothing has ever been remembered (or everything was cleared), so
+/// `vec_query` is provably unable to return a hit; skipping it cannot cause
+/// a missed recall. This is deliberately NOT a goal-triviality heuristic —
+/// it never looks at `goal_text` — so it can't skip recall for a goal that
+/// might actually have something to draw from.
 pub async fn recall(rpc: &Rpc, goal_text: &str) -> Option<String> {
+    match read_index(rpc, 5_000).await {
+        Ok(index) if index.is_empty() => return None,
+        Ok(_) => {}
+        Err(e) => {
+            // Index read failed — fall through to vec_query rather than
+            // silently skipping recall on a transient database hiccup.
+            eprintln!("[agent] memory index read failed, recall proceeding anyway: {e}");
+        }
+    }
     let result = rpc
         .call(
             "vec_query",
@@ -286,6 +304,80 @@ pub async fn list(rpc: &Rpc) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProxyMsg;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    /// Minimal fake serve loop: answers `db_get`/`vec_query` (the only
+    /// actions `recall` issues) from a scripted index and hit list, and
+    /// counts how many times each action fired so tests can assert on
+    /// round-trips that did (or provably didn't) happen.
+    struct FakeRpc {
+        rpc: Rpc,
+        vec_query_calls: Arc<AtomicUsize>,
+        db_get_calls: Arc<AtomicUsize>,
+    }
+
+    fn fake_rpc(index: Vec<Value>, vec_hits: Vec<Value>) -> FakeRpc {
+        let (tx, mut rx) = mpsc::channel::<ProxyMsg>(32);
+        let vec_query_calls = Arc::new(AtomicUsize::new(0));
+        let db_get_calls = Arc::new(AtomicUsize::new(0));
+        let vqc = vec_query_calls.clone();
+        let dgc = db_get_calls.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    ProxyMsg::Action(call) => {
+                        let result = match call.action.as_str() {
+                            "db_get" => {
+                                dgc.fetch_add(1, Ordering::SeqCst);
+                                Ok(json!({"found": true, "value": index}))
+                            }
+                            "vec_query" => {
+                                vqc.fetch_add(1, Ordering::SeqCst);
+                                Ok(json!({"results": vec_hits}))
+                            }
+                            other => Err(format!("fake rpc: unexpected action {other}")),
+                        };
+                        let _ = call.reply.send(result);
+                    }
+                    ProxyMsg::Command(call) => {
+                        let _ = call.reply.send(Err("fake rpc: commands unsupported".into()));
+                    }
+                }
+            }
+        });
+        FakeRpc { rpc: Rpc::new(tx), vec_query_calls, db_get_calls }
+    }
+
+    #[tokio::test]
+    async fn recall_skips_vec_query_when_index_is_empty() {
+        let fake = fake_rpc(Vec::new(), Vec::new());
+        let out = recall(&fake.rpc, "who is Sarvar?").await;
+        assert!(out.is_none());
+        assert_eq!(
+            fake.vec_query_calls.load(Ordering::SeqCst),
+            0,
+            "recall must not round-trip vec_query when memory:index is empty"
+        );
+        assert_eq!(fake.db_get_calls.load(Ordering::SeqCst), 1, "index should be checked once");
+    }
+
+    #[tokio::test]
+    async fn recall_still_queries_and_returns_facts_when_index_is_non_empty() {
+        let index = vec![json!({"id": "f1", "ts": 0})];
+        let hits = vec![json!({
+            "id": "f1",
+            "score": 0.9,
+            "metadata": {"fact": "the user runs Arch Linux"}
+        })];
+        let fake = fake_rpc(index, hits);
+        let out = recall(&fake.rpc, "which OS does the user run?").await;
+        assert_eq!(fake.vec_query_calls.load(Ordering::SeqCst), 1, "non-empty index must still query");
+        let block = out.expect("expected a recalled facts block");
+        assert!(block.contains("Arch Linux"));
+    }
 
     #[test]
     fn parses_bare_and_fenced_arrays() {

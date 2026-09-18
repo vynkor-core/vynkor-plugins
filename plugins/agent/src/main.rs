@@ -344,6 +344,10 @@ mod tests {
     /// Per-collection facts in the fake `vector-db`: written by `vec_upsert`,
     /// read by `vec_query`, seeded directly by tests.
     type VecStore = Arc<Mutex<StdHashMap<String, Vec<Value>>>>;
+    /// Shared handle onto the fake `database` plugin's KV store — lets
+    /// tests seed keys (e.g. `memory:index`) the same way `vec_store` lets
+    /// them seed fake vector-db collections.
+    type DbStore = Arc<Mutex<FakeDb>>;
 
     /// In-memory stand-in for the `database` plugin (same KV semantics the
     /// notes/calendar tests use).
@@ -419,6 +423,7 @@ mod tests {
         dispatched: Dispatched,
         ai_requests: AiRequests,
         vec_store: VecStore,
+        db: DbStore,
         _serial: tokio::sync::MutexGuard<'static, ()>,
     }
 
@@ -490,6 +495,23 @@ mod tests {
                 .push(serde_json::json!({"id": id, "text": fact, "metadata": {"fact": fact}}));
         }
 
+        /// Append an entry to the fake `memory:index` key, mirroring what
+        /// `remember()` does in production so a seeded fact is discoverable
+        /// through the same index `recall`'s empty-index short-circuit
+        /// checks (see `memory.rs`).
+        async fn seed_index(&self, id: &str) {
+            let mut db = self.db.lock().await;
+            let key = agent_plugin::memory::INDEX_KEY.to_string();
+            let mut entries: Vec<Value> = db
+                .kv
+                .get(&key)
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            entries.push(serde_json::json!({"id": id, "ts": 0}));
+            db.kv.insert(key, Value::Array(entries));
+        }
+
         async fn vec_facts(&self, collection: &str) -> Vec<Value> {
             self.vec_store
                 .lock()
@@ -518,12 +540,14 @@ mod tests {
 
         let (tx, rx) = mpsc::channel::<Cmd>(32);
         let vec_store: VecStore = Arc::new(Mutex::new(StdHashMap::new()));
+        let db: DbStore = Arc::new(Mutex::new(FakeDb::default()));
         let shim = Shim {
             tx,
             published: Arc::new(Mutex::new(Vec::new())),
             dispatched: Arc::new(Mutex::new(Vec::new())),
             ai_requests: Arc::new(Mutex::new(Vec::new())),
             vec_store: vec_store.clone(),
+            db: db.clone(),
             _serial: TEST_SERIAL.lock().await,
         };
         tokio::spawn(run_shim(
@@ -533,6 +557,7 @@ mod tests {
             shim.dispatched.clone(),
             shim.ai_requests.clone(),
             vec_store,
+            db,
             commands_denied,
         ));
         shim
@@ -546,9 +571,9 @@ mod tests {
         dispatched: Dispatched,
         ai_requests: AiRequests,
         vec_store: VecStore,
+        db: DbStore,
         commands_denied: bool,
     ) {
-        let mut db = FakeDb::default();
         let mut ai_replies: VecDeque<Value> = VecDeque::new();
         let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> =
             StdHashMap::new();
@@ -587,7 +612,7 @@ mod tests {
                             let params: Value = serde_json::from_slice(&req.params_json)
                                 .unwrap_or(Value::Null);
                             let outcome = if req.action.starts_with("db_") {
-                                db.handle(&req.action, params)
+                                db.lock().await.handle(&req.action, params)
                             } else if req.action == "vec_upsert" {
                                 handle_vec_upsert(&vec_store, params).await
                             } else if req.action == "vec_query" {
@@ -1230,6 +1255,7 @@ mod tests {
         let _mem = MemoryEnvGuard::enable("agent-memory-test");
 
         shim.seed_fact("agent-memory-test", "fseed-0", "the user runs Arch Linux").await;
+        shim.seed_index("fseed-0").await;
 
         // Script the goal loop's final answer, then the extraction pass's
         // facts array (both ride chat_completion).
