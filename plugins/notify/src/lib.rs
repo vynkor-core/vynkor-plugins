@@ -7,6 +7,7 @@
 
 pub mod handler;
 pub mod inbox;
+pub mod manifest;
 pub mod providers;
 pub mod push;
 pub mod request;

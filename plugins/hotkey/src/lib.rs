@@ -9,5 +9,6 @@
 //! - [`request`] — action param validation shared by the binary's dispatch.
 
 pub mod bindings;
+pub mod manifest;
 pub mod portal;
 pub mod request;

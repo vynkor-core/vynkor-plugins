@@ -1,6 +1,7 @@
 pub mod config;
 pub mod desktop;
 pub mod error;
+pub mod manifest;
 pub mod providers;
 pub mod request;
 pub mod runner;
@@ -294,6 +295,7 @@ impl Plugin for LauncherPlugin<RealLauncher> {
         PluginManifest {
             permissions: vec!["launch".into()],
             actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+            action_specs: crate::manifest::action_specs(),
             ..Default::default()
         }
     }

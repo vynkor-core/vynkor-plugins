@@ -12,4 +12,5 @@
 //! and `players` modules; `main.rs` only wires the SDK loop.
 
 pub mod handler;
+pub mod manifest;
 pub mod players;

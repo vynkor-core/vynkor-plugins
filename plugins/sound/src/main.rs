@@ -7,6 +7,7 @@
 //! reader of the connection with no RPC proxy needed.
 
 mod handler;
+mod manifest;
 mod players;
 
 use std::sync::{Arc, Mutex};
@@ -47,6 +48,7 @@ fn manifest() -> PluginManifest {
             "sound_status".to_string(),
             "sound_devices".to_string(),
         ],
+        action_specs: manifest::action_specs(),
         ..Default::default()
     }
 }

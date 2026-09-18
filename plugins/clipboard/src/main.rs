@@ -16,6 +16,7 @@ fn manifest() -> PluginManifest {
     PluginManifest {
         permissions: vec!["PERMISSION_CLIPBOARD".into(), "PERMISSION_STORAGE".into()],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+        action_specs: clipboard_plugin::manifest::action_specs(),
         ..Default::default()
     }
 }

@@ -38,6 +38,7 @@ fn manifest() -> PluginManifest {
         // the dedicated-permission note.
         permissions: vec!["PERMISSION_SYSTEM".into(), "PERMISSION_EVENT_PUBLISH".into()],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+        action_specs: hotkey_plugin::manifest::action_specs(),
         ..Default::default()
     }
 }

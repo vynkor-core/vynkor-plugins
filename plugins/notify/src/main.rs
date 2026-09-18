@@ -38,6 +38,7 @@ fn manifest() -> PluginManifest {
             "notify_delete".to_string(),
             "push_send".to_string(),
         ],
+        action_specs: notify_plugin::manifest::action_specs(),
         ..Default::default()
     }
 }

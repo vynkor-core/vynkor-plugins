@@ -34,6 +34,7 @@ impl ConcurrentHandler for handler::Handler {
                 "secret_delete".into(),
                 "secret_list".into(),
             ],
+            action_specs: vynkor_plugin_manifest::action_specs(),
             ..Default::default()
         }
     }
@@ -81,4 +82,27 @@ pub fn handler_from_env() -> Arc<handler::Handler> {
         max_name_bytes,
         max_value_bytes,
     ))
+}
+
+#[cfg(test)]
+mod manifest_specs_tests {
+    use serde_json::Value;
+
+    // Regression guard: an action that reaches the model with an empty
+    // description gets dropped by the agent's embedding filter. This reads
+    // the shipped plugin.json directly (not action_specs(), which relies on
+    // current_exe() and is meaningless in a dev-build test binary).
+    #[test]
+    fn shipped_manifest_documents_every_declared_action() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let declared = parsed["actions"].as_array().unwrap().len();
+        let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
+        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+    }
 }

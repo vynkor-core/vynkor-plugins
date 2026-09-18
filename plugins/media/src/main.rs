@@ -6,6 +6,7 @@
 //! trait (sequential, one request at a time) and delegates every D-Bus call
 //! to the `mpris` module. See ROADMAP.md for the design rationale.
 
+mod manifest;
 mod mpris;
 
 use serde_json::Value;
@@ -47,6 +48,7 @@ impl Plugin for MediaPlugin {
                 "media_raise".to_string(),
                 "media_quit".to_string(),
             ],
+            action_specs: manifest::action_specs(),
             ..Default::default()
         }
     }

@@ -7,5 +7,6 @@
 
 pub mod handler;
 pub mod history;
+pub mod manifest;
 pub mod providers;
 pub mod lib_rpc;

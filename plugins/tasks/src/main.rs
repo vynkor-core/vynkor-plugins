@@ -35,6 +35,7 @@ fn manifest() -> PluginManifest {
             "PERMISSION_EVENT_PUBLISH".into(),
         ],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+        action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
     }
 }
@@ -392,5 +393,28 @@ mod tests {
         assert!(e.contains("title"));
         let e = shim.call("task_list", serde_json::json!({"limit":0})).await.unwrap_err();
         assert!(e.contains("limit"));
+    }
+}
+
+#[cfg(test)]
+mod manifest_specs_tests {
+    use serde_json::Value;
+
+    // Regression guard: an action that reaches the model with an empty
+    // description gets dropped by the agent's embedding filter. This reads
+    // the shipped plugin.json directly (not action_specs(), which relies on
+    // current_exe() and is meaningless in a dev-build test binary).
+    #[test]
+    fn shipped_manifest_documents_every_declared_action() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let declared = parsed["actions"].as_array().unwrap().len();
+        let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
+        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
     }
 }
