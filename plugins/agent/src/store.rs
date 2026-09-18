@@ -207,14 +207,17 @@ impl Db {
     /// Keys per `db_batch_get` call — small enough that a batch of full
     /// goal docs (transcript + step log included) stays under database's
     /// `max_response_bytes` cap even at the worst-case doc size seen in
-    /// production.
+    /// production. Only [`Db::prune`] still uses this path: it needs the
+    /// full set of ids/status/timestamp to decide what to delete, and
+    /// deletion candidates are (by design) a small, bounded tail of the
+    /// store, not the common "list everything" read `goal_list` makes —
+    /// see [`Db::list_summaries`] for the projected path that read uses.
     const BATCH_CHUNK: usize = 20;
 
     /// Fetch and project the given keys to [`GoalSummary`], `BATCH_CHUNK`
     /// keys at a time. This bounds the per-call payload but, unlike a
     /// server-side projection, still moves the full document over the wire
-    /// before this process throws the bulk of it away — see the module doc
-    /// for what that does and doesn't fix.
+    /// before this process throws the bulk of it away.
     async fn fetch_summaries(&self, keys: &[String]) -> Result<Vec<GoalSummary>, String> {
         let mut out = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(Self::BATCH_CHUNK) {
@@ -232,13 +235,61 @@ impl Db {
         Ok(out)
     }
 
-    /// Newest first, light projection (no transcript, no full steps array).
-    /// A corrupt entry fails the whole listing loudly rather than silently
-    /// vanishing.
+    /// Newest-first, projected listing via a single server-side `db_query`:
+    /// `json_extract`/`json_array_length` on the stored JSON pull out only
+    /// the fields [`GoalSummary`] needs, so a full goal document (transcript
+    /// and complete steps array included) never crosses the wire just to
+    /// be thrown away here — unlike the old `db_keys` + `db_batch_get`
+    /// path this replaces (still used by [`Db::prune`], which genuinely
+    /// needs to see every doc to decide what to delete).
+    ///
+    /// Ordering must be by the *numeric* id suffix, not lexical key order:
+    /// plain `ORDER BY key DESC` would sort `goal:9` after `goal:10`. The
+    /// query pulls the digits after the `goal:` prefix out of the key with
+    /// `substr` and `CAST`s them to `INTEGER` before sorting — the SQL
+    /// equivalent of what [`key_num`] does in Rust for the key-listing path.
+    ///
+    /// Expiry is filtered the same way every other `database` handler does
+    /// (`expires_at is null or expires_at > now`) — belt-and-braces, since
+    /// `database` also sweeps expired rows before every action runs.
+    ///
+    /// A `db_query` failure is propagated as `Err`, never swallowed into an
+    /// empty `Vec`: callers use the empty-list case to mean "no goals yet",
+    /// which must never be confused with "the read failed".
     pub async fn list_summaries(&self, limit: usize) -> Result<Vec<GoalSummary>, String> {
-        let mut keys = self.sorted_keys().await?;
-        keys.truncate(limit);
-        self.fetch_summaries(&keys).await
+        let pattern = format!("{KEY_PREFIX}%");
+        // 1-based `substr` start of the digits after the prefix, e.g. for
+        // "goal:" (len 5) that's position 6: substr("goal:12", 6) = "12".
+        let substr_start = (KEY_PREFIX.len() + 1) as i64;
+        let sql = "select \
+                json_extract(value, '$.id') as id, \
+                json_extract(value, '$.title') as title, \
+                json_extract(value, '$.goal') as goal, \
+                json_extract(value, '$.status') as status, \
+                json_extract(value, '$.final_answer') as final_answer, \
+                json_extract(value, '$.error') as error, \
+                json_extract(value, '$.pending_tool') as pending_tool, \
+                json_array_length(value, '$.steps') as step_count, \
+                json_extract(value, '$.max_steps') as max_steps, \
+                json_extract(value, '$.created_at_ms') as created_at_ms, \
+                json_extract(value, '$.updated_at_ms') as updated_at_ms \
+             from kv \
+             where key like ?1 and (expires_at is null or expires_at > ?2) \
+             order by cast(substr(key, ?3) as integer) desc \
+             limit ?4"
+            .to_string();
+        let params = serde_json::json!([pattern, now_ms(), substr_start, limit as i64]);
+        let v = self.call("db_query", serde_json::json!({"sql": sql, "params": params})).await?;
+        let rows = v
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("database.db_query returned unexpected payload: {v}"))?;
+        rows.iter()
+            .map(|row| {
+                serde_json::from_value(row.clone())
+                    .map_err(|e| format!("goal_list row is corrupt: {e} (row was {row})"))
+            })
+            .collect()
     }
 
     /// Delete goal docs beyond `limit` (newest-first), never touching a
@@ -452,5 +503,158 @@ mod tests {
         // neither may ever be deleted, so the victim list must be empty.
         let victims = prune_ids_at(Some(1), docs);
         assert_eq!(victims, Vec::<String>::new());
+    }
+
+    // --- list_summaries: server-side db_query projection ---
+    //
+    // The agent plugin has no SQLite of its own (that lives in the separate
+    // `database` plugin crate), so these tests stand up a minimal in-process
+    // `Rpc` responder that implements just enough of `db_query` semantics —
+    // prefix filter, expiry filter, numeric-suffix ordering, limit, and the
+    // `json_extract`/`json_array_length` projection — to exercise the exact
+    // contract `Db::list_summaries` relies on, without executing real SQL.
+
+    struct FakeRow {
+        key: String,
+        doc: GoalDoc,
+        expires_at: Option<i64>,
+    }
+
+    fn doc_with_id(id: &str) -> GoalDoc {
+        let mut d = sample(STATUS_COMPLETED);
+        d.id = id.to_string();
+        d.goal = format!("goal-{id}");
+        d
+    }
+
+    /// Spawn a task that answers `db_query` the way `database`'s handler
+    /// would for the specific query `list_summaries` sends, backed by
+    /// `rows` instead of a real `kv` table. `fail: true` makes every call
+    /// error, to exercise the "surface the error" requirement.
+    fn spawn_query_rpc(rows: Vec<FakeRow>, fail: bool) -> Rpc {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let crate::ProxyMsg::Action(call) = msg else { continue };
+                let result: Result<Value, String> = if fail {
+                    Err("simulated db_query failure".to_string())
+                } else if call.action == "db_query" {
+                    let body: Value = serde_json::from_slice(&call.params_json).unwrap();
+                    let p = body["params"].as_array().unwrap();
+                    let pattern = p[0].as_str().unwrap().trim_end_matches('%').to_string();
+                    let now = p[1].as_i64().unwrap();
+                    let substr_start = p[2].as_i64().unwrap() as usize; // 1-based
+                    let limit = p[3].as_i64().unwrap() as usize;
+
+                    let mut matched: Vec<&FakeRow> = rows
+                        .iter()
+                        .filter(|r| r.key.starts_with(&pattern))
+                        .filter(|r| r.expires_at.map(|e| e > now).unwrap_or(true))
+                        .collect();
+                    matched.sort_by_key(|r| {
+                        std::cmp::Reverse(r.key[substr_start - 1..].parse::<i64>().unwrap_or(0))
+                    });
+                    matched.truncate(limit);
+                    let out: Vec<Value> = matched
+                        .iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "id": r.doc.id,
+                                "title": r.doc.title,
+                                "goal": r.doc.goal,
+                                "status": r.doc.status,
+                                "final_answer": r.doc.final_answer,
+                                "error": r.doc.error,
+                                "pending_tool": r.doc.pending_tool,
+                                "step_count": r.doc.steps.len(),
+                                "max_steps": r.doc.max_steps,
+                                "created_at_ms": r.doc.created_at_ms,
+                                "updated_at_ms": r.doc.updated_at_ms,
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!({"rows": out, "rows_affected": 0}))
+                } else {
+                    Err(format!("unexpected action {}", call.action))
+                };
+                let _ = call.reply.send(result);
+            }
+        });
+        Rpc::new(tx)
+    }
+
+    #[tokio::test]
+    async fn list_summaries_orders_numerically_not_lexically() {
+        // 12 goals so lexical key order ("goal:1" < "goal:10" < "goal:11"
+        // < "goal:12" < "goal:2" < ...) would visibly disagree with the
+        // required numeric-newest-first order.
+        let rows: Vec<FakeRow> = (1..=12)
+            .map(|i| FakeRow {
+                key: format!("{KEY_PREFIX}{i}"),
+                doc: doc_with_id(&i.to_string()),
+                expires_at: None,
+            })
+            .collect();
+        let db = Db::new(spawn_query_rpc(rows, false), 1000);
+        let got = db.list_summaries(20).await.unwrap();
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]);
+    }
+
+    #[tokio::test]
+    async fn list_summaries_respects_limit() {
+        let rows: Vec<FakeRow> = (1..=5)
+            .map(|i| FakeRow {
+                key: format!("{KEY_PREFIX}{i}"),
+                doc: doc_with_id(&i.to_string()),
+                expires_at: None,
+            })
+            .collect();
+        let db = Db::new(spawn_query_rpc(rows, false), 1000);
+        let got = db.list_summaries(2).await.unwrap();
+        let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["5", "4"]);
+    }
+
+    #[tokio::test]
+    async fn list_summaries_excludes_expired_rows() {
+        let rows = vec![
+            FakeRow {
+                key: format!("{KEY_PREFIX}1"),
+                doc: doc_with_id("1"),
+                expires_at: Some(1), // long past — expired relative to now_ms()
+            },
+            FakeRow { key: format!("{KEY_PREFIX}2"), doc: doc_with_id("2"), expires_at: None },
+        ];
+        let db = Db::new(spawn_query_rpc(rows, false), 1000);
+        let got = db.list_summaries(10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].id, "2");
+    }
+
+    #[tokio::test]
+    async fn list_summaries_projects_goal_summary_fields_correctly() {
+        let mut doc = doc_with_id("7");
+        doc.title = "t7".into();
+        doc.final_answer = "done".into();
+        doc.transcript = vec![Turn { role: "user".into(), content: "long text".into() }];
+        doc.steps = vec![
+            StepRec { n: 1, kind: "tool_ok".into(), detail: Value::Null },
+            StepRec { n: 2, kind: "final".into(), detail: Value::Null },
+        ];
+        let rows = vec![FakeRow { key: format!("{KEY_PREFIX}7"), doc, expires_at: None }];
+        let db = Db::new(spawn_query_rpc(rows, false), 1000);
+        let got = db.list_summaries(10).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].title, "t7");
+        assert_eq!(got[0].final_answer, "done");
+        assert_eq!(got[0].step_count, 2, "step_count must reflect json_array_length, not 0");
+    }
+
+    #[tokio::test]
+    async fn list_summaries_surfaces_db_query_errors_instead_of_an_empty_list() {
+        let db = Db::new(spawn_query_rpc(Vec::new(), true), 1000);
+        let err = db.list_summaries(10).await.unwrap_err();
+        assert!(err.contains("simulated db_query failure"), "{err}");
     }
 }

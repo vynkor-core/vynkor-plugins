@@ -406,6 +406,65 @@ mod tests {
                     let k = key(&params);
                     Ok(serde_json::json!({"deleted": self.kv.remove(&k).is_some()}))
                 }
+                // The agent issues exactly one `db_query`: goal_list's
+                // projected newest-first listing (store.rs::list_summaries).
+                // This fake does not interpret SQL — it mirrors that query's
+                // semantics from its bound parameters. Assert the shape being
+                // emulated rather than matching any query blindly, so a second,
+                // different query fails loudly here instead of silently
+                // receiving goal-shaped rows.
+                //
+                // Not emulated: expiry filtering (this map has no TTL column),
+                // and `json_array_length` of a missing `steps` array yields 0
+                // here where SQLite would yield NULL.
+                "db_query" => {
+                    let sql = params.get("sql").and_then(Value::as_str).unwrap_or_default();
+                    assert!(
+                        sql.contains("json_array_length(value, '$.steps')")
+                            && sql.contains("from kv"),
+                        "FakeDb only emulates goal_list's projection query, got: {sql}"
+                    );
+                    let bound =
+                        params.get("params").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let pattern = bound.first().and_then(Value::as_str).unwrap_or("");
+                    let prefix = pattern.trim_end_matches('%');
+                    let limit =
+                        bound.get(3).and_then(Value::as_u64).unwrap_or(u64::MAX) as usize;
+
+                    // Numeric suffix order, not lexical: goal:9 is newer than
+                    // goal:10 would be under a plain string sort.
+                    fn key_num(k: &str) -> i64 {
+                        k.rsplit(':').next().and_then(|s| s.parse().ok()).unwrap_or(0)
+                    }
+                    let mut matched: Vec<(&String, &Value)> =
+                        self.kv.iter().filter(|(k, _)| k.starts_with(prefix)).collect();
+                    matched.sort_by_key(|(k, _)| std::cmp::Reverse(key_num(k)));
+
+                    let rows: Vec<Value> = matched
+                        .into_iter()
+                        .take(limit)
+                        .map(|(_, doc)| {
+                            let f = |name: &str| doc.get(name).cloned().unwrap_or(Value::Null);
+                            serde_json::json!({
+                                "id": f("id"),
+                                "title": f("title"),
+                                "goal": f("goal"),
+                                "status": f("status"),
+                                "final_answer": f("final_answer"),
+                                "error": f("error"),
+                                "pending_tool": f("pending_tool"),
+                                "step_count": doc
+                                    .get("steps")
+                                    .and_then(Value::as_array)
+                                    .map_or(0, Vec::len),
+                                "max_steps": f("max_steps"),
+                                "created_at_ms": f("created_at_ms"),
+                                "updated_at_ms": f("updated_at_ms"),
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!({ "rows": rows }))
+                }
                 other => Err(format!("fake db: unknown action {other}")),
             }
         }
