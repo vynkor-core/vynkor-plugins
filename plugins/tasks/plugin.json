@@ -18,6 +18,8 @@
   "actions": [
     {
       "name": "task_create",
+      "description": "Create a new to-do task: title (required, 1-512 chars), optional notes (max 4096 chars), list name (max 64 chars), due_ms (unix ms deadline), and up to 32 tags. Returns the assigned id and full task, not done by default.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -70,6 +72,8 @@
     },
     {
       "name": "task_get",
+      "description": "Fetch one task by its exact id. Returns found=false (not an error) if no such task exists. Use task_list to search/browse instead of guessing ids.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -101,6 +105,8 @@
     },
     {
       "name": "task_list",
+      "description": "List/search to-do tasks, newest-updated first: query does a case-insensitive substring match on title+notes, plus filters by list, tag, and status (pending/done/all, default pending-and-done both included when omitted); limit (default 100, max 500) and offset (default 0) paginate. Use task_get when you already know the id.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -157,6 +163,8 @@
     },
     {
       "name": "task_update",
+      "description": "Edit an existing task by id: title, notes, list, due_ms, tags, and/or done each replace the prior value only when present (tags replaces the whole set, not a merge; toggling done also stamps/clears done_at_ms). Errors if the task doesn't exist. Use task_done for a plain complete/reopen toggle.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -219,6 +227,8 @@
     },
     {
       "name": "task_done",
+      "description": "Mark a task complete or, with done=false, reopen it (done defaults to true); stamps/clears done_at_ms accordingly. Reversible — call again with done=false to undo.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -255,6 +265,9 @@
     },
     {
       "name": "task_delete",
+      "description": "Permanently delete a task by id — no trash, no undo. Returns deleted=false (not an error) if the task didn't exist, so it's safe to call idempotently.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -283,6 +296,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin health check: version, uptime_ms, engine_ready, last_error, and counters. No parameters.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

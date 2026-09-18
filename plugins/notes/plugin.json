@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "note_create",
+      "description": "Create a new note with optional title, body (up to 256 KiB), and up to 32 tags — at least one of title/body must be non-empty. Returns the assigned id and full note; use note_update to edit an existing note instead of creating a duplicate.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -46,6 +48,8 @@
     },
     {
       "name": "note_get",
+      "description": "Fetch one note by its exact id. Returns found=false (not an error) if no such note exists. Use note_list to search/browse instead of guessing ids.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -66,6 +70,8 @@
     },
     {
       "name": "note_list",
+      "description": "List/browse notes, newest-updated first, optionally filtered to one tag; limit (default 100, max 500) and offset (default 0) paginate. Returns total count after filtering. Use note_get when you already know the id.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -108,6 +114,8 @@
     },
     {
       "name": "note_update",
+      "description": "Edit an existing note by id: title, body, and/or tags each replace the prior value only when present (tags replaces the whole set, not a merge). Errors if the note doesn't exist, or if the result would leave both title and body empty.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -144,6 +152,9 @@
     },
     {
       "name": "note_delete",
+      "description": "Permanently delete a note by id — no trash, no undo. Returns deleted=false (not an error) if the note didn't exist, so it's safe to call idempotently.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {

@@ -21,6 +21,8 @@
   "actions": [
     {
       "name": "hotkey_bind",
+      "description": "Register a global hotkey: an `id` other components subscribe by, bound to a key-combo `trigger` (e.g. Ctrl+Shift+Space) via the XDG GlobalShortcuts portal, falling back to a manual (inject-only) binding when no portal answers. Re-binding an existing id replaces its trigger in place.",
+      "risk": "medium",
       "permission": "PERMISSION_SYSTEM",
       "input": {
         "type": "object",
@@ -81,6 +83,8 @@
     },
     {
       "name": "hotkey_unbind",
+      "description": "Remove a hotkey binding by `id`, freeing its key combo; idempotent — returns unbound:false (not an error) if the id was already gone.",
+      "risk": "low",
       "permission": "PERMISSION_SYSTEM",
       "input": {
         "type": "object",
@@ -116,6 +120,8 @@
     },
     {
       "name": "hotkey_list",
+      "description": "List all currently registered hotkey bindings (id, trigger, description) plus which backend (portal/manual) is active.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -169,6 +175,8 @@
     },
     {
       "name": "hotkey_status",
+      "description": "Report the active hotkey backend (portal/manual) and how many bindings are currently registered, without listing them.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -198,6 +206,8 @@
     },
     {
       "name": "hotkey_inject",
+      "description": "Publish a synthetic hotkey_pressed/hotkey_released kernel event attributed to `binding` (any string, need not be a registered id) — this only fakes the internal 'this hotkey fired' signal for the manual backend (compositor exec wiring, tests, custom automation). It does NOT synthesize a real keystroke into the focused window or any application; its effect is limited to whatever other component is subscribed to that binding id's event (e.g. spuriously starting/stopping a push-to-talk recording).",
+      "risk": "medium",
       "permission": "PERMISSION_SYSTEM",
       "input": {
         "type": "object",

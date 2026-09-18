@@ -17,6 +17,8 @@
   "actions": [
     {
       "name": "sound_play",
+      "description": "Play a sound: an absolute `file` path, or inline `data_base64` + `format` (written to a temp file, deleted on completion), via pw-cat/paplay/aplay/ffplay auto-fallback; optional `volume` multiplier (0-10, 1.0=unchanged) and output `device`. Only one clip plays at a time — starting this one stops whatever was already playing (see `replaced` in the response).",
+      "risk": "low",
       "permission": "audio",
       "input": {
         "type": "object",
@@ -78,6 +80,8 @@
     },
     {
       "name": "sound_stop",
+      "description": "Stop one playing clip by `clip_id` (from sound_play), or every currently playing clip when `clip_id` is omitted; idempotent, returns an empty `stopped` list if nothing matched.",
+      "risk": "low",
       "permission": "audio",
       "input": {
         "type": "object",
@@ -108,6 +112,8 @@
     },
     {
       "name": "sound_status",
+      "description": "List clips currently playing (id, source file/inline format, backend player) and how many are active.",
+      "risk": "low",
       "permission": "audio",
       "input": {
         "type": "object",
@@ -156,6 +162,8 @@
     },
     {
       "name": "sound_devices",
+      "description": "List available audio output sinks/devices (name, description, state) and which provider was used to detect them — use to pick a `device` value for sound_play.",
+      "risk": "low",
       "permission": "audio",
       "input": {
         "type": "object",

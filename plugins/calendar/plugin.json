@@ -19,6 +19,8 @@
   "actions": [
     {
       "name": "event_create",
+      "description": "Create a calendar event/appointment: title and start_ms are required; optional description, end_ms (>= start_ms), all_day flag, remind_before_ms (fires a reminder that many ms before start, 0 = at start), up to 32 tags, and an RRULE for recurrence. Returns the assigned id and full event.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -92,6 +94,8 @@
     },
     {
       "name": "event_get",
+      "description": "Fetch one calendar event by its exact id. Returns found=false (not an error) if no such event exists. Note: recurring-event occurrences returned by event_list carry synthetic ids (masterId#timestamp) that this action can't look up — fetch the master id instead. Use event_list to search/browse.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -123,6 +127,8 @@
     },
     {
       "name": "event_list",
+      "description": "List/browse calendar events sorted by start time ascending, optionally windowed by from_ms/to_ms and filtered by tag; limit (default 100, max 500) and offset (default 0) paginate. Recurring events (rrule set) are expanded into concrete occurrences within the window (default window when from_ms/to_ms omitted: now-1d..now+90d), each with a synthetic id. Use event_get when you already know the id.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -178,6 +184,8 @@
     },
     {
       "name": "event_update",
+      "description": "Edit an existing calendar event by id: title, description, start_ms, end_ms, all_day, remind_before_ms, tags, and/or rrule each replace the prior value only when present (rrule: null clears recurrence; tags replaces the whole set). Changing start_ms/end_ms/remind_before_ms/rrule resets a previously-fired reminder so it can fire again. Errors if the event doesn't exist or the resulting end_ms < start_ms.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -254,6 +262,9 @@
     },
     {
       "name": "event_delete",
+      "description": "Permanently delete a calendar event by id (and, for a recurring event, all its occurrences) — no undo, cancels any pending reminder. Returns deleted=false (not an error) if the event didn't exist, so it's safe to call idempotently.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -283,6 +294,8 @@
     },
     {
       "name": "calendar_ics_import",
+      "description": "Bulk-import events from a base64-encoded VCALENDAR/.ics payload (max ~6 MiB decoded): VEVENTs within [now-1d, now+90d] are created, or updated in place by UID if a matching import already exists, so re-importing the same calendar is safe. RRULEs (DAILY/WEEKLY/MONTHLY with INTERVAL/COUNT/UNTIL/BYDAY) expand into concrete stored occurrences, capped at MAX_IMPORT_DOCS total documents (errors past the cap — narrow the calendar or window). Returns counts of imported/updated/parsed events and their ids.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -334,6 +347,8 @@
     },
     {
       "name": "calendar_ics_export",
+      "description": "Export every stored calendar event (sorted by start time) as a single base64-encoded VCALENDAR/.ics payload, for backup or import into another calendar app. No parameters.",
+      "risk": "low",
       "input": {
         "type": "object",
         "additionalProperties": false

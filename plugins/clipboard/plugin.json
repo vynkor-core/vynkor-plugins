@@ -12,6 +12,9 @@
   "actions": [
     {
       "name": "clipboard_read",
+      "description": "Read the current system clipboard text (auto-detects wl-paste/xclip/xsel by session); found:false when the clipboard is empty. Whatever the user last copied could be a password, token, or other secret — this can exfiltrate it.",
+      "risk": "critical",
+      "requires_confirmation": true,
       "permission": "clipboard",
       "input": {
         "type": "object",
@@ -31,6 +34,8 @@
     },
     {
       "name": "clipboard_write",
+      "description": "Overwrite the system clipboard with `text` (wl-copy/xclip/xsel); replaces whatever the user currently has copied. Empty writes are rejected to avoid accidental clears.",
+      "risk": "medium",
       "permission": "clipboard",
       "input": {
         "type": "object",
@@ -53,6 +58,8 @@
     },
     {
       "name": "clipboard_providers",
+      "description": "Report the detected graphical session (wayland/x11) and which reader/writer clipboard backend binaries clipboard_read/clipboard_write would try, in order. No clipboard content is returned.",
+      "risk": "low",
       "permission": "clipboard",
       "input": {
         "type": "object",
@@ -72,6 +79,9 @@
     },
     {
       "name": "clipboard_history",
+      "description": "Search/list previously copied clipboard entries persisted by this plugin (query is a case-insensitive substring filter over text; limit/offset page through results, newest first). This is a durable log, so it can surface old secrets (passwords, tokens) that have long since scrolled off the live clipboard — treat results as sensitive.",
+      "risk": "critical",
+      "requires_confirmation": true,
       "permission": "clipboard",
       "input": {
         "type": "object",
@@ -94,6 +104,8 @@
     },
     {
       "name": "clipboard_clear",
+      "description": "Permanently erase this plugin's stored clipboard history (all entries clipboard_history would return); does NOT touch the live system clipboard, only the local history log.",
+      "risk": "medium",
       "permission": "clipboard",
       "input": {
         "type": "object",

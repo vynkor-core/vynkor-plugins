@@ -18,6 +18,8 @@
   "actions": [
     {
       "name": "db_get",
+      "description": "Read one JSON value by key from the caller plugin's own private SQLite key-value store (table `kv`: key, value, updated_at, expires_at); returns found:false when the key is absent or its ttl has expired. Each calling plugin gets its own SQLite file — you only ever see your own rows.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -50,6 +52,8 @@
     },
     {
       "name": "db_set",
+      "description": "Write or overwrite a JSON value at `key` in the caller's own private KV store, with optional `ttl_ms` to auto-expire it later; silently replaces any existing value at that key. Capped at DATABASE_PLUGIN_MAX_VALUE_BYTES (default 1MB) — oversized writes are rejected, never truncated.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -86,6 +90,9 @@
     },
     {
       "name": "db_delete",
+      "description": "Permanently delete one key from the caller's own KV store; irreversible if the value isn't recoverable from elsewhere. Idempotent — returns deleted:false (not an error) when the key was already gone.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "storage",
       "input": {
         "type": "object",
@@ -115,6 +122,8 @@
     },
     {
       "name": "db_batch_get",
+      "description": "Read several keys from the caller's own KV store in one call; missing keys map to null in the returned `values` object. Response is capped at DATABASE_PLUGIN_MAX_RESPONSE_BYTES even if every individual value is under the per-value limit.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -148,6 +157,9 @@
     },
     {
       "name": "db_query",
+      "description": "Run raw SQL against the caller's own private SQLite database only (one file per calling plugin — never another plugin's data); the sole table is `kv(key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER, expires_at INTEGER)` holding db_set/db_get's JSON values, but any valid SQLite statement runs, including DROP/DELETE/multi-statement transactions and INSERT ... RETURNING. ATTACH is blocked. Use this for querying/filtering/joining stored data beyond what db_get/db_keys can express, or for bulk mutations — a broad WHERE-less DELETE or DROP TABLE here can wipe the whole store.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "storage",
       "input": {
         "type": "object",
@@ -186,6 +198,8 @@
     },
     {
       "name": "db_incr",
+      "description": "Atomically increment (or, with a negative `delta`, decrement) an integer counter stored at `key`, creating it at `delta` if missing; errors if the existing value at that key isn't an integer. Returns the new value.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -223,6 +237,8 @@
     },
     {
       "name": "db_keys",
+      "description": "List keys in the caller's own KV store, optionally filtered to those starting with `prefix` (literal match — % and _ in the prefix are escaped, not treated as wildcards); sorted alphabetically.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -253,6 +269,8 @@
     },
     {
       "name": "db_append",
+      "description": "Append a JSON value to the array stored at `key`, creating a new one-element array if the key is missing; errors if the existing value at that key isn't an array. Returns the array's new length.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -289,6 +307,8 @@
     },
     {
       "name": "db_patch",
+      "description": "In-place edit of one field inside the JSON document stored at `key`, addressed by SQLite JSON path (e.g. $.a.b or $[0]); errors if `key` doesn't exist. Returns the full updated document — cheaper than a db_get + db_set round trip for a single nested field.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -330,6 +350,8 @@
     },
     {
       "name": "status",
+      "description": "Report the database plugin's own version, uptime, and readiness — not a query over stored data.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

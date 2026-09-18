@@ -17,6 +17,8 @@
   "actions": [
     {
       "name": "sys_info",
+      "description": "Get static host identity: hostname, OS name/version, kernel version, and CPU architecture (x86_64/aarch64/x86/arm). No parameters.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -76,6 +78,8 @@
     },
     {
       "name": "sys_battery",
+      "description": "Get battery charge percent, state (charging/discharging/empty/full/unknown), and estimated seconds to empty/full via UPower. Errors ERR_SYS_NOT_SUPPORTED on hosts with no battery.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -123,6 +127,8 @@
     },
     {
       "name": "sys_procs",
+      "description": "Get overall system load: running process count, 1/5/15-minute load averages, and total/used memory in MB. Aggregate numbers only — does not list individual processes or their names.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -164,6 +170,8 @@
     },
     {
       "name": "sys_volume",
+      "description": "Get the default audio sink's current volume percent and mute state (via wpctl/PipeWire, falling back to pactl/PulseAudio).",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -190,6 +198,8 @@
     },
     {
       "name": "sys_volume_set",
+      "description": "Set the default audio sink's volume to an exact percent (integer 0..100, required); returns the resulting percent and mute state. Reversible speaker/headphone volume change.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -225,6 +235,8 @@
     },
     {
       "name": "sys_volume_mute",
+      "description": "Mute, unmute, or toggle the default audio sink; mode is required (on/off/toggle — no implicit current-state guessing). Returns the resulting percent and mute state.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -262,6 +274,8 @@
     },
     {
       "name": "sys_brightness",
+      "description": "Get the screen backlight's current brightness percent (sysfs backlight device).",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -284,6 +298,8 @@
     },
     {
       "name": "sys_brightness_set",
+      "description": "Set the screen backlight brightness to an exact percent (integer 0..100, required); 0 clamps to the device's minimum non-blanking step so the screen never goes fully black. Reversible display change.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -316,6 +332,9 @@
     },
     {
       "name": "sys_lock",
+      "description": "Immediately lock the current desktop session (org.freedesktop.ScreenSaver, falling back to loginctl lock-session), requiring the user's password/PIN to get back in. No parameters, no warning, no undo — only use when the user explicitly asked to lock the screen.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {},
@@ -336,6 +355,8 @@
     },
     {
       "name": "sys_power_profile",
+      "description": "Get the active power-profiles-daemon profile (performance/balanced/power-saver) and the list of profiles this host supports. Errors ERR_SYS_NOT_SUPPORTED when power-profiles-daemon isn't running (e.g. TLP-only hosts).",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -363,6 +384,8 @@
     },
     {
       "name": "sys_power_profile_set",
+      "description": "Switch the active power-profiles-daemon profile to performance, balanced, or power-saver (required, exact match); returns the resulting profile and available list. Reversible tradeoff between speed and battery life.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {

@@ -15,6 +15,8 @@
   "actions": [
     {
       "name": "media_play",
+      "description": "Start or force-resume playback on an MPRIS player (Spotify, mpv, VLC, browser tab, ...); if `uri` is given, opens/loads that media first via OpenUri, then plays. Unlike media_play_pause, this always ends in the playing state rather than toggling.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -44,6 +46,8 @@
     },
     {
       "name": "media_pause",
+      "description": "Pause playback on an MPRIS player without changing track or position; always ends paused (use media_play to resume, media_play_pause to toggle).",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -69,6 +73,8 @@
     },
     {
       "name": "media_play_pause",
+      "description": "Toggle an MPRIS player between playing and paused (whichever it currently isn't) and report the resulting `playing` state; use media_play or media_pause instead when you need a specific state rather than a toggle.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -99,6 +105,8 @@
     },
     {
       "name": "media_next",
+      "description": "Skip to the next track/item on an MPRIS player's current playlist.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -124,6 +132,8 @@
     },
     {
       "name": "media_prev",
+      "description": "Skip to the previous track/item on an MPRIS player's current playlist.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -149,6 +159,8 @@
     },
     {
       "name": "media_stop",
+      "description": "Stop playback on an MPRIS player entirely; unlike media_pause, some players reset or drop the playback position on stop rather than keeping it for resume.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -174,6 +186,8 @@
     },
     {
       "name": "media_seek",
+      "description": "Jump to an absolute position (`position_ms`, measured from the start of the current track) on an MPRIS player; for a relative jump forward/back from wherever playback is now, use media_seek_relative instead.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -208,6 +222,8 @@
     },
     {
       "name": "media_seek_relative",
+      "description": "Jump forward or backward by a signed `offset_ms` from the current playback position on an MPRIS player (negative rewinds; result clamps at 0); for a jump to a specific absolute timestamp, use media_seek instead.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -241,6 +257,8 @@
     },
     {
       "name": "media_volume",
+      "description": "Set an MPRIS player's volume via `level`, accepted as either a 0.0-1.0 fraction or a 0-100 integer percentage — note the ambiguity: JSON `1` (integer) means 1%, while `1.0` (float) means 100%; send a float for a fraction and an integer for a percentage.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -279,6 +297,8 @@
     },
     {
       "name": "media_status",
+      "description": "Get full playback state for an MPRIS player in one call: status (Playing/Paused/Stopped), track metadata (title/artist/album/...), volume, position_ms, playback rate, shuffle, and loop_status — use this to check what's playing before deciding to play/pause/skip.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -350,6 +370,8 @@
     },
     {
       "name": "media_list_players",
+      "description": "List MPRIS player names currently on the session D-Bus (org.mpris.MediaPlayer2.<name>) — use to discover the `player` value for other media_* actions when more than one app is playing audio.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}
@@ -373,6 +395,8 @@
     },
     {
       "name": "media_shuffle",
+      "description": "Turn shuffle mode on or off (`enabled`, alias `shuffle`) for an MPRIS player.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -405,6 +429,8 @@
     },
     {
       "name": "media_loop",
+      "description": "Set repeat mode on an MPRIS player: none (stop at end), track (repeat the current track), or playlist (repeat the whole queue).",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -450,6 +476,8 @@
     },
     {
       "name": "media_raise",
+      "description": "Bring an MPRIS player's window to the foreground/focus via its Raise method; only changes window focus, not playback.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -475,6 +503,8 @@
     },
     {
       "name": "media_quit",
+      "description": "Quit the MPRIS player application entirely (its Quit method) — unlike media_stop, which only halts playback, this closes the whole app and can lose any unsaved queue/session state in it.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {

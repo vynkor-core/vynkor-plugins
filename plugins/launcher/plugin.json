@@ -17,6 +17,9 @@
   "actions": [
     {
       "name": "launch",
+      "description": "Start an installed desktop application, a Steam game, or a command run inside a terminal emulator (tmux/kitty/alacritty/ghostty), by desktop-file id, Steam appid, or unique display name; provider=auto tries desktop then steam. `args` is appended as a plain argv list, never shell-interpreted. Use dry_run:true to preview the resolved command/argv without actually spawning it. This starts arbitrary programs on the machine.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "launch",
       "input": {
         "type": "object",
@@ -101,6 +104,8 @@
     },
     {
       "name": "launch_list",
+      "description": "List launchable apps/games/terminal targets (id, name, provider, exec/path) discovered by the given provider(s); query filters by substring over id/name, include_hidden also shows NoDisplay/Hidden desktop entries. Use this to find the exact `app_id` before calling launch.",
+      "risk": "low",
       "permission": "launch",
       "input": {
         "type": "object",
@@ -200,6 +205,8 @@
     },
     {
       "name": "launch_providers",
+      "description": "List launch providers (desktop, steam, tmux, kitty, alacritty, ghostty) with availability and their configured scan roots — check before launch/launch_list to see what's usable on this machine.",
+      "risk": "low",
       "permission": "launch",
       "input": {
         "type": "object",
