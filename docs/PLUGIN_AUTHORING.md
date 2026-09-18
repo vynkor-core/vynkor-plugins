@@ -210,3 +210,72 @@ handler logic; these are the things that only bite on a real secured one.
   *kernel's* environment at spawn time — start the kernel from a session
   shell, not a stripped service context, or provider detection degrades
   in ways that look like plugin bugs.
+
+## Action documentation and the agent catalog
+
+The `agent` plugin builds the tool catalog the model sees by merging three
+layers per action name (see `plugins/agent/README.md`): the operator's
+tools file wins, the **kernel manifest** fills anything the file omits, and
+a bare allowlisted name still dispatches with no schema.
+
+The kernel-manifest layer is the one you own, and it is the one that scales.
+It is fed by the `action_specs` field of the `PluginManifest` you send at
+registration — **not** by your `plugin.json` alone. A plugin that leaves
+`action_specs` at `Default::default()` contributes nothing to the catalog
+and forces its tools to be hand-copied into an operator file that has no
+link back to this repo. That is how a catalog comes to reference actions a
+plugin never had.
+
+### Required of every plugin
+
+1. **Declare a `description` on every action in `plugin.json`.** One line,
+   written for the model, not for a changelog: what the action does and
+   when to reach for it. `scripts/check-action-docs.py` enforces this in
+   CI. An empty description is worse than a bad one — a tool that embeds as
+   `"name — "` is dropped outright by the agent's embedding filter
+   (`AGENT_PLUGIN_EMBEDDING_FILTER`).
+2. **Declare an `input` JSON Schema on every action that takes params**,
+   with a `description` on each property. This becomes `params_schema`.
+3. **Populate `action_specs` at registration.** Copy
+   `plugins/telegram/src/manifest.rs` — it reads the installed `plugin.json`
+   next to the binary and converts it, degrading to an empty list on any
+   failure so registration never depends on the doc file. Add `plugin.json`
+   to your manifest's `files` list so it is installed.
+4. **Set `risk` and `requires_confirmation`** on anything destructive. For
+   the two-step request/confirm pattern, use
+   `vynkor_sdk::confirmation_gate::ConfirmationGate` and merge its
+   `manifest_entries()` output instead of hand-writing the specs.
+
+### Not required of you
+
+Do not write entries into the operator's `agent-tools.json`. That file is an
+operator override for when a plugin's own docs are wrong or missing; it is
+not where a plugin publishes itself. If you find yourself editing it to make
+your plugin usable, the fix belongs in your `plugin.json`.
+
+### Operator-side prompt layering
+
+Persona and facts belong to the operator, not to plugins. The `agent`
+plugin resolves them, in order:
+
+| Layer | Source | Override |
+|---|---|---|
+| identity / personality / channel | `const` in `llm.rs` | `<prompts_dir>/_identity.md`, `_personality.md`, `_channel.md` |
+| facts (ids, account names, who-is-who) | none | `<prompts_dir>/_facts.md`, or `AGENT_PLUGIN_FACTS` |
+| per-group behavior | built-in default | `<prompts_dir>/<group>.md`, then `AGENT_PLUGIN_PLUGIN_PROMPTS` (wins) |
+
+`<prompts_dir>` is `AGENT_PLUGIN_PROMPTS_DIR`. Group names are derived from
+the tool-name prefix (`tg_*` → `telegram`); `/` in a group name becomes `-`
+in the filename.
+
+### Why plugins do not ship behavior prompts
+
+A plugin supplying free text that lands in the agent's system prompt could
+instruct the agent to misuse *other* plugins' tools — read a credential via
+`secret_get`, send it via `http_request`. That is a much larger blast radius
+than exposing an action, which stays bounded by
+`AGENT_PLUGIN_ALLOWED_ACTIONS`. If this capability is added later it needs,
+at minimum: a per-plugin opt-in allowlist that is default-deny like the
+action allowlist, a hard length cap, and source-attributed fencing around
+the injected text so it is never mistaken for host instruction. Until that
+design exists, behavior prompts stay operator-owned.
