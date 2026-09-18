@@ -24,6 +24,8 @@ jobs:
           found=$(find plugins -maxdepth 2 -name Cargo.toml 2>/dev/null | head -n 5)
           if [ -z "$found" ]; then echo "no Cargo.toml in plugins (expected)"; else echo "$found"; fi
           echo "plugins CI done"
+      - name: Check action descriptions
+        run: python3 scripts/check-action-docs.py
 
   test:
     name: Test plugins
