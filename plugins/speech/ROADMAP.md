@@ -1,5 +1,18 @@
 # speech ROADMAP
 
+## Deployment status (2026-09-19)
+
+Installed and live, replacing the standalone `stt` and `tts` plugins on
+this machine — those two declared the same action names (`stt_transcribe`,
+`tts_speak`, etc.), so keeping all three registered at once would have hit
+a duplicate-action-name situation the kernel's actual behavior for is
+unverified (see `plugins/agent/ROADMAP.md` "Known issues"). `stt`/`tts`
+were moved to `~/.config/vyn/plugins.d/{stt,tts}.yaml.disabled` and their
+binaries backed up under `~/.local/lib/vyn/plugins.bak-<ts>/` rather than
+deleted, in case `speech` needs to be rolled back. This does not touch the
+sherpa hang below — `speech` reuses the same engines verbatim, so it has
+the identical failure mode under the supervisor.
+
 ## Known issue: sherpa inference never completes under the kernel supervisor
 
 **Status:** open, environment-level (not specific to the `speech` merge —

@@ -45,6 +45,36 @@ actions, state persisted in `database`). Shipped as v0.1.0 — see README.md.
   **shipped (v0.1.0, 2026-08-26)**.
 - **Streaming steps** — per-step events for webclient UIs.
 
+## Known issues
+
+- **`status` action name collision across plugins.** `network` and
+  `database` both declare a bare `status` action; `metrics`, `rss`,
+  `tasks`, `uptime`, `weather`, and `speech` (added 2026-09-19) declare it
+  too — 8 plugins, one name. `AGENT_PLUGIN_ALLOWED_ACTIONS` currently
+  excludes `status` from every one of them, so the collision has not been
+  exercised: nobody has verified whether the kernel rejects the second
+  registration, silently shadows it, or routes by some plugin-qualified
+  mechanism this doc doesn't know about. Before allowlisting `status` for
+  any of these plugins, confirm the kernel's actual behavior on duplicate
+  action names (dispatch semantics, not just whether the process stays
+  up — `network`/`database` both running today proves nothing about which
+  one would answer a `status` call). The likely fix is namespacing
+  (`network_status`, `metrics_status`, …) at the plugin.json level, but
+  that is a manifest change each owning plugin would need to make, not an
+  agent-side fix.
+- **`AGENT_PLUGIN_ALLOWED_ACTIONS` is baked in at process start, not
+  hot-reloaded.** The catalog rebuild described above (tools file +
+  discovery, "per goal start") only rereads the tools *file*; the allowlist
+  itself is `std::env::var` read once in `Catalog::load()`. Adding actions
+  to a plugin and even restarting the kernel so the new plugin *process*
+  starts is not sufficient — the `agent` plugin's own process must restart
+  after `plugins.d/agent.yaml`'s `AGENT_PLUGIN_ALLOWED_ACTIONS` is edited,
+  or the new actions stay invisible to `tools_list` even though the
+  target plugin is live and answering IPC. In practice this means two
+  `vyn restart` cycles when deploying a plugin that wasn't previously
+  allowlisted: one for the new plugin binary + its `plugins.d/<id>.yaml`
+  drop-in to come up, one after editing the allowlist.
+
 ## Non-goals
 
 - No shell/exec plugin usage — narrow-permission-per-plugin holds; the
