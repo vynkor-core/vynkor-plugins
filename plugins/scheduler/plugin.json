@@ -186,6 +186,7 @@
       "name": "schedule_delete",
       "description": "Delete a schedule by id. Irreversible, and it silently stops whatever was relying on it from firing.",
       "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {

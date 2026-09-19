@@ -26,6 +26,22 @@ GRANDFATHERED: set[str] = set()
 
 VALID_RISKS = {"low", "medium", "high", "critical"}
 
+# A declared risk switches OFF the agent's inference for that action
+# (agent/src/tools.rs::infer_missing_risk only fires on an undeclared risk),
+# and inference is what auto-gates high/critical. So documenting an action
+# that inference already gated, without restating the gate, silently REMOVES
+# a confirmation the live system had. It has happened: declaring
+# vec_delete/sync_del/schedule_delete high left all three ungated.
+#
+# Hence: high and critical must declare requires_confirmation, unless the
+# action is listed here with a reason.
+UNGATED_HIGH = {
+    # Gating this would gate the voice assistant's every spoken question.
+    # What it dispatches runs through the agent loop, which applies the
+    # gates of whatever it actually calls.
+    "daemon_ask": "entry point of the voice loop; the loop gates its own calls",
+}
+
 
 def main():
     offenders = []
@@ -46,6 +62,14 @@ def main():
             risk = action.get("risk", "").strip().lower()
             if risk not in VALID_RISKS:
                 offenders.append(f"{name}: risk={action.get('risk') or '<absent>'!r}")
+            action_name = action.get("name", "")
+            if (risk in {"high", "critical"}
+                    and not action.get("requires_confirmation")
+                    and action_name not in UNGATED_HIGH):
+                offenders.append(
+                    f"{name}: risk={risk} without requires_confirmation "
+                    "(inference used to gate this; declaring a risk turns that off)"
+                )
 
     print(f"check-action-docs: {checked} declared actions checked")
     if offenders:
@@ -53,8 +77,11 @@ def main():
         for name in offenders:
             print(f"  - {name}", file=sys.stderr)
         print(
-            "\nAdd a one-line `description` to each action in its plugin.json. "
-            "It is what the model reads to decide whether to call the tool.",
+            "\nEach action needs a one-line `description`, an explicit `risk` "
+            f"({'/'.join(sorted(VALID_RISKS))}), and — at high or critical — "
+            "`requires_confirmation`. The description is what the model reads "
+            "to decide whether to call the tool; the risk and the gate decide "
+            "whether a human sees it first.",
             file=sys.stderr,
         )
         return 1

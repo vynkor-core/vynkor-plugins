@@ -100,6 +100,7 @@
       "name": "rule_delete",
       "description": "Delete an automation rule by id. Irreversible, and it can remove a rule something else depends on.",
       "risk": "high",
+      "requires_confirmation": true,
       "input": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"], "additionalProperties": false},
       "output": {
         "type": "object",

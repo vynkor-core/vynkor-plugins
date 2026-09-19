@@ -83,6 +83,7 @@
       "name": "sync_del",
       "description": "Delete a key from synced state. Irreversible, and the deletion propagates to every synced client.",
       "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {

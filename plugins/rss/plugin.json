@@ -19,6 +19,7 @@
       "name": "rss_remove",
       "description": "Unsubscribe from a feed by id and drop its stored articles and read state. Irreversible — re-adding the URL starts from an empty history.",
       "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "removed": { "type": "boolean" } }, "required": ["removed"], "additionalProperties": false }

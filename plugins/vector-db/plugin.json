@@ -110,6 +110,7 @@
       "name": "vec_delete",
       "description": "Delete one document from a collection by id. Irreversible — the vector and its metadata are gone, and re-adding needs the original text.",
       "risk": "high",
+      "requires_confirmation": true,
       "permission": "storage",
       "input": {
         "type": "object",

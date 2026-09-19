@@ -113,6 +113,7 @@
       "name": "contact_delete",
       "description": "Delete a contact by id, with its notes and tags. Irreversible.",
       "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {

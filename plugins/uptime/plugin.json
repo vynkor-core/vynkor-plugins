@@ -24,6 +24,7 @@
       "name": "uptime_remove",
       "description": "Stop monitoring a URL by id and drop its recorded history. Irreversible — the check history cannot be rebuilt.",
       "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "removed": { "type": "boolean" } }, "required": ["removed"], "additionalProperties": false }
