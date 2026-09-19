@@ -18,6 +18,9 @@
   "actions": [
     {
       "name": "goal_start",
+      "description": "Start an autonomous agent goal: runs a model -> tool -> observation loop (up to max_steps, default from AGENT_PLUGIN_MAX_STEPS) against the kernel tool catalog and returns the goal id plus its terminal state. Calling this from inside a goal spawns a nested agent run.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -121,6 +124,8 @@
     },
     {
       "name": "goal_get",
+      "description": "Fetch one goal by id: its status, step transcript, tool calls and final answer.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -155,6 +160,8 @@
     },
     {
       "name": "goal_list",
+      "description": "List recent goals newest-first (id, title, status, timestamps); limit defaults to 50, clamped to 1..200. Summary fields only — use goal_get for the transcript.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -190,6 +197,9 @@
     },
     {
       "name": "goal_resume",
+      "description": "Resume a goal parked awaiting confirmation: approve=true lets the pending tool call run, approve=false rejects it and ends the goal. This is the human confirmation gate itself — approving from inside a goal would let the agent self-authorize its own gated call.",
+      "risk": "critical",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -235,6 +245,8 @@
     },
     {
       "name": "tools_list",
+      "description": "List the tools the agent may call, with description, JSON-Schema parameters, risk and confirmation requirement. Read-only; the authoritative view of what the model actually sees.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -292,6 +304,9 @@
     },
     {
       "name": "memory_forget",
+      "description": "Delete one stored long-term fact by semantic similarity to query (top vector hit above the score floor), and drop it from the memory index. Irreversible; returns the deleted id or nothing when no fact matches.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -325,6 +340,9 @@
     },
     {
       "name": "memory_clear",
+      "description": "Wipe every stored long-term memory fact and the index that tracks them. Irreversible and unscoped — returns how many facts were deleted.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "additionalProperties": false
@@ -345,6 +363,8 @@
     },
     {
       "name": "memory_list",
+      "description": "List the long-term memory index newest-first (fact ids and timestamps). Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "additionalProperties": false

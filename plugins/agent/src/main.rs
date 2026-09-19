@@ -44,6 +44,7 @@ fn manifest() -> PluginManifest {
             "PERMISSION_EVENT_PUBLISH".into(),
         ],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
+        action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
     }
 }
@@ -1342,5 +1343,62 @@ mod tests {
         let remembered =
             wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await;
         assert!(remembered, "vec_upsert should have stored the remembered fact");
+    }
+}
+
+#[cfg(test)]
+mod manifest_specs_tests {
+    use super::ACTIONS;
+    use serde_json::Value;
+
+    // Regression guard: the agent builds the model's tool catalog from
+    // every plugin's action_specs — including its own. An undocumented or
+    // unrisked action here is the catalog gap the agent is supposed to
+    // detect, shipped by the detector itself.
+    //
+    // Reads the shipped plugin.json directly (not action_specs(), which
+    // resolves via current_exe() and returns an empty list in a dev-build
+    // test binary — it cannot tell correct wiring from none at all).
+    #[test]
+    fn shipped_manifest_documents_and_risk_rates_every_declared_action() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
+        assert_eq!(
+            specs.len(),
+            parsed["actions"].as_array().unwrap().len(),
+            "every declared action must produce a spec"
+        );
+
+        let undocumented: Vec<&str> =
+            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
+        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+
+        // ActionRisk::Unknown is what an absent or unparseable `risk` key
+        // degrades to; an action that lands there falls back to the
+        // agent's name-shaped inference instead of its owner's judgement.
+        let unrisked: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+    }
+
+    // The manifest's action list and the dispatcher's must not drift: a
+    // name in one and not the other is either an undocumented live action
+    // or a documented tool that errors with "unknown action" when called.
+    #[test]
+    fn shipped_manifest_lists_exactly_the_dispatched_actions() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let mut documented: Vec<String> = parsed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect();
+        documented.sort();
+        let mut dispatched: Vec<String> = ACTIONS.iter().map(|s| s.to_string()).collect();
+        dispatched.sort();
+        assert_eq!(documented, dispatched);
     }
 }

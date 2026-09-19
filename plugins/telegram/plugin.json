@@ -19,11 +19,13 @@
   "actions": [
     {
       "name": "status",
-      "description": "Plugin status with version and account info"
+      "description": "Plugin status with version and account info",
+      "risk": "low"
     },
     {
       "name": "tg_list_dialogs",
       "description": "List dialogs with names/usernames + unread; query/limit/account/unread_only/fields(minimal/full or comma list like peer,name,unread_count), 10s cache",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -55,6 +57,7 @@
     {
       "name": "tg_get_history",
       "description": "Get message history from a peer",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -85,6 +88,7 @@
     {
       "name": "tg_get_message",
       "description": "Get a single message by peer and id",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -109,6 +113,7 @@
     {
       "name": "tg_search",
       "description": "Search messages across dialogs",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -135,6 +140,8 @@
     {
       "name": "tg_send_message",
       "description": "Send a text message to a peer",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -168,6 +175,7 @@
     {
       "name": "tg_edit_message",
       "description": "Edit a sent message",
+      "risk": "medium",
       "requires_confirmation": true,
       "input": {
         "type": "object",
@@ -199,6 +207,8 @@
     {
       "name": "tg_delete_message",
       "description": "Delete a message",
+      "risk": "high",
+      "requires_confirmation": true,
       "requires_confirmation": true,
       "input": {
         "type": "object",
@@ -225,11 +235,15 @@
     {
       "name": "tg_delete_messages",
       "description": "Delete multiple messages",
+      "risk": "high",
+      "requires_confirmation": true,
       "requires_confirmation": true
     },
     {
       "name": "tg_forward_message",
       "description": "Forward a message to another peer",
+      "risk": "high",
+      "requires_confirmation": true,
       "requires_confirmation": true,
       "input": {
         "type": "object",
@@ -261,11 +275,14 @@
     {
       "name": "tg_forward_messages",
       "description": "Forward multiple messages to another peer",
+      "risk": "high",
+      "requires_confirmation": true,
       "requires_confirmation": true
     },
     {
       "name": "tg_add_reaction",
       "description": "Add a reaction to a message",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -296,6 +313,7 @@
     {
       "name": "tg_pin_message",
       "description": "Pin a message in a chat",
+      "risk": "medium",
       "requires_confirmation": true,
       "input": {
         "type": "object",
@@ -326,6 +344,8 @@
     {
       "name": "tg_upload_media",
       "description": "Upload a file as media to a peer",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -355,6 +375,7 @@
     {
       "name": "tg_download_media",
       "description": "Download media from a message",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -384,19 +405,26 @@
     },
     {
       "name": "tg_send_voice",
-      "description": "Send a voice message"
+      "description": "Send a voice message",
+      "risk": "high",
+      "requires_confirmation": true
     },
     {
       "name": "tg_send_sticker",
-      "description": "Send a sticker"
+      "description": "Send a sticker",
+      "risk": "high",
+      "requires_confirmation": true
     },
     {
       "name": "tg_send_animation",
-      "description": "Send an animation (GIF)"
+      "description": "Send an animation (GIF)",
+      "risk": "high",
+      "requires_confirmation": true
     },
     {
       "name": "tg_get_chat_info",
       "description": "Get chat info by peer — fields filter, 10s cache, returns name, username, peer_type, id, phone etc.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -420,19 +448,23 @@
     },
     {
       "name": "tg_get_user",
-      "description": "Get user by peer — fields filter, 10s cache, returns full_name, first/last, username, phone"
+      "description": "Get user by peer — fields filter, 10s cache, returns full_name, first/last, username, phone",
+      "risk": "low"
     },
     {
       "name": "tg_list_contacts",
-      "description": "List contacts (phonebook) — query/limit/account/fields, 10s cache, returns peer+name+phone+usernames"
+      "description": "List contacts (phonebook) — query/limit/account/fields, 10s cache, returns peer+name+phone+usernames",
+      "risk": "low"
     },
     {
       "name": "tg_get_contact",
-      "description": "Get contact by peer — fields filter, 10s cache, returns name, usernames, phone, is_contact/mutual"
+      "description": "Get contact by peer — fields filter, 10s cache, returns name, usernames, phone, is_contact/mutual",
+      "risk": "low"
     },
     {
       "name": "tg_list_unread",
       "description": "List unread dialogs — limit/account/fields/include_messages(false by default)/message_limit, 10s cache",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -464,6 +496,7 @@
     {
       "name": "tg_get_unread",
       "description": "Alias for tg_list_unread — get all unread messages across chats",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -495,6 +528,7 @@
     {
       "name": "tg_mark_read",
       "description": "Mark chat as read — peer required for one chat (max_id/message_id optional, 0=all), or without peer marks all unread dialogs",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -519,6 +553,7 @@
     {
       "name": "tg_mark_all_read",
       "description": "Alias for tg_mark_read without peer — marks all unread dialogs as read",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -531,15 +566,18 @@
     },
     {
       "name": "tg_send_action",
-      "description": "Emulate typing/upload/record action in a chat — peer, action=typing/cancel/record_audio/record_video/upload_photo/etc., progress 0-100, duration_ms optional"
+      "description": "Emulate typing/upload/record action in a chat — peer, action=typing/cancel/record_audio/record_video/upload_photo/etc., progress 0-100, duration_ms optional",
+      "risk": "medium"
     },
     {
       "name": "tg_set_typing",
-      "description": "Alias for tg_send_action — set typing indicator"
+      "description": "Alias for tg_send_action — set typing indicator",
+      "risk": "medium"
     },
     {
       "name": "tg_transcribe_voice",
       "description": "Download voice/media message to file for STT — peer, message_id, output_path? -> output_path, then call stt_transcribe",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
