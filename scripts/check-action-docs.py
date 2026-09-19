@@ -21,14 +21,9 @@ import sys
 
 # Plugins whose actions predate this rule. Shrink this list; never grow it.
 GRANDFATHERED = {
-    "ai",
     "automations",
-    "capture",
-    "contacts",
-    "daemon",
     "email",
     "github",
-    "library",
     "metrics",
     "mic",
     "network",
@@ -38,7 +33,6 @@ GRANDFATHERED = {
     "sync",
     "sync-client",
     "tts",
-    "uptime",
     "weather",
 }
 

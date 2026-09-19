@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "contact_create",
+      "description": "Create a contact: name required, optional email, phone, notes and tags. Returns the new id.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -36,6 +38,8 @@
     },
     {
       "name": "contact_get",
+      "description": "Fetch one contact by id with all its fields. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -56,6 +60,8 @@
     },
     {
       "name": "contact_list",
+      "description": "List contacts, optionally filtered by a case-insensitive substring over name/email/phone/notes or by tag, with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -78,6 +84,8 @@
     },
     {
       "name": "contact_update",
+      "description": "Update a contact by id; supplied fields replace the stored ones, and omitted fields are left alone. The previous values are not kept.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -103,6 +111,8 @@
     },
     {
       "name": "contact_delete",
+      "description": "Delete a contact by id, with its notes and tags. Irreversible.",
+      "risk": "high",
       "input": {
         "type": "object",
         "properties": {

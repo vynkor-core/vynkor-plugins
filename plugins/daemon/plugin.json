@@ -18,6 +18,9 @@
   "actions": [
     {
       "name": "daemon_enable",
+      "description": "Turn the always-listening voice daemon on: it starts taking mic input and answering aloud on its own until disabled.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {},
@@ -39,6 +42,8 @@
     },
     {
       "name": "daemon_disable",
+      "description": "Turn the voice daemon off; the mic stops being consumed and nothing is spoken until it is enabled again.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {},
@@ -60,6 +65,8 @@
     },
     {
       "name": "daemon_status",
+      "description": "Report whether the voice daemon is enabled and what it is currently doing. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -121,6 +128,8 @@
     },
     {
       "name": "daemon_turn",
+      "description": "Run one full daemon turn — listen, transcribe, answer, speak. With text supplied, skips the mic/stt stage and uses that text as the prompt. Speaks the answer out loud through the local speakers.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -196,6 +205,8 @@
     },
     {
       "name": "daemon_say",
+      "description": "Speak text aloud through tts + sound right now. Audible to anyone in the room.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -242,6 +253,8 @@
     },
     {
       "name": "daemon_ask",
+      "description": "Put a prompt through the agent's goal loop and speak the answer aloud, returning it as well. The goal loop may call other tools, so this inherits their effects.",
+      "risk": "high",
       "input": {
         "type": "object",
         "properties": {

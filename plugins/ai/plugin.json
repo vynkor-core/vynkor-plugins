@@ -18,6 +18,8 @@
   "actions": [
     {
       "name": "chat_completion",
+      "description": "Run one chat completion against a configured provider: messages plus either an agent_id profile or explicit provider/base_url/model/api_key_env, with optional native tool definitions, max_tokens and retry policy. Sends the conversation to the provider's servers and spends tokens against that account.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -223,6 +225,8 @@
     },
     {
       "name": "embedding",
+      "description": "Embed a single text (1..10000 chars) into a vector with the configured embedding model. Sends the text to the provider and spends tokens; this is what vector-db calls to index and query.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -322,6 +326,8 @@
     },
     {
       "name": "list_models",
+      "description": "List the models known to the ai plugin — stored plus previously discovered — with their provider and capabilities. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}
@@ -361,6 +367,8 @@
     },
     {
       "name": "list_agents",
+      "description": "List the named agent profiles (model plus system prompt) stored in the ai database. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}
@@ -397,6 +405,8 @@
     },
     {
       "name": "refresh_models",
+      "description": "Re-query each configured provider's model list and replace the stored catalog. Outbound API calls; overwrites what list_models returns.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {}
@@ -421,6 +431,8 @@
     },
     {
       "name": "usage_stats",
+      "description": "Report token and request counts recorded per provider and model. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}

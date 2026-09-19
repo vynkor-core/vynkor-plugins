@@ -9,6 +9,8 @@
   "actions": [
     {
       "name": "uptime_add",
+      "description": "Add an https:// URL to the monitored set; it is then polled on the plugin's own schedule and its results accumulate in history.",
+      "risk": "medium",
       "permission": "PERMISSION_STORAGE",
       "input": {
         "type": "object",
@@ -20,17 +22,23 @@
     },
     {
       "name": "uptime_remove",
+      "description": "Stop monitoring a URL by id and drop its recorded history. Irreversible — the check history cannot be rebuilt.",
+      "risk": "high",
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "removed": { "type": "boolean" } }, "required": ["removed"], "additionalProperties": false }
     },
     {
       "name": "uptime_list",
+      "description": "List monitored URLs with their ids and latest status. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": { "type": "object", "properties": { "targets": { "type": "array", "items": { "$ref": "#/$defs/target" } } }, "required": ["targets"], "additionalProperties": false }
     },
     {
       "name": "uptime_check",
+      "description": "Probe one URL right now and return status code and latency, without adding it to the monitored set. Makes an outbound request to that host.",
+      "risk": "medium",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -56,6 +64,8 @@
     },
     {
       "name": "uptime_history",
+      "description": "Return recorded check results for a URL with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -77,6 +87,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin status: number of monitored URLs, scheduler state and last check time. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": {
         "type": "object",

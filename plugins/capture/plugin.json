@@ -9,6 +9,9 @@
   "actions": [
     {
       "name": "capture_screenshot",
+      "description": "Take a screenshot — the whole screen by default, an interactive selection with region='select', or a fixed {x,y,w,h} box — and write it to the capture directory, returning the path. Captures whatever is on screen at that moment, including anything private left open.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_SCREEN",
       "input": {
         "type": "object",
@@ -31,6 +34,9 @@
     },
     {
       "name": "capture_record_start",
+      "description": "Start recording the screen to a file (whole screen or a fixed region; default cap 30 minutes) and return a recording_id. Runs unattended until stopped or the cap expires — a continuous record of everything displayed.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_SCREEN",
       "input": {
         "type": "object",
@@ -47,6 +53,8 @@
     },
     {
       "name": "capture_record_stop",
+      "description": "Stop a screen recording by recording_id and finalize its file, returning the path.",
+      "risk": "medium",
       "permission": "PERMISSION_SCREEN",
       "input": {
         "type": "object",
@@ -64,6 +72,8 @@
     },
     {
       "name": "capture_ocr",
+      "description": "Extract text from an image, given a path or base64 bytes (tesseract, fully offline; lang defaults to eng). Read-only with respect to the screen.",
+      "risk": "low",
       "permission": "PERMISSION_SCREEN",
       "input": {
         "type": "object",
@@ -81,6 +91,8 @@
     },
     {
       "name": "capture_status",
+      "description": "Report capture backend availability and any recording in progress. Read-only.",
+      "risk": "low",
       "permission": "PERMISSION_SCREEN",
       "input": { "type": "object", "properties": {}, "additionalProperties": true },
       "output": {

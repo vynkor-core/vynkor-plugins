@@ -11,7 +11,7 @@ const PLUGIN_VERSION: &str = "0.1.0";
 const ACTIONS: [&str; 6] = ["uptime_add", "uptime_remove", "uptime_list", "uptime_check", "uptime_history", "status"];
 
 fn manifest() -> PluginManifest {
-    PluginManifest { permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_NETWORK".into(), "PERMISSION_EVENT_PUBLISH".into()], actions: ACTIONS.iter().map(|s| s.to_string()).collect(), ..Default::default() }
+    PluginManifest { permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_NETWORK".into(), "PERMISSION_EVENT_PUBLISH".into()], actions: ACTIONS.iter().map(|s| s.to_string()).collect(), action_specs: vynkor_plugin_manifest::action_specs(), ..Default::default() }
 }
 fn unix_millis() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0) }
 fn action_response(action_id: String, status: ActionStatus, data_json: Vec<u8>, error: String) -> Envelope {
@@ -196,5 +196,39 @@ mod tests {
         let shim=start_plugin(test_cfg()).await;
         let h=shim.call("uptime_history", serde_json::json!({})).await.unwrap();
         assert_eq!(h["total"], 0);
+    }
+}
+
+#[cfg(test)]
+mod manifest_specs_tests {
+    use serde_json::Value;
+
+    // Regression guard: an action that reaches the model with an empty
+    // description gets dropped by the agent's embedding filter, and one
+    // with no risk label falls through to the agent's name-shaped
+    // inference instead of this plugin's own judgement.
+    //
+    // Reads the shipped plugin.json directly, not action_specs(): that
+    // resolves the manifest via current_exe(), which in a dev-build test
+    // binary finds nothing and returns an empty list — it cannot tell
+    // correct wiring from no wiring at all.
+    #[test]
+    fn shipped_manifest_documents_and_risk_rates_every_declared_action() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
+        assert_eq!(
+            specs.len(),
+            parsed["actions"].as_array().unwrap().len(),
+            "every declared action must produce a spec"
+        );
+        let undocumented: Vec<&str> =
+            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
+        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let unrisked: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
     }
 }

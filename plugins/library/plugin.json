@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "library_scan",
+      "description": "Walk the allowed media roots and index what is there (roots overridable per scan; force=true re-reads files whose mtime is unchanged). Reads the filesystem and rewrites the media index.",
+      "risk": "medium",
       "permission": "PERMISSION_FILES_READ",
       "input": {
         "type": "object",
@@ -43,6 +45,8 @@
     },
     {
       "name": "library_search",
+      "description": "Search the media index by case-insensitive substring over path and name, optionally filtered by kind, with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -86,6 +90,8 @@
     },
     {
       "name": "library_get",
+      "description": "Fetch one indexed media item by id, with its path and metadata. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -106,6 +112,8 @@
     },
     {
       "name": "library_random",
+      "description": "Return random items from the index, optionally of one kind — for shuffle-style playback. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -137,6 +145,8 @@
     },
     {
       "name": "library_recent",
+      "description": "Return the most recently added or modified indexed items, optionally of one kind. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -168,6 +178,8 @@
     },
     {
       "name": "library_stats",
+      "description": "Report index size: item counts per media kind and last scan time. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
