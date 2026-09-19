@@ -32,7 +32,7 @@ OCR: `tesseract`, fully offline.
 
 ## Storage
 
-`CAPTURE_PLUGIN_DIR` (default `~/.local/share/vynkor/capture/`). Every
+`CAPTURE_PLUGIN_DIR` (default `~/.local/share/vyn/capture/`). Every
 action writes there and returns an absolute path — no inline base64
 output, no `filesystem`-plugin coupling.
 

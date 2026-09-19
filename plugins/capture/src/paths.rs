@@ -31,7 +31,7 @@ pub fn data_dir() -> PathBuf {
 
 fn default_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home).join(".local/share/vynkor/capture")
+    PathBuf::from(home).join(".local/share/vyn/capture")
 }
 
 pub fn screenshot_filename(ext: &str) -> String {
