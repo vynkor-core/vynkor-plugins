@@ -360,9 +360,24 @@ impl Catalog {
 /// …) never grows a confirmation requirement it didn't have. Confirmation
 /// is only ever flipped `false` → `true` here, never the reverse: this
 /// function can only add friction, not remove it.
+/// A risk label that means "nobody declared one". The empty string is the
+/// obvious case, but `"unknown"` is just as unset: `ActionRisk::Unknown` is
+/// the proto's zero value, so a plugin.json action with no `risk` key
+/// round-trips through `risk_from_str("")` into the wire enum and arrives
+/// here spelled out as a non-empty word. Measured on the live kernel right
+/// after this inference first shipped: all 29 telegram actions came through
+/// as `risk="unknown"`, which the earlier `is_empty()` check read as an
+/// explicit declaration and skipped — leaving `tg_send_message` reaching a
+/// human with no confirmation. A placeholder that is not empty defeats an
+/// emptiness test, so test for the meaning, not the byte length.
+fn risk_is_undeclared(risk: &str) -> bool {
+    let risk = risk.trim();
+    risk.is_empty() || risk.eq_ignore_ascii_case("unknown")
+}
+
 fn infer_missing_risk(catalog: &mut Catalog) {
     for spec in catalog.tools.iter_mut() {
-        if !spec.risk.trim().is_empty() {
+        if !risk_is_undeclared(&spec.risk) {
             continue;
         }
         let risk = infer_risk(&spec.name);
@@ -718,6 +733,32 @@ mod tests {
             !cat.get("secret_get").unwrap().requires_confirmation,
             "inference must not run at all once risk is non-empty, so confirmation is untouched too"
         );
+    }
+
+    #[test]
+    fn unknown_risk_is_treated_as_undeclared_not_as_an_explicit_label() {
+        // Regression for a hole found by measuring the live kernel, not by a
+        // test: every telegram action reached the agent as risk="unknown"
+        // (ActionRisk::Unknown is the proto zero value for a plugin.json with
+        // no `risk` key). The original is_empty() guard read that as an
+        // explicit declaration and skipped inference, so tg_send_message went
+        // out to a human with no confirmation.
+        let mut tool = spec("tg_send_message");
+        tool.risk = "unknown".into();
+        let mut cat = catalog_of(vec![tool]);
+        infer_missing_risk(&mut cat);
+        let t = cat.get("tg_send_message").unwrap();
+        assert_eq!(t.risk, "high", "an undeclared risk must be inferred, not preserved");
+        assert!(t.requires_confirmation, "a message sent to a human must be gated");
+    }
+
+    #[test]
+    fn unknown_risk_matching_is_case_insensitive() {
+        let mut tool = spec("secret_get");
+        tool.risk = "UNKNOWN".into();
+        let mut cat = catalog_of(vec![tool]);
+        infer_missing_risk(&mut cat);
+        assert_eq!(cat.get("secret_get").unwrap().risk, "critical");
     }
 
     #[test]
