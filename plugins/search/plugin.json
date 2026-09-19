@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "web_search",
+      "description": "Run a web search through a provider (brave) with the API key resolved from an allowlisted env var; returns up to 20 results. The query text leaves this machine.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {

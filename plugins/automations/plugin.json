@@ -15,6 +15,9 @@
   "actions": [
     {
       "name": "rule_set",
+      "description": "Create or update an automation rule (id absent = create): a trigger, optional AND conditions, and a kernel-routed action dispatched when it fires, with optional cooldown and its own requires_confirmation flag. The rule keeps firing unattended afterwards, so this installs a standing capability rather than performing a one-off act.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -71,6 +74,8 @@
     },
     {
       "name": "rule_get",
+      "description": "Fetch one automation rule by id with its trigger, conditions and action. Read-only.",
+      "risk": "low",
       "input": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"], "additionalProperties": false},
       "output": {
         "type": "object",
@@ -81,6 +86,8 @@
     },
     {
       "name": "rule_list",
+      "description": "List automation rules with their ids, names and enabled state. Read-only.",
+      "risk": "low",
       "input": {"type": "object", "additionalProperties": false},
       "output": {
         "type": "object",
@@ -91,6 +98,8 @@
     },
     {
       "name": "rule_delete",
+      "description": "Delete an automation rule by id. Irreversible, and it can remove a rule something else depends on.",
+      "risk": "high",
       "input": {"type": "object", "properties": {"id": {"type": "string", "minLength": 1}}, "required": ["id"], "additionalProperties": false},
       "output": {
         "type": "object",

@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "sync_get_snapshot",
+      "description": "Return the whole synced state as one snapshot. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},
@@ -34,6 +36,8 @@
     },
     {
       "name": "sync_get",
+      "description": "Read one synced value by key. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -54,6 +58,8 @@
     },
     {
       "name": "sync_set",
+      "description": "Store an arbitrary JSON value under a key, replacing whatever was there. The change propagates to every synced client.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -75,6 +81,8 @@
     },
     {
       "name": "sync_del",
+      "description": "Delete a key from synced state. Irreversible, and the deletion propagates to every synced client.",
+      "risk": "high",
       "input": {
         "type": "object",
         "properties": {

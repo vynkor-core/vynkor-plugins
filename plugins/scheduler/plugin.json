@@ -15,6 +15,9 @@
   "actions": [
     {
       "name": "schedule_set",
+      "description": "Create or update a schedule (id absent = generate): a one-shot or cron trigger that either publishes an event or dispatches a kernel-routed action when it fires. The action runs later, unattended, without the caller present.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -119,6 +122,8 @@
     },
     {
       "name": "schedule_get",
+      "description": "Fetch one schedule by id with its trigger and fire kind. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -139,6 +144,8 @@
     },
     {
       "name": "schedule_list",
+      "description": "List schedules with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -177,6 +184,8 @@
     },
     {
       "name": "schedule_delete",
+      "description": "Delete a schedule by id. Irreversible, and it silently stops whatever was relying on it from firing.",
+      "risk": "high",
       "input": {
         "type": "object",
         "properties": {

@@ -12,6 +12,9 @@
   "actions": [
     {
       "name": "email_send",
+      "description": "Send an email over SMTP: to, subject, body (optionally text/html), with the password resolved from credentials_env and optional relay host/port/user. It reaches a real recipient and cannot be recalled.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -97,6 +100,8 @@
     },
     {
       "name": "email_list",
+      "description": "List recent messages from an IMAP mailbox (default INBOX, up to 50) using the password resolved from credentials_env. Read-only on the server, but it pulls private correspondence into the caller's context.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {

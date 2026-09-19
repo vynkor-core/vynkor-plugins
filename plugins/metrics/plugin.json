@@ -9,6 +9,8 @@
   "actions": [
     {
       "name": "metrics_query",
+      "description": "Query recorded metric samples over a time window (from_ms/to_ms, unix ms) with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -31,6 +33,8 @@
     },
     {
       "name": "metrics_latest",
+      "description": "Return the most recent sample of each recorded metric. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": {
         "type": "object",
@@ -44,6 +48,8 @@
     },
     {
       "name": "metrics_stats",
+      "description": "Summarize the metric store: series count, sample count and retention window. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": {
         "type": "object",
@@ -58,6 +64,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin status: collector state and last sample time. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": {
         "type": "object",

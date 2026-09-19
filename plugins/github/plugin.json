@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "gh_list_issues",
+      "description": "List issues in owner/repo, filtered by state, using a GitHub PAT resolved from an allowlisted env var. Read-only.",
+      "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -35,6 +37,9 @@
     },
     {
       "name": "gh_create_issue",
+      "description": "Open a new issue in owner/repo with a title and optional body. Public in a public repo, notifies watchers, and cannot be deleted through this API — only closed.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -58,6 +63,8 @@
     },
     {
       "name": "gh_list_prs",
+      "description": "List pull requests in owner/repo, filtered by state. Read-only.",
+      "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -81,6 +88,8 @@
     },
     {
       "name": "gh_list_runs",
+      "description": "List recent GitHub Actions workflow runs for owner/repo, optionally for one branch. Read-only.",
+      "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",

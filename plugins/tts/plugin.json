@@ -20,6 +20,8 @@
   "actions": [
     {
       "name": "tts_synthesize",
+      "description": "Synthesize speech and return the audio bytes: provider (sherpa = local in-process ONNX, openai/elevenlabs = cloud), text, voice, optional format/speed/model/base_url. Cloud providers send the text off this machine; sherpa does not.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -132,6 +134,8 @@
     },
     {
       "name": "tts_voices",
+      "description": "List the voices available for a provider (sherpa or openai; elevenlabs is rejected because its voices are per-account). Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -172,6 +176,8 @@
     },
     {
       "name": "tts_speak",
+      "description": "Synthesize and stream Opus audio straight to a peer (e.g. device.phone.speaker) instead of returning bytes — it comes out of a real speaker in the room. sherpa-only: streaming needs a local PCM source.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -285,6 +291,7 @@
     },
     {
       "name": "tts_speak_stream",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {

@@ -12,6 +12,9 @@
   "actions": [
     {
       "name": "mic_start",
+      "description": "Start capturing the microphone and stream raw PCM to a peer as AudioStreamChunk envelopes (device, rate, channels, chunk size all optional). Open-ended live capture of the room until mic_stop.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "PERMISSION_AUDIO",
       "input": {
         "type": "object",
@@ -47,6 +50,8 @@
     },
     {
       "name": "mic_stop",
+      "description": "Stop a capture session by session_id, or every session currently capturing when omitted.",
+      "risk": "medium",
       "permission": "PERMISSION_AUDIO",
       "input": {
         "type": "object",
@@ -70,6 +75,8 @@
     },
     {
       "name": "mic_status",
+      "description": "Report active capture sessions and their targets. Read-only.",
+      "risk": "low",
       "permission": "PERMISSION_AUDIO",
       "input": {
         "type": "object",

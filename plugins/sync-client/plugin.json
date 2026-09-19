@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "sync_client_get_state",
+      "description": "Report this client's sync state: last successful sync, pending changes and connection status. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

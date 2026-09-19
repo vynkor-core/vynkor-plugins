@@ -18,6 +18,9 @@
   "actions": [
     {
       "name": "http_request",
+      "description": "Make an arbitrary outbound HTTP request (method, headers, text/base64/multipart body, redirects, retries, per-caller cookie jar and response cache). SSRF-guarded against loopback, RFC1918 and link-local targets, but any reachable public host is fair game — this is the general egress path off this machine, and anything in the request body leaves with it.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "network",
       "input": {
         "type": "object",
@@ -179,6 +182,8 @@
     },
     {
       "name": "network_stats",
+      "description": "Report request counts, cache hit rate and error totals for this plugin. Read-only.",
+      "risk": "low",
       "permission": "network",
       "input": {
         "type": "object",
@@ -240,6 +245,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin status: uptime and configured limits. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

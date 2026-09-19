@@ -17,6 +17,8 @@
   "actions": [
     {
       "name": "weather_now",
+      "description": "Current conditions for a lat/lon (optional IANA timezone). Read-only; one outbound call to the weather API.",
+      "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -74,6 +76,8 @@
     },
     {
       "name": "weather_forecast",
+      "description": "Daily forecast for a lat/lon, 1..16 days ahead (optional IANA timezone). Read-only; one outbound call to the weather API.",
+      "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
         "type": "object",
@@ -137,6 +141,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin status: configured provider and last call result. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

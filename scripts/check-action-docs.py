@@ -20,21 +20,9 @@ import json
 import sys
 
 # Plugins whose actions predate this rule. Shrink this list; never grow it.
-GRANDFATHERED = {
-    "automations",
-    "email",
-    "github",
-    "metrics",
-    "mic",
-    "network",
-    "scheduler",
-    "search",
-    "stt",
-    "sync",
-    "sync-client",
-    "tts",
-    "weather",
-}
+# Empty as of the sweep that documented the last 13 — a new plugin has no
+# excuse, so adding a name back here needs a reason in the commit message.
+GRANDFATHERED: set[str] = set()
 
 VALID_RISKS = {"low", "medium", "high", "critical"}
 

@@ -20,6 +20,9 @@
   "actions": [
     {
       "name": "stt_listen_start",
+      "description": "Begin transcribing an inbound live audio stream (matched by stream_id, at sample_rate_hz). Open-ended capture of whatever the far-end microphone hears until stt_listen_stop.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -72,6 +75,8 @@
     },
     {
       "name": "stt_listen_stop",
+      "description": "Stop a live transcription session started by stt_listen_start and return its final transcript.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -114,6 +119,8 @@
     },
     {
       "name": "stt_transcribe",
+      "description": "Transcribe one audio blob, passed as base64 (<= 25 MiB decoded) or read from an absolute file_path: provider (sherpa local, openai cloud), format, optional language/prompt/model. With provider=openai the audio leaves this machine.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -223,6 +230,8 @@
     },
     {
       "name": "stt_models",
+      "description": "List the transcription models available for a provider. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
