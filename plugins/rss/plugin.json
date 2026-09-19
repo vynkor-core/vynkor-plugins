@@ -9,46 +9,62 @@
   "actions": [
     {
       "name": "rss_add",
+      "description": "Subscribe to a feed by URL; the feed is fetched once to validate it and gets an id used by every other rss action.",
+      "risk": "medium",
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "id": { "type": "string" }, "feed": { "$ref": "#/$defs/feed" } }, "required": ["id", "feed"], "additionalProperties": false }
     },
     {
       "name": "rss_remove",
+      "description": "Unsubscribe from a feed by id and drop its stored articles and read state. Irreversible — re-adding the URL starts from an empty history.",
+      "risk": "high",
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "removed": { "type": "boolean" } }, "required": ["removed"], "additionalProperties": false }
     },
     {
       "name": "rss_list",
+      "description": "List subscribed feeds with their ids, titles, URLs and last-fetch times. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": { "type": "object", "properties": { "feeds": { "type": "array", "items": { "$ref": "#/$defs/feed" } } }, "required": ["feeds"], "additionalProperties": false }
     },
     {
       "name": "rss_fetch",
+      "description": "Fetch one feed by id now and store any new articles. Network call to the feed's host.",
+      "risk": "medium",
       "permission": "PERMISSION_NETWORK",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "timeout_ms": { "type": "integer", "minimum": 1, "default": 10000 } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "fetched": { "type": "integer" }, "new": { "type": "integer" } }, "required": ["fetched", "new"], "additionalProperties": false }
     },
     {
       "name": "rss_fetch_all",
+      "description": "Fetch every subscribed feed and store new articles. One outbound request per feed.",
+      "risk": "medium",
       "permission": "PERMISSION_NETWORK",
       "input": { "type": "object", "properties": { "timeout_ms": { "type": "integer", "minimum": 1, "default": 10000 } }, "additionalProperties": false },
       "output": { "type": "object", "properties": { "fetched": { "type": "integer" }, "new": { "type": "integer" }, "feeds": { "type": "integer" } }, "required": ["fetched", "new", "feeds"], "additionalProperties": false }
     },
     {
       "name": "rss_articles",
+      "description": "List stored articles, optionally filtered by feed_id, unread_only or a text query, with limit/offset paging. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": { "feed_id": { "type": "string" }, "unread_only": { "type": "boolean", "default": false }, "query": { "type": "string" }, "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 50 }, "offset": { "type": "integer", "minimum": 0, "default": 0 } }, "additionalProperties": false },
       "output": { "type": "object", "properties": { "articles": { "type": "array", "items": { "$ref": "#/$defs/article" } }, "total": { "type": "integer" } }, "required": ["articles", "total"], "additionalProperties": false }
     },
     {
       "name": "rss_mark_read",
+      "description": "Mark an article read (or unread with read=false) by article id.",
+      "risk": "medium",
       "permission": "PERMISSION_STORAGE",
       "input": { "type": "object", "properties": { "id": { "type": "string", "minLength": 1 }, "read": { "type": "boolean", "default": true } }, "required": ["id"], "additionalProperties": false },
       "output": { "type": "object", "properties": { "updated": { "type": "boolean" }, "article": { "$ref": "#/$defs/article" } }, "required": ["updated"], "additionalProperties": false }
     },
     {
       "name": "status",
+      "description": "Plugin status: feed count, stored article count and last fetch result. Read-only.",
+      "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
       "output": { "type": "object", "properties": { "version": { "type": "string" }, "uptime_ms": { "type": "integer" }, "engine_ready": { "type": "boolean" }, "last_error": { "type": ["string", "null"] }, "counters": { "type": "object" } }, "required": ["version", "uptime_ms", "engine_ready"], "additionalProperties": true }
     }

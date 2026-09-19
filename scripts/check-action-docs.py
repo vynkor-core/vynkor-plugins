@@ -31,18 +31,14 @@ GRANDFATHERED = {
     "library",
     "metrics",
     "mic",
-    "mqtt",
     "network",
-    "rss",
     "scheduler",
     "search",
-    "speech",
     "stt",
     "sync",
     "sync-client",
     "tts",
     "uptime",
-    "vector-db",
     "weather",
 }
 

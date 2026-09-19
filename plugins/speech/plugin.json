@@ -21,6 +21,8 @@
   "actions": [
     {
       "name": "tts_synthesize",
+      "description": "Synthesize speech and return the audio bytes: provider (sherpa = local in-process ONNX, openai/elevenlabs = cloud), text, voice, optional format/speed/model/base_url. Cloud providers send the text off this machine; sherpa does not.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -133,6 +135,8 @@
     },
     {
       "name": "tts_voices",
+      "description": "List the voices available for a provider (sherpa or openai; elevenlabs is rejected because its voices are per-account). Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -173,6 +177,8 @@
     },
     {
       "name": "tts_speak",
+      "description": "Synthesize and stream Opus audio straight to a peer (e.g. device.phone.speaker) instead of returning bytes — it comes out of a real speaker in the room. sherpa-only: streaming needs a local PCM source.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -286,6 +292,7 @@
     },
     {
       "name": "tts_speak_stream",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -400,6 +407,9 @@
     },
     {
       "name": "stt_listen_start",
+      "description": "Begin transcribing an inbound live audio stream (matched by stream_id, at sample_rate_hz). Opens an open-ended capture of whatever the microphone on the other end hears until stt_listen_stop.",
+      "risk": "high",
+      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -452,6 +462,8 @@
     },
     {
       "name": "stt_listen_stop",
+      "description": "Stop a live transcription session started by stt_listen_start and return its final transcript.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -494,6 +506,8 @@
     },
     {
       "name": "stt_transcribe",
+      "description": "Transcribe one audio blob passed as base64 (<= 25 MiB decoded): provider (sherpa local, openai cloud), format, optional language/prompt/model. With provider=openai the audio leaves this machine.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -600,6 +614,8 @@
     },
     {
       "name": "stt_models",
+      "description": "List the transcription models available for a provider. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -638,6 +654,8 @@
     },
     {
       "name": "status",
+      "description": "Plugin status: loaded local models, configured providers and stream state. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {},

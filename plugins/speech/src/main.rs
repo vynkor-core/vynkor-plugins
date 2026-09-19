@@ -44,6 +44,7 @@ fn manifest() -> PluginManifest {
             "stt_listen_stop".to_string(),
             "status".to_string(),
         ],
+        action_specs: vynkor_plugin_manifest::action_specs(),
         ipc_targets: ipc_targets(),
         ..Default::default()
     }
@@ -251,5 +252,39 @@ mod tests {
         assert_eq!(v["last_error"], serde_json::Value::Null);
         assert_eq!(v["counters"], serde_json::json!({}));
         assert!(v["uptime_ms"].as_u64().is_some());
+    }
+}
+
+#[cfg(test)]
+mod manifest_specs_tests {
+    use serde_json::Value;
+
+    // Regression guard: an action that reaches the model with an empty
+    // description gets dropped by the agent's embedding filter, and one
+    // with no risk label falls through to the agent's name-shaped
+    // inference instead of this plugin's own judgement.
+    //
+    // Reads the shipped plugin.json directly, not action_specs(): that
+    // resolves the manifest via current_exe(), which in a dev-build test
+    // binary finds nothing and returns an empty list — it cannot tell
+    // correct wiring from no wiring at all.
+    #[test]
+    fn shipped_manifest_documents_and_risk_rates_every_declared_action() {
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
+        assert_eq!(
+            specs.len(),
+            parsed["actions"].as_array().unwrap().len(),
+            "every declared action must produce a spec"
+        );
+        let undocumented: Vec<&str> =
+            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
+        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let unrisked: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
     }
 }

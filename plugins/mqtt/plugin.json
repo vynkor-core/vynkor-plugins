@@ -18,6 +18,8 @@
   "actions": [
     {
       "name": "mqtt_connect",
+      "description": "Open the MQTT broker connection used by every other mqtt action: broker_host (+ optional port, client_id, username/password resolved vault-first via secrets, keepalive, CA/client certs for TLS or mTLS). One connection per plugin instance; connecting again replaces it.",
+      "risk": "medium",
       "permission": "network",
       "input": {
         "type": "object",
@@ -79,6 +81,8 @@
     },
     {
       "name": "mqtt_disconnect",
+      "description": "Close the current broker connection and drop all active subscriptions. Device state already published to the broker is unaffected.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {}
@@ -95,6 +99,9 @@
     },
     {
       "name": "mqtt_publish",
+      "description": "Publish a payload to an MQTT topic (qos, retain, encoding for base64 protobuf). Reaches whatever hardware listens on that topic, so a wrong topic actuates a real device; retain=true leaves the message on the broker for future subscribers.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "network",
       "input": {
         "type": "object",
@@ -143,6 +150,8 @@
     },
     {
       "name": "mqtt_subscribe",
+      "description": "Subscribe to an MQTT topic filter (wildcards allowed, e.g. vynkor/+/telemetry); stream=true delivers messages over R6 streaming instead of buffering. Adds broker-side subscription state.",
+      "risk": "medium",
       "permission": "network",
       "input": {
         "type": "object",
@@ -181,6 +190,8 @@
     },
     {
       "name": "mqtt_unsubscribe",
+      "description": "Stop receiving messages for a topic filter previously passed to mqtt_subscribe.",
+      "risk": "medium",
       "input": {
         "type": "object",
         "properties": {
@@ -204,6 +215,8 @@
     },
     {
       "name": "mqtt_status",
+      "description": "Report broker connection state: connected or not, broker address, client id and active subscription count. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}
@@ -238,6 +251,8 @@
     },
     {
       "name": "mqtt_device_list",
+      "description": "List IoT devices discovered over the Vynkor Device Protocol (WiFi/ESP, Zigbee2MQTT, Thread border router) with their ids and last-seen state. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {}
@@ -275,6 +290,8 @@
     },
     {
       "name": "mqtt_device_info",
+      "description": "Get one discovered device's details by device_id: type, firmware version, capabilities and last-seen timestamp. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -327,6 +344,9 @@
     },
     {
       "name": "mqtt_device_command",
+      "description": "Send a VDP command to a device by device_id (command name plus a params object, e.g. set_relay {pin, state}). This actuates physical hardware — a relay, lock, light or motor moves in the real world.",
+      "risk": "high",
+      "requires_confirmation": true,
       "permission": "network",
       "input": {
         "type": "object",
@@ -372,6 +392,8 @@
     },
     {
       "name": "mqtt_device_telemetry",
+      "description": "Read buffered telemetry for a device: optional stream name, since (unix seconds) and limit. Read-only.",
+      "risk": "low",
       "input": {
         "type": "object",
         "properties": {
@@ -422,6 +444,9 @@
     },
     {
       "name": "mqtt_ota_update",
+      "description": "Flash new firmware onto a device by pointing it at firmware_url. Irreversible from this side and unrecoverable if the image is wrong for the target — a failed OTA can leave the hardware unbootable and unreachable over the network.",
+      "risk": "critical",
+      "requires_confirmation": true,
       "permission": "network",
       "input": {
         "type": "object",

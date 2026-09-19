@@ -12,6 +12,8 @@
   "actions": [
     {
       "name": "vec_upsert",
+      "description": "Store or replace one document in a collection: supply text (embedded via the ai plugin) or a precomputed vector, plus optional metadata. Overwrites any document already under that id.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -38,6 +40,8 @@
     },
     {
       "name": "vec_query",
+      "description": "Semantic search in a collection: query text (embedded on the fly) or a precomputed vector, top_k hits with scores, optional exact-match metadata filter. Read-only.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -76,6 +80,8 @@
     },
     {
       "name": "vec_get",
+      "description": "Fetch one stored document by collection and id, with its metadata. Read-only.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -102,6 +108,8 @@
     },
     {
       "name": "vec_delete",
+      "description": "Delete one document from a collection by id. Irreversible — the vector and its metadata are gone, and re-adding needs the original text.",
+      "risk": "high",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -123,6 +131,8 @@
     },
     {
       "name": "vec_list",
+      "description": "List the caller's collections, optionally filtered by name prefix. Read-only.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -142,6 +152,8 @@
     },
     {
       "name": "vec_stats",
+      "description": "Report a collection's document count, vector dimension and storage size. Read-only.",
+      "risk": "low",
       "permission": "storage",
       "input": {
         "type": "object",
@@ -163,6 +175,8 @@
     },
     {
       "name": "vec_upsert_batch",
+      "description": "Store or replace many documents in one collection in a single call. Same overwrite semantics as vec_upsert, applied per id.",
+      "risk": "medium",
       "permission": "storage",
       "input": {
         "type": "object",
