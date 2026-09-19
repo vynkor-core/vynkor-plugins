@@ -574,8 +574,8 @@ pub async fn respond(
     };
 
     let t_speak = Instant::now();
-    let spoken = match speak(rpc, config, &text).await {
-        Ok(_) => true,
+    match speak(rpc, config, &text).await {
+        Ok(_) => {}
         Err(e) => {
             let mut v =
                 turn_result_with_goal("error", transcript, false, started, Some(e), &answer);

@@ -1262,7 +1262,7 @@ mod tests {
 
     #[test]
     fn catalog_tools_param_maps_schema_and_guards_minimal_specs() {
-        let mut spec = crate::tools::ToolSpec {
+        let spec = crate::tools::ToolSpec {
             name: "launch".into(),
             description: "Launch an app".into(),
             parameters: json!({"type": "object", "properties": {"app_id": {"type": "string"}}}),
