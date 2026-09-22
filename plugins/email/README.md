@@ -32,7 +32,10 @@ Request (`ActionRequest.params_json`):
   "smtp_host": "smtp.example.com",
   "smtp_port": 587,
   "smtp_user": "smtp-login",
-  "timeout_ms": 30000
+  "timeout_ms": 30000,
+  "cc": ["cc1@example.com", "cc2@example.com"],
+  "bcc": ["hidden@example.com"],
+  "reply_to": "replies@example.com"
 }
 ```
 
@@ -57,6 +60,12 @@ Request (`ActionRequest.params_json`):
 - `smtp_port` — optional, default `587` (SMTP submission).
 - `smtp_user` — optional SMTP auth username, default the `from` address.
 - `timeout_ms` — optional, default and cap `30000` (SMTP connection timeout).
+- `cc` — optional array of addresses, each validated the same as `to`. Added
+  as ordinary `Cc:` header recipients (visible to every recipient).
+- `bcc` — optional array of addresses, same validation. Added as envelope-only
+  recipients — **never** appear in any header of the sent message (that's the
+  point of blind copy).
+- `reply_to` — optional single address, same validation. Sets `Reply-To:`.
 
 Response (`ActionResponse.data_json`) on success:
 

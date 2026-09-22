@@ -37,14 +37,20 @@ surfaces).
 - Strict parse-time validation: `to` must contain `@`+`.` after, `subject` 1-200, `body` ≤10000, `mailbox` 1-100 no traversal, `limit` 1-50, ports non-zero.
 - Testing: `request.rs` unit tests (validation + allowlist, 30 tests) and a fake-kernel `UnixStream::pair` integration test driving both handlers end to end (9 tests).
 
-## v0.2 (planned)
+## v0.2 (in progress)
 
+- **Reply-To / CC / BCC** — shipped. `email_send` accepts optional `cc`
+  (array), `bcc` (array), `reply_to` (single address), each validated with
+  the same `is_valid_email` check as `to`/`from`. `cc` becomes an ordinary
+  `Cc:` header (visible to all recipients); `bcc` is added as an
+  envelope-only recipient via `lettre`'s `.bcc()` — it is never written to
+  any header of the sent message, verified by a test that asserts the
+  address does not appear in the formatted output at all.
 - **`email_list`** — outbox listing backed by `database` (or the `secrets`
   plugin for a sent-log), so callers can query what was sent. Deferred until
   a caller needs it.
 - **Attachments** — MIME multipart with base64 bodies. Needs `lettre`'s
   `builder`/mime support and an operator cap on total payload size.
-- **Reply-To / CC / BCC** — additional recipient fields once a caller asks.
 - **Provider abstraction** — optional: a trait over `lettre` vs a
   `network`-routed HTTP email API (Resend/Postmark/SendGrid), mirroring
   `search`'s provider adapters, if an HTTP-only deployment is needed.

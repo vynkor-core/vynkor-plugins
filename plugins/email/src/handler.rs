@@ -58,9 +58,30 @@ fn build_message(params: &EmailSendParams) -> Result<lettre::Message, String> {
         ContentType::TEXT_PLAIN
     };
 
-    lettre::Message::builder()
+    let mut builder = lettre::Message::builder()
         .from(Mailbox::new(None, from))
-        .to(Mailbox::new(None, to))
+        .to(Mailbox::new(None, to));
+
+    for addr in &params.cc {
+        let cc: Address = addr
+            .parse()
+            .map_err(|e| format!("invalid cc address '{addr}': {e}"))?;
+        builder = builder.cc(Mailbox::new(None, cc));
+    }
+    for addr in &params.bcc {
+        let bcc: Address = addr
+            .parse()
+            .map_err(|e| format!("invalid bcc address '{addr}': {e}"))?;
+        builder = builder.bcc(Mailbox::new(None, bcc));
+    }
+    if let Some(reply_to) = &params.reply_to {
+        let reply_to: Address = reply_to
+            .parse()
+            .map_err(|e| format!("invalid reply_to address '{reply_to}': {e}"))?;
+        builder = builder.reply_to(Mailbox::new(None, reply_to));
+    }
+
+    builder
         .subject(params.subject.clone())
         .header(content_type)
         .body(params.body.clone())
@@ -208,6 +229,67 @@ pub async fn handle_email_list(
     .map_err(|e| format!("IMAP task join failed: {e}"))??;
 
     serde_json::to_vec(&fetched).map_err(|e| format!("failed to encode response: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_params() -> EmailSendParams {
+        EmailSendParams {
+            to: "user@example.com".to_string(),
+            from: "sender@example.com".to_string(),
+            subject: "Hello".to_string(),
+            body: "Hi there".to_string(),
+            is_html: false,
+            credentials_env: "EMAIL_SMTP_PASS".to_string(),
+            smtp_host: "localhost".to_string(),
+            smtp_port: 587,
+            smtp_user: "sender@example.com".to_string(),
+            timeout_ms: 30000,
+            cc: vec![],
+            bcc: vec![],
+            reply_to: None,
+        }
+    }
+
+    fn formatted(params: &EmailSendParams) -> String {
+        String::from_utf8(build_message(params).unwrap().formatted()).unwrap()
+    }
+
+    #[test]
+    fn message_has_no_cc_bcc_reply_to_headers_by_default() {
+        let raw = formatted(&base_params());
+        assert!(!raw.contains("Cc:"), "raw was: {raw}");
+        assert!(!raw.contains("Bcc:"), "raw was: {raw}");
+        assert!(!raw.contains("Reply-To:"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_cc_header_when_set() {
+        let mut params = base_params();
+        params.cc = vec!["cc1@example.com".to_string(), "cc2@example.com".to_string()];
+        let raw = formatted(&params);
+        assert!(raw.contains("Cc: cc1@example.com, cc2@example.com"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_bcc_recipients_without_bcc_header() {
+        // Bcc must never appear in the sent headers (that's the whole point
+        // of blind copy) — lettre's `.bcc()` adds an envelope recipient only.
+        let mut params = base_params();
+        params.bcc = vec!["hidden@example.com".to_string()];
+        let raw = formatted(&params);
+        assert!(!raw.contains("hidden@example.com"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_reply_to_header_when_set() {
+        let mut params = base_params();
+        params.reply_to = Some("reply@example.com".to_string());
+        let raw = formatted(&params);
+        assert!(raw.contains("Reply-To: reply@example.com"), "raw was: {raw}");
+    }
 }
 
 fn fetch_via_imap_sync(

@@ -86,6 +86,9 @@ pub struct EmailSendParams {
     pub smtp_port: u16,
     pub smtp_user: String,
     pub timeout_ms: u64,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub reply_to: Option<String>,
 }
 
 /// Parse and validate `params_json` for the `email_send` action. Returns a
@@ -104,6 +107,9 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
         smtp_port: Option<u16>,
         smtp_user: Option<String>,
         timeout_ms: Option<u64>,
+        cc: Option<Vec<String>>,
+        bcc: Option<Vec<String>>,
+        reply_to: Option<String>,
     }
 
     let raw: Raw = serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
@@ -169,6 +175,31 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
 
     let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
 
+    let cc = raw.cc.unwrap_or_default();
+    for addr in &cc {
+        if !is_valid_email(addr) {
+            return Err(format!("invalid cc address: '{addr}'"));
+        }
+    }
+
+    let bcc = raw.bcc.unwrap_or_default();
+    for addr in &bcc {
+        if !is_valid_email(addr) {
+            return Err(format!("invalid bcc address: '{addr}'"));
+        }
+    }
+
+    let reply_to = match raw.reply_to {
+        Some(r) if !r.trim().is_empty() => {
+            let r = r.trim().to_string();
+            if !is_valid_email(&r) {
+                return Err(format!("invalid reply_to address: '{r}'"));
+            }
+            Some(r)
+        }
+        _ => None,
+    };
+
     Ok(EmailSendParams {
         to,
         from,
@@ -180,6 +211,9 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
         smtp_port,
         smtp_user,
         timeout_ms,
+        cc,
+        bcc,
+        reply_to,
     })
 }
 
@@ -424,6 +458,50 @@ mod tests {
         body["smtp_port"] = 0.into();
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();
         assert!(err.contains("smtp_port"), "error was: {err}");
+    }
+
+    #[test]
+    fn accepts_cc_bcc_reply_to() {
+        let mut body = valid_json();
+        body["cc"] = serde_json::json!(["cc1@example.com", "cc2@example.com"]);
+        body["bcc"] = serde_json::json!(["bcc@example.com"]);
+        body["reply_to"] = "reply@example.com".into();
+        let params = parse_request(body.to_string().as_bytes()).unwrap();
+        assert_eq!(params.cc, vec!["cc1@example.com", "cc2@example.com"]);
+        assert_eq!(params.bcc, vec!["bcc@example.com"]);
+        assert_eq!(params.reply_to, Some("reply@example.com".to_string()));
+    }
+
+    #[test]
+    fn defaults_cc_bcc_reply_to_when_omitted() {
+        let params = parse_request(valid_json().to_string().as_bytes()).unwrap();
+        assert!(params.cc.is_empty());
+        assert!(params.bcc.is_empty());
+        assert_eq!(params.reply_to, None);
+    }
+
+    #[test]
+    fn rejects_invalid_cc_address() {
+        let mut body = valid_json();
+        body["cc"] = serde_json::json!(["not-an-email"]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("cc"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_bcc_address() {
+        let mut body = valid_json();
+        body["bcc"] = serde_json::json!(["not-an-email"]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("bcc"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_reply_to_address() {
+        let mut body = valid_json();
+        body["reply_to"] = "not-an-email".into();
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("reply_to"), "error was: {err}");
     }
 
     #[test]
