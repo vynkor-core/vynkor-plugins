@@ -12,7 +12,7 @@
   "actions": [
     {
       "name": "email_send",
-      "description": "Send an email over SMTP: to, subject, body (optionally text/html), with the password resolved from credentials_env and optional relay host/port/user. It reaches a real recipient and cannot be recalled.",
+      "description": "Send an email over SMTP: to, subject, body (optionally text/html), optional cc/bcc/reply_to and attachments, with the password resolved from credentials_env and optional relay host/port/user. Transient SMTP failures (421/450-class) retry automatically with backoff; permanent failures do not. It reaches a real recipient and cannot be recalled.",
       "risk": "high",
       "requires_confirmation": true,
       "input": {
@@ -70,6 +70,42 @@
             "maximum": 30000,
             "default": 30000,
             "description": "SMTP connection timeout. Default and cap 30000."
+          },
+          "cc": {
+            "type": "array",
+            "items": { "type": "string", "format": "email" },
+            "description": "Optional Cc recipients, each validated like 'to'. Visible to every recipient in the sent message's Cc header."
+          },
+          "bcc": {
+            "type": "array",
+            "items": { "type": "string", "format": "email" },
+            "description": "Optional Bcc recipients, each validated like 'to'. Envelope-only recipients — never appear in any header of the sent message."
+          },
+          "reply_to": {
+            "type": "string",
+            "format": "email",
+            "description": "Optional Reply-To address, validated like 'to'."
+          },
+          "attachments": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "properties": {
+                "filename": { "type": "string", "description": "Required, non-empty." },
+                "content_type": {
+                  "type": "string",
+                  "default": "application/octet-stream",
+                  "description": "Optional MIME type."
+                },
+                "content_base64": {
+                  "type": "string",
+                  "description": "Required. Base64-encoded attachment bytes, max 10 MiB decoded per file, 25 MiB decoded total across all attachments."
+                }
+              },
+              "required": ["filename", "content_base64"]
+            },
+            "description": "Optional file attachments, max 10 per call. Sending switches the message to multipart/mixed."
           }
         },
         "required": ["to", "subject", "body", "credentials_env"],
