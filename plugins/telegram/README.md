@@ -59,6 +59,7 @@ TELEGRAM_PLUGIN_API_HASH_default=abc123...
 TELEGRAM_PLUGIN_PHONE_default=+998...
 TELEGRAM_PLUGIN_API_ID_corporate=...
 TELEGRAM_PLUGIN_SESSION_DIR=~/.local/share/vyn/telegram
+TELEGRAM_PLUGIN_PROXY_URL=socks5://127.0.0.1:1080   # optional, all accounts
 ```
 
 Secrets resolved vault-first via `secrets` plugin; env is fallback.
@@ -76,11 +77,20 @@ Per-account token bucket (8 rps burst capacity, 8/s refill) gates every action v
 
 One `spawn_live_listener` task per account owns the whole `UpdateStream` and pushes `new_message`/other updates onto a channel merged into `main.rs`'s `serve()` select loop (single client per account, no duplicate listeners — a double-spawn here previously pegged the runtime at ~99% CPU and starved the action handler, see git history on `fix(telegram): stop CPU-starve loop...`).
 
-`UpdateStream::next()` surfaces transient RPC errors (network blips, timeouts) without losing its internal state, so on error the listener backs off (1s, doubling, capped at 30s) and retries the *same* stream indefinitely — it never permanently dies from a transient failure.
+`UpdateStream::next()` surfaces transient RPC errors (network blips, timeouts) without losing its internal state, so on error the listener backs off (1s, doubling, capped at 30s) and retries the *same* stream — it never permanently dies from a transient failure. After 20 consecutive errors it exits the process (`std::process::exit(1)`) so the supervisor respawns with a fresh connection instead of hanging indefinitely.
 
 ## Session auth (`src/mtproto/session.rs`)
 
 `SessionPool::connect()` calls `client.is_authorized()` right after opening the session file and fails the connect (clear error, account not registered in the pool) if the session is stale/logged-out, instead of silently registering a broken client that would make every action fail opaque while `status` still reports `engine_ready: true`.
+
+That check is bounded by a 45s timeout. If the account's home DC is unreachable, grammers otherwise reconnects forever and eventually aborts the process with `thread 'tokio-rt-worker' has overflowed its stack`, crash-looping under the supervisor. On timeout the sender runner is aborted and connect fails with `could not reach Telegram within 45s … set TELEGRAM_PLUGIN_PROXY_URL`.
+
+### Unreachable DC (network blocks)
+
+Some networks drop TCP to parts of Telegram's ranges while ICMP still passes (so `ping` looks fine). Check with `timeout 5 bash -c '</dev/tcp/IP/443'`. The DC addresses live in the session file's `dc_option` table (`dc_id`, `ipv4`, `ipv6`, `auth_key`); auth keys are per-DC, not per-IP. Two fixes:
+
+1. **Alternate DC address**: repoint the blocked DC to another reachable IP of the same DC (e.g. DC5 `91.108.56.x` → `149.154.171.5:443`) with the plugin stopped. Back up the `.session` file first. Telegram's config refresh may rewrite it.
+2. **Proxy**: set `TELEGRAM_PLUGIN_PROXY_URL` (SOCKS5, via grammers' `proxy` feature). Needs a full kernel restart to pick up the new env.
 
 ## Build
 
