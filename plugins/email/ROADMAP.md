@@ -37,19 +37,37 @@ surfaces).
 - Strict parse-time validation: `to` must contain `@`+`.` after, `subject` 1-200, `body` ≤10000, `mailbox` 1-100 no traversal, `limit` 1-50, ports non-zero.
 - Testing: `request.rs` unit tests (validation + allowlist, 30 tests) and a fake-kernel `UnixStream::pair` integration test driving both handlers end to end (9 tests).
 
-## v0.2 (planned)
+## v0.2 (in progress)
 
+- **Reply-To / CC / BCC** — shipped. `email_send` accepts optional `cc`
+  (array), `bcc` (array), `reply_to` (single address), each validated with
+  the same `is_valid_email` check as `to`/`from`. `cc` becomes an ordinary
+  `Cc:` header (visible to all recipients); `bcc` is added as an
+  envelope-only recipient via `lettre`'s `.bcc()` — it is never written to
+  any header of the sent message, verified by a test that asserts the
+  address does not appear in the formatted output at all.
+- **Attachments** — shipped. `email_send` accepts an optional `attachments`
+  array (`filename`, optional `content_type`, `content_base64`), max 10 per
+  call, 10 MiB decoded per file, 25 MiB decoded total. Sending switches the
+  built message from a single-part body to `lettre`'s `MultiPart::mixed`
+  (`Attachment::new(filename).body(bytes, mime)` per file); no attachments
+  keeps the original single-part path unchanged.
+- **Retry/backoff** — shipped, SMTP-response-only. `email_send` retries a
+  failed `mailer.send` up to `RETRY_MAX_ATTEMPTS` (3) total attempts with
+  exponential backoff capped at 2s, but only when
+  `lettre::transport::smtp::Error::is_transient()` is true — i.e. an actual
+  SMTP 4xx response (421 "service not available", 450 "mailbox busy", ...).
+  A connection-level failure (DNS, TCP timeout, refused) is not an SMTP
+  response and is not retried — retrying a dead connection can't fix it and
+  only delays the caller past `timeout_ms`. Verified live: a call against an
+  RFC 5737 TEST-NET-3 host (`203.0.113.1`, guaranteed non-routable) failed
+  after exactly 1 attempt with a connection-timeout error, not a retry loop.
 - **`email_list`** — outbox listing backed by `database` (or the `secrets`
   plugin for a sent-log), so callers can query what was sent. Deferred until
   a caller needs it.
-- **Attachments** — MIME multipart with base64 bodies. Needs `lettre`'s
-  `builder`/mime support and an operator cap on total payload size.
-- **Reply-To / CC / BCC** — additional recipient fields once a caller asks.
 - **Provider abstraction** — optional: a trait over `lettre` vs a
   `network`-routed HTTP email API (Resend/Postmark/SendGrid), mirroring
   `search`'s provider adapters, if an HTTP-only deployment is needed.
-- **Retry/backoff** — mirror `network`'s retry-on-429-equivalent (SMTP 421/450)
-  with per-account backoff tuning.
 
 ## Non-goals / follow-ups
 

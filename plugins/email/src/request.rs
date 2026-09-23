@@ -37,6 +37,21 @@ pub const MAX_MAILBOX_CHARS: usize = 100;
 /// SMTP connection timeout ceiling (and default), in ms.
 pub const MAX_TIMEOUT_MS: u64 = 30_000;
 
+/// Hard ceiling on the number of attachments per `email_send` call.
+pub const MAX_ATTACHMENTS: usize = 10;
+
+/// Hard ceiling on one attachment's decoded size, in bytes (10 MiB).
+pub const MAX_ATTACHMENT_BYTES: usize = 10 * 1024 * 1024;
+
+/// Hard ceiling on the sum of all attachments' decoded sizes, in bytes
+/// (25 MiB — a conservative bound most SMTP relays accept without a
+/// separate large-message negotiation).
+pub const MAX_TOTAL_ATTACHMENT_BYTES: usize = 25 * 1024 * 1024;
+
+/// Default MIME type applied when a caller omits `content_type` on an
+/// attachment.
+pub const DEFAULT_ATTACHMENT_CONTENT_TYPE: &str = "application/octet-stream";
+
 /// Operator-supplied allowlist of env var names a caller's `credentials_env`
 /// may name. Comma-separated, exact (case-sensitive) match. Default-deny:
 /// unset or empty means no `credentials_env` value is accepted — a caller
@@ -86,6 +101,17 @@ pub struct EmailSendParams {
     pub smtp_port: u16,
     pub smtp_user: String,
     pub timeout_ms: u64,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub reply_to: Option<String>,
+    pub attachments: Vec<EmailAttachment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmailAttachment {
+    pub filename: String,
+    pub content_type: String,
+    pub data: Vec<u8>,
 }
 
 /// Parse and validate `params_json` for the `email_send` action. Returns a
@@ -104,6 +130,17 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
         smtp_port: Option<u16>,
         smtp_user: Option<String>,
         timeout_ms: Option<u64>,
+        cc: Option<Vec<String>>,
+        bcc: Option<Vec<String>>,
+        reply_to: Option<String>,
+        attachments: Option<Vec<RawAttachment>>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct RawAttachment {
+        filename: Option<String>,
+        content_type: Option<String>,
+        content_base64: Option<String>,
     }
 
     let raw: Raw = serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
@@ -169,6 +206,73 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
 
     let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
 
+    let cc = raw.cc.unwrap_or_default();
+    for addr in &cc {
+        if !is_valid_email(addr) {
+            return Err(format!("invalid cc address: '{addr}'"));
+        }
+    }
+
+    let bcc = raw.bcc.unwrap_or_default();
+    for addr in &bcc {
+        if !is_valid_email(addr) {
+            return Err(format!("invalid bcc address: '{addr}'"));
+        }
+    }
+
+    let reply_to = match raw.reply_to {
+        Some(r) if !r.trim().is_empty() => {
+            let r = r.trim().to_string();
+            if !is_valid_email(&r) {
+                return Err(format!("invalid reply_to address: '{r}'"));
+            }
+            Some(r)
+        }
+        _ => None,
+    };
+
+    let raw_attachments = raw.attachments.unwrap_or_default();
+    if raw_attachments.len() > MAX_ATTACHMENTS {
+        return Err(format!(
+            "too many attachments: max {MAX_ATTACHMENTS} (got {})",
+            raw_attachments.len()
+        ));
+    }
+    let mut attachments = Vec::with_capacity(raw_attachments.len());
+    let mut total_bytes = 0usize;
+    for a in raw_attachments {
+        let filename = a
+            .filename
+            .filter(|f| !f.trim().is_empty())
+            .ok_or("attachment missing required field: filename")?;
+        let content_base64 = a
+            .content_base64
+            .ok_or_else(|| format!("attachment '{filename}' missing required field: content_base64"))?;
+        let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64)
+            .map_err(|e| format!("attachment '{filename}' has invalid base64: {e}"))?;
+        if data.len() > MAX_ATTACHMENT_BYTES {
+            return Err(format!(
+                "attachment '{filename}' exceeds max size of {MAX_ATTACHMENT_BYTES} bytes (got {})",
+                data.len()
+            ));
+        }
+        total_bytes += data.len();
+        if total_bytes > MAX_TOTAL_ATTACHMENT_BYTES {
+            return Err(format!(
+                "attachments exceed total cap of {MAX_TOTAL_ATTACHMENT_BYTES} bytes"
+            ));
+        }
+        let content_type = match a.content_type {
+            Some(ct) if !ct.trim().is_empty() => ct.trim().to_string(),
+            _ => DEFAULT_ATTACHMENT_CONTENT_TYPE.to_string(),
+        };
+        attachments.push(EmailAttachment {
+            filename,
+            content_type,
+            data,
+        });
+    }
+
     Ok(EmailSendParams {
         to,
         from,
@@ -180,6 +284,10 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
         smtp_port,
         smtp_user,
         timeout_ms,
+        cc,
+        bcc,
+        reply_to,
+        attachments,
     })
 }
 
@@ -424,6 +532,143 @@ mod tests {
         body["smtp_port"] = 0.into();
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();
         assert!(err.contains("smtp_port"), "error was: {err}");
+    }
+
+    #[test]
+    fn accepts_cc_bcc_reply_to() {
+        let mut body = valid_json();
+        body["cc"] = serde_json::json!(["cc1@example.com", "cc2@example.com"]);
+        body["bcc"] = serde_json::json!(["bcc@example.com"]);
+        body["reply_to"] = "reply@example.com".into();
+        let params = parse_request(body.to_string().as_bytes()).unwrap();
+        assert_eq!(params.cc, vec!["cc1@example.com", "cc2@example.com"]);
+        assert_eq!(params.bcc, vec!["bcc@example.com"]);
+        assert_eq!(params.reply_to, Some("reply@example.com".to_string()));
+    }
+
+    #[test]
+    fn defaults_cc_bcc_reply_to_when_omitted() {
+        let params = parse_request(valid_json().to_string().as_bytes()).unwrap();
+        assert!(params.cc.is_empty());
+        assert!(params.bcc.is_empty());
+        assert_eq!(params.reply_to, None);
+    }
+
+    #[test]
+    fn rejects_invalid_cc_address() {
+        let mut body = valid_json();
+        body["cc"] = serde_json::json!(["not-an-email"]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("cc"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_bcc_address() {
+        let mut body = valid_json();
+        body["bcc"] = serde_json::json!(["not-an-email"]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("bcc"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_invalid_reply_to_address() {
+        let mut body = valid_json();
+        body["reply_to"] = "not-an-email".into();
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("reply_to"), "error was: {err}");
+    }
+
+    #[test]
+    fn accepts_attachment_with_content_type() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"hello world");
+        body["attachments"] = serde_json::json!([
+            {"filename": "hi.txt", "content_type": "text/plain", "content_base64": encoded}
+        ]);
+        let params = parse_request(body.to_string().as_bytes()).unwrap();
+        assert_eq!(params.attachments.len(), 1);
+        assert_eq!(params.attachments[0].filename, "hi.txt");
+        assert_eq!(params.attachments[0].content_type, "text/plain");
+        assert_eq!(params.attachments[0].data, b"hello world");
+    }
+
+    #[test]
+    fn defaults_attachment_content_type_when_omitted() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"data");
+        body["attachments"] =
+            serde_json::json!([{"filename": "f.bin", "content_base64": encoded}]);
+        let params = parse_request(body.to_string().as_bytes()).unwrap();
+        assert_eq!(params.attachments[0].content_type, DEFAULT_ATTACHMENT_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn defaults_attachments_to_empty_when_omitted() {
+        let params = parse_request(valid_json().to_string().as_bytes()).unwrap();
+        assert!(params.attachments.is_empty());
+    }
+
+    #[test]
+    fn rejects_attachment_missing_filename() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"data");
+        body["attachments"] = serde_json::json!([{"content_base64": encoded}]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("filename"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_attachment_invalid_base64() {
+        let mut body = valid_json();
+        body["attachments"] =
+            serde_json::json!([{"filename": "f.bin", "content_base64": "not-valid-base64!!"}]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("base64"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_attachment_over_per_file_cap() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let big = vec![0u8; MAX_ATTACHMENT_BYTES + 1];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&big);
+        body["attachments"] =
+            serde_json::json!([{"filename": "big.bin", "content_base64": encoded}]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("exceeds"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_attachments_over_total_cap() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let chunk = vec![0u8; MAX_ATTACHMENT_BYTES];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&chunk);
+        // 3 files at MAX_ATTACHMENT_BYTES each exceeds MAX_TOTAL_ATTACHMENT_BYTES (25MiB)
+        // while each stays under the per-file 10MiB cap.
+        body["attachments"] = serde_json::json!([
+            {"filename": "a.bin", "content_base64": encoded},
+            {"filename": "b.bin", "content_base64": encoded},
+            {"filename": "c.bin", "content_base64": encoded},
+        ]);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("total"), "error was: {err}");
+    }
+
+    #[test]
+    fn rejects_too_many_attachments() {
+        use base64::Engine;
+        let mut body = valid_json();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
+        let atts: Vec<_> = (0..=MAX_ATTACHMENTS)
+            .map(|i| serde_json::json!({"filename": format!("f{i}.bin"), "content_base64": encoded}))
+            .collect();
+        body["attachments"] = serde_json::json!(atts);
+        let err = parse_request(body.to_string().as_bytes()).unwrap_err();
+        assert!(err.contains("attachments"), "error was: {err}");
     }
 
     #[test]

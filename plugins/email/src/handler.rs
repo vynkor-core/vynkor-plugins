@@ -18,6 +18,30 @@ impl<T: std::io::Read + std::io::Write> ImapStream for T {}
 const SMTP_STUB_ENV: &str = "EMAIL_PLUGIN_SMTP_STUB";
 const IMAP_STUB_ENV: &str = "EMAIL_PLUGIN_IMAP_STUB";
 
+/// Total attempts (first send + retries) for a transient SMTP failure
+/// (421 "service not available", 450 "mailbox busy", etc — the same class
+/// `lettre::transport::smtp::Error::is_transient` flags). Permanent errors
+/// (bad address, auth failure) never retry — retrying can't fix them and
+/// only delays the caller's error.
+const RETRY_MAX_ATTEMPTS: u32 = 3;
+
+/// Backoff cap so a flaky relay can't turn one `email_send` call into a
+/// multi-minute hang; `timeout_ms` already bounds each individual attempt.
+const RETRY_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// True if attempt number `attempt` (1-based, the attempt that just failed)
+/// should be followed by a retry, given whether that failure was transient.
+fn should_retry_send(attempt: u32, is_transient: bool) -> bool {
+    is_transient && attempt < RETRY_MAX_ATTEMPTS
+}
+
+/// Exponential backoff before attempt `attempt + 1` (1-based `attempt` is
+/// the one that just failed), capped at [`RETRY_MAX_BACKOFF`].
+fn backoff_delay(attempt: u32) -> std::time::Duration {
+    let base = std::time::Duration::from_millis(200) * 2u32.pow(attempt.saturating_sub(1));
+    base.min(RETRY_MAX_BACKOFF)
+}
+
 fn unix_millis() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -58,13 +82,54 @@ fn build_message(params: &EmailSendParams) -> Result<lettre::Message, String> {
         ContentType::TEXT_PLAIN
     };
 
-    lettre::Message::builder()
+    let mut builder = lettre::Message::builder()
         .from(Mailbox::new(None, from))
-        .to(Mailbox::new(None, to))
-        .subject(params.subject.clone())
-        .header(content_type)
-        .body(params.body.clone())
-        .map_err(|e| format!("failed to build email message: {e}"))
+        .to(Mailbox::new(None, to));
+
+    for addr in &params.cc {
+        let cc: Address = addr
+            .parse()
+            .map_err(|e| format!("invalid cc address '{addr}': {e}"))?;
+        builder = builder.cc(Mailbox::new(None, cc));
+    }
+    for addr in &params.bcc {
+        let bcc: Address = addr
+            .parse()
+            .map_err(|e| format!("invalid bcc address '{addr}': {e}"))?;
+        builder = builder.bcc(Mailbox::new(None, bcc));
+    }
+    if let Some(reply_to) = &params.reply_to {
+        let reply_to: Address = reply_to
+            .parse()
+            .map_err(|e| format!("invalid reply_to address '{reply_to}': {e}"))?;
+        builder = builder.reply_to(Mailbox::new(None, reply_to));
+    }
+
+    let builder = builder.subject(params.subject.clone());
+
+    if params.attachments.is_empty() {
+        builder
+            .header(content_type)
+            .body(params.body.clone())
+            .map_err(|e| format!("failed to build email message: {e}"))
+    } else {
+        use lettre::message::{Attachment, MultiPart, SinglePart};
+
+        let mut multipart = MultiPart::mixed().singlepart(SinglePart::builder().header(content_type).body(params.body.clone()));
+        for att in &params.attachments {
+            let mime: lettre::message::header::ContentType = att
+                .content_type
+                .parse()
+                .map_err(|e| format!("attachment '{}' has invalid content_type: {e}", att.filename))?;
+            multipart = multipart.singlepart(
+                Attachment::new(att.filename.clone()).body(att.data.clone(), mime),
+            );
+        }
+
+        builder
+            .multipart(multipart)
+            .map_err(|e| format!("failed to build email message: {e}"))
+    }
 }
 
 /// Handle one `email_send` action end to end. Returns the JSON to place in
@@ -127,10 +192,17 @@ pub async fn handle_email_send(
         .timeout(Some(std::time::Duration::from_millis(params.timeout_ms)))
         .build();
 
-    mailer
-        .send(email)
-        .await
-        .map_err(|e| format!("SMTP send failed: {e}"))?;
+    let mut attempt = 1;
+    loop {
+        match mailer.send(email.clone()).await {
+            Ok(_) => break,
+            Err(e) if should_retry_send(attempt, e.is_transient()) => {
+                tokio::time::sleep(backoff_delay(attempt)).await;
+                attempt += 1;
+            }
+            Err(e) => return Err(format!("SMTP send failed after {attempt} attempt(s): {e}")),
+        }
+    }
 
     serde_json::to_vec(&serde_json::json!({
         "message_id": message_id,
@@ -208,6 +280,114 @@ pub async fn handle_email_list(
     .map_err(|e| format!("IMAP task join failed: {e}"))??;
 
     serde_json::to_vec(&fetched).map_err(|e| format!("failed to encode response: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_params() -> EmailSendParams {
+        EmailSendParams {
+            to: "user@example.com".to_string(),
+            from: "sender@example.com".to_string(),
+            subject: "Hello".to_string(),
+            body: "Hi there".to_string(),
+            is_html: false,
+            credentials_env: "EMAIL_SMTP_PASS".to_string(),
+            smtp_host: "localhost".to_string(),
+            smtp_port: 587,
+            smtp_user: "sender@example.com".to_string(),
+            timeout_ms: 30000,
+            cc: vec![],
+            bcc: vec![],
+            reply_to: None,
+            attachments: vec![],
+        }
+    }
+
+    fn formatted(params: &EmailSendParams) -> String {
+        String::from_utf8(build_message(params).unwrap().formatted()).unwrap()
+    }
+
+    #[test]
+    fn message_has_no_cc_bcc_reply_to_headers_by_default() {
+        let raw = formatted(&base_params());
+        assert!(!raw.contains("Cc:"), "raw was: {raw}");
+        assert!(!raw.contains("Bcc:"), "raw was: {raw}");
+        assert!(!raw.contains("Reply-To:"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_cc_header_when_set() {
+        let mut params = base_params();
+        params.cc = vec!["cc1@example.com".to_string(), "cc2@example.com".to_string()];
+        let raw = formatted(&params);
+        assert!(raw.contains("Cc: cc1@example.com, cc2@example.com"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_bcc_recipients_without_bcc_header() {
+        // Bcc must never appear in the sent headers (that's the whole point
+        // of blind copy) — lettre's `.bcc()` adds an envelope recipient only.
+        let mut params = base_params();
+        params.bcc = vec!["hidden@example.com".to_string()];
+        let raw = formatted(&params);
+        assert!(!raw.contains("hidden@example.com"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_includes_reply_to_header_when_set() {
+        let mut params = base_params();
+        params.reply_to = Some("reply@example.com".to_string());
+        let raw = formatted(&params);
+        assert!(raw.contains("Reply-To: reply@example.com"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn message_is_multipart_with_attachment() {
+        let mut params = base_params();
+        params.attachments = vec![request::EmailAttachment {
+            filename: "hi.txt".to_string(),
+            content_type: "text/plain".to_string(),
+            data: b"hello attachment".to_vec(),
+        }];
+        let raw = formatted(&params);
+        assert!(raw.contains("multipart/mixed"), "raw was: {raw}");
+        assert!(raw.contains("filename=\"hi.txt\""), "raw was: {raw}");
+        assert!(raw.contains("Hi there"), "body missing, raw was: {raw}");
+    }
+
+    #[test]
+    fn message_without_attachments_stays_singlepart() {
+        let raw = formatted(&base_params());
+        assert!(!raw.contains("multipart/mixed"), "raw was: {raw}");
+    }
+
+    #[test]
+    fn retries_on_transient_error_below_attempt_cap() {
+        assert!(should_retry_send(1, true));
+        assert!(should_retry_send(RETRY_MAX_ATTEMPTS - 1, true));
+    }
+
+    #[test]
+    fn does_not_retry_once_attempt_cap_reached() {
+        assert!(!should_retry_send(RETRY_MAX_ATTEMPTS, true));
+    }
+
+    #[test]
+    fn does_not_retry_permanent_error() {
+        assert!(!should_retry_send(1, false));
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_and_is_capped() {
+        let d1 = backoff_delay(1);
+        let d2 = backoff_delay(2);
+        let d3 = backoff_delay(3);
+        assert!(d2 > d1, "d1={d1:?} d2={d2:?}");
+        assert!(d3 > d2, "d2={d2:?} d3={d3:?}");
+        assert!(d3 <= RETRY_MAX_BACKOFF, "d3={d3:?} exceeds cap");
+    }
 }
 
 fn fetch_via_imap_sync(

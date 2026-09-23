@@ -32,7 +32,13 @@ Request (`ActionRequest.params_json`):
   "smtp_host": "smtp.example.com",
   "smtp_port": 587,
   "smtp_user": "smtp-login",
-  "timeout_ms": 30000
+  "timeout_ms": 30000,
+  "cc": ["cc1@example.com", "cc2@example.com"],
+  "bcc": ["hidden@example.com"],
+  "reply_to": "replies@example.com",
+  "attachments": [
+    {"filename": "report.txt", "content_type": "text/plain", "content_base64": "aGVsbG8="}
+  ]
 }
 ```
 
@@ -57,6 +63,26 @@ Request (`ActionRequest.params_json`):
 - `smtp_port` — optional, default `587` (SMTP submission).
 - `smtp_user` — optional SMTP auth username, default the `from` address.
 - `timeout_ms` — optional, default and cap `30000` (SMTP connection timeout).
+- `cc` — optional array of addresses, each validated the same as `to`. Added
+  as ordinary `Cc:` header recipients (visible to every recipient).
+- `bcc` — optional array of addresses, same validation. Added as envelope-only
+  recipients — **never** appear in any header of the sent message (that's the
+  point of blind copy).
+- `reply_to` — optional single address, same validation. Sets `Reply-To:`.
+- `attachments` — optional array, max 10 per call. Each entry: `filename`
+  (required, non-empty), `content_type` (optional, defaults to
+  `application/octet-stream`), `content_base64` (required, base64-encoded
+  bytes). Per-file cap 10 MiB decoded, 25 MiB decoded total across all
+  attachments. Sending any attachment switches the message to
+  `multipart/mixed`; with none, the message stays single-part as before.
+
+Transient SMTP failures (a `4xx` response — 421 "service not available", 450
+"mailbox busy", ...) are retried automatically, up to 3 total attempts with
+exponential backoff (200ms, 400ms, capped at 2s). A connection-level failure
+(DNS, TCP timeout/refused) is not an SMTP response and is not retried — there
+is nothing a retry can fix there, and it would only delay the caller past
+`timeout_ms`. Permanent SMTP errors (bad address, auth rejected) never retry
+either.
 
 Response (`ActionResponse.data_json`) on success:
 
