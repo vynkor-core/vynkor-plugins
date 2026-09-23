@@ -1,0 +1,16 @@
+[
+  {"id":57,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Audio/Sink","client.id":32,"node.name":"alsa_output.pci-0000_00_1b.0.analog-stereo","node.description":"Built-in Audio Analog Stereo","object.serial":57},"params":{"Props":[{"volume":1.0,"mute":false,"channelVolumes":[0.614138,0.614138]}]}}},
+  {"id":34,"type":"PipeWire:Interface:Node","info":{"state":"suspended","props":{"media.class":"Audio/Sink","client.id":32,"node.name":"bluez_output.41_42_31_87_87_59.1","node.description":"JBL Flip 5","object.serial":59},"params":{"Props":[{"volume":1.0,"mute":false,"channelVolumes":[0.063997,0.063997]}]}}},
+  {"id":76,"type":"PipeWire:Interface:Client","info":{"props":{"application.name":"Music Player Daemon","application.process.binary":"mpd (deleted)","pipewire.sec.pid":1171,"application.process.id":1171}}},
+  {"id":73,"type":"PipeWire:Interface:Node","info":{"state":"idle","props":{"media.class":"Stream/Output/Audio","application.name":"Music Player Daemon","client.id":76,"media.name":" - ","node.name":"mpd.PipeWire","object.serial":8597},"params":{"Props":[{"volume":1.0,"mute":false,"channelVolumes":[0.085184,0.085184]}]}}},
+  {"id":74,"type":"PipeWire:Interface:Link","info":{"output-node-id":73,"input-node-id":57,"state":"init"}},
+  {"id":81,"type":"PipeWire:Interface:Link","info":{"output-node-id":73,"input-node-id":57,"state":"init"}},
+  {"id":91,"type":"PipeWire:Interface:Client","info":{"props":{"application.name":"Spotify","application.process.binary":"spotify","pipewire.sec.pid":3499887,"application.process.id":3499887}}},
+  {"id":78,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Output/Audio","application.name":"Spotify","client.id":91,"media.name":"Spotify","node.name":"spotify","object.serial":36188},"params":{"Props":[{"volume":1.0,"mute":false,"channelVolumes":[0.125006,0.125006]}]}}},
+  {"id":99,"type":"PipeWire:Interface:Link","info":{"output-node-id":78,"input-node-id":57,"state":"active"}},
+  {"id":98,"type":"PipeWire:Interface:Link","info":{"output-node-id":78,"input-node-id":57,"state":"active"}},
+  {"id":120,"type":"PipeWire:Interface:Client","info":{"props":{"application.name":"Firefox","application.process.binary":"firefox","pipewire.sec.pid":5002,"application.process.id":5002}}},
+  {"id":121,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Output/Audio","application.name":"Firefox","client.id":120,"media.name":"YouTube","node.name":"Firefox","object.serial":40001},"params":{"Props":[{"volume":1.0,"mute":true,"channelVolumes":[1.0,1.0]}]}}},
+  {"id":122,"type":"PipeWire:Interface:Link","info":{"output-node-id":121,"input-node-id":34,"state":"active"}},
+  {"id":130,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"Recorder","node.name":"rec"},"params":{}}}
+]

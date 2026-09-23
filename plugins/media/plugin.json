@@ -22,7 +22,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name (org.mpris.MediaPlayer2.<name>); omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           },
           "uri": {
             "type": "string",
@@ -36,6 +36,10 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -46,14 +50,14 @@
     },
     {
       "name": "media_pause",
-      "description": "Pause playback on an MPRIS player without changing track or position; always ends paused (use media_play to resume, media_play_pause to toggle).",
+      "description": "Pause playback without changing track or position; always ends paused. Without `player`, pauses every player that is currently playing (\"pause the music\") and returns them in `players` (use media_play to resume, media_play_pause to toggle).",
       "risk": "low",
       "input": {
         "type": "object",
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name or short name (spotify, firefox). Omit to act on EVERY currently playing player (no-op when nothing plays)."
           }
         },
         "additionalProperties": true
@@ -63,6 +67,13 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "players": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The MPRIS players that were acted on (empty when nothing was playing)."
           }
         },
         "required": [
@@ -73,14 +84,14 @@
     },
     {
       "name": "media_play_pause",
-      "description": "Toggle an MPRIS player between playing and paused (whichever it currently isn't) and report the resulting `playing` state; use media_play or media_pause instead when you need a specific state rather than a toggle.",
+      "description": "Toggle playback. With `player`: flips that player between playing and paused and reports the resulting `playing`. Without `player`: if anything is playing, pauses all of it; otherwise resumes the most recently paused player. Prefer media_play / media_pause when the intended end state is known.",
       "risk": "low",
       "input": {
         "type": "object",
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -94,6 +105,17 @@
           "playing": {
             "type": "boolean",
             "description": "Playback state after the toggle."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
+          },
+          "players": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Without `player` and with something playing: every player that was paused."
           }
         },
         "required": [
@@ -112,7 +134,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -122,6 +144,10 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -139,7 +165,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -149,6 +175,10 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -159,14 +189,14 @@
     },
     {
       "name": "media_stop",
-      "description": "Stop playback on an MPRIS player entirely; unlike media_pause, some players reset or drop the playback position on stop rather than keeping it for resume.",
+      "description": "Stop playback entirely; without `player` stops every player that is currently playing. Unlike media_pause, some players reset or drop the playback position on stop rather than keeping it for resume.",
       "risk": "low",
       "input": {
         "type": "object",
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name or short name (spotify, firefox). Omit to act on EVERY currently playing player (no-op when nothing plays)."
           }
         },
         "additionalProperties": true
@@ -176,6 +206,13 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "players": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The MPRIS players that were acted on (empty when nothing was playing)."
           }
         },
         "required": [
@@ -198,7 +235,7 @@
           },
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "required": [
@@ -212,6 +249,10 @@
           "position_ms": {
             "type": "integer",
             "description": "Resulting position in milliseconds."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -233,7 +274,7 @@
           },
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "required": [
@@ -247,6 +288,10 @@
           "position_ms": {
             "type": "integer",
             "description": "Requested target position in milliseconds after applying the offset."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -257,7 +302,7 @@
     },
     {
       "name": "media_volume",
-      "description": "Set an MPRIS player's volume via `level`, accepted as either a 0.0-1.0 fraction or a 0-100 integer percentage — note the ambiguity: JSON `1` (integer) means 1%, while `1.0` (float) means 100%; send a float for a fraction and an integer for a percentage.",
+      "description": "Set an MPRIS player's volume via `level`, accepted as either a 0.0-1.0 fraction or a 0-100 integer percentage — note the ambiguity: JSON `1` (integer) means 1%, while `1.0` (float) means 100%; send a float for a fraction and an integer for a percentage. This sets the player's own MPRIS volume, which some players (browsers) ignore or only partly honour; media_stream_volume changes the app's audio stream in the system mixer and works for every app.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -273,7 +318,7 @@
           },
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "required": [
@@ -287,6 +332,10 @@
           "volume": {
             "type": "number",
             "description": "Resulting volume as a 0.0..1.0 fraction."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -304,7 +353,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -353,6 +402,16 @@
               "Playlist"
             ],
             "description": "Loop mode."
+          },
+          "stream": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "description": "The player's audio streams in the system mixer (id, app, volume, muted, running, sink), null when it has none or audio tools are unavailable.",
+            "items": {
+              "type": "object"
+            }
           }
         },
         "required": [
@@ -406,7 +465,7 @@
           },
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "required": [
@@ -419,6 +478,10 @@
         "properties": {
           "shuffle": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -448,7 +511,7 @@
           },
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for the default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "required": [
@@ -466,6 +529,10 @@
               "Track",
               "Playlist"
             ]
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -483,7 +550,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -493,6 +560,10 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
@@ -510,7 +581,7 @@
         "properties": {
           "player": {
             "type": "string",
-            "description": "MPRIS player name; omit for default player."
+            "description": "MPRIS player: full bus name (org.mpris.MediaPlayer2.spotify) or short name (spotify, firefox). Omit to target the active player: the one playing (ties broken by which stream is actually audible), else the most recently paused; several playing -> ERR_MEDIA_AMBIGUOUS listing them."
           }
         },
         "additionalProperties": true
@@ -520,10 +591,258 @@
         "properties": {
           "ok": {
             "type": "boolean"
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
           }
         },
         "required": [
           "ok"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "media_streams",
+      "description": "List apps currently producing audio (per-application streams in the PipeWire/PulseAudio mixer) with their volume, mute state, whether they are audible right now, the output device they play on, and the owning MPRIS player; also lists available output devices (`sinks`). Use this to see what is making sound and to find `stream`/`app`/`sink` values for the media_stream_* actions.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Only streams whose application name or binary contains this (case-insensitive)."
+          }
+        },
+        "additionalProperties": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "backend": {
+            "type": "string",
+            "enum": [
+              "pipewire",
+              "pulse"
+            ]
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Audio stream: id, app, media_name?, pid?, binary?, volume (0.0-1.0 mixer scale), muted, running, sink? (output device node name), and in media_streams also audible and player? (owning MPRIS player).",
+              "additionalProperties": true
+            }
+          },
+          "sinks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "name"
+              ]
+            }
+          }
+        },
+        "required": [
+          "backend",
+          "streams",
+          "sinks"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "media_stream_volume",
+      "description": "Set the mixer volume of one application's audio (e.g. only Firefox or only Spotify quieter) without touching other apps or the master volume; works for any app, including ones whose MPRIS volume is ignored. `level` is a 0.0-1.0 fraction or 0-100 integer percent (integer 1 = 1%, float 1.0 = 100%). Target: `stream` > `app` > `player`; with none of them, the active player's streams (same resolution as media_pause/media_next).",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "description": "Target volume: a 0.0..1.0 fraction or a 0..100 integer percentage.",
+            "type": [
+              "number",
+              "integer"
+            ],
+            "minimum": 0,
+            "maximum": 100
+          },
+          "stream": {
+            "type": "integer",
+            "description": "Stream id from media_streams (most specific)."
+          },
+          "app": {
+            "type": "string",
+            "description": "Case-insensitive substring of the application name or binary (\"firefox\", \"telegram\"). Affects every stream of that app."
+          },
+          "player": {
+            "type": "string",
+            "description": "MPRIS player (full or short name); its streams are found by process id."
+          }
+        },
+        "required": [
+          "level"
+        ],
+        "additionalProperties": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Audio stream: id, app, media_name?, pid?, binary?, volume (0.0-1.0 mixer scale), muted, running, sink? (output device node name), and in media_streams also audible and player? (owning MPRIS player).",
+              "additionalProperties": true
+            },
+            "description": "The affected streams re-read after the change."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
+          }
+        },
+        "required": [
+          "ok",
+          "streams"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "media_stream_mute",
+      "description": "Mute, unmute or toggle one application's audio in the mixer (playback continues silently; use media_pause to actually pause). `mode` is on/off/toggle; toggling an app with several streams (browser tabs) mutes all of them if any is unmuted, else unmutes all. Target: `stream` > `app` > `player`; with none of them, the active player's streams (same resolution as media_pause/media_next).",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "on",
+              "off",
+              "toggle"
+            ],
+            "description": "on = mute, off = unmute, toggle."
+          },
+          "stream": {
+            "type": "integer",
+            "description": "Stream id from media_streams (most specific)."
+          },
+          "app": {
+            "type": "string",
+            "description": "Case-insensitive substring of the application name or binary (\"firefox\", \"telegram\"). Affects every stream of that app."
+          },
+          "player": {
+            "type": "string",
+            "description": "MPRIS player (full or short name); its streams are found by process id."
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "additionalProperties": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Audio stream: id, app, media_name?, pid?, binary?, volume (0.0-1.0 mixer scale), muted, running, sink? (output device node name), and in media_streams also audible and player? (owning MPRIS player).",
+              "additionalProperties": true
+            },
+            "description": "The affected streams re-read after the change."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
+          }
+        },
+        "required": [
+          "ok",
+          "streams"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "media_stream_move",
+      "description": "Move one application's audio to another output device (e.g. Spotify to the Bluetooth speaker, Firefox to headphones) without changing the system default output; the choice is remembered for that app by the session manager. `sink` is an id, node name, or unique case-insensitive part of a device name/description from media_streams' `sinks`. Target: `stream` > `app` > `player`; with none of them, the active player's streams (same resolution as media_pause/media_next).",
+      "risk": "medium",
+      "input": {
+        "type": "object",
+        "properties": {
+          "sink": {
+            "type": "string",
+            "description": "Output device: id, node name, or unique part of its name/description."
+          },
+          "stream": {
+            "type": "integer",
+            "description": "Stream id from media_streams (most specific)."
+          },
+          "app": {
+            "type": "string",
+            "description": "Case-insensitive substring of the application name or binary (\"firefox\", \"telegram\"). Affects every stream of that app."
+          },
+          "player": {
+            "type": "string",
+            "description": "MPRIS player (full or short name); its streams are found by process id."
+          }
+        },
+        "required": [
+          "sink"
+        ],
+        "additionalProperties": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "streams": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "Audio stream: id, app, media_name?, pid?, binary?, volume (0.0-1.0 mixer scale), muted, running, sink? (output device node name), and in media_streams also audible and player? (owning MPRIS player).",
+              "additionalProperties": true
+            },
+            "description": "The affected streams re-read after the change."
+          },
+          "player": {
+            "type": "string",
+            "description": "The MPRIS player that was acted on."
+          },
+          "sink": {
+            "type": "object",
+            "description": "The output device the streams were moved to."
+          }
+        },
+        "required": [
+          "ok",
+          "streams"
         ],
         "additionalProperties": false
       }
@@ -536,10 +855,6 @@
       "MEDIA_PLUGIN_PLAYERS": {
         "type": "string",
         "description": "Allowlist mode (default allow-all): comma-separated MPRIS player names (org.mpris.MediaPlayer2.<name>) this plugin may control."
-      },
-      "MEDIA_PLUGIN_DEFAULT_PLAYER": {
-        "type": "string",
-        "description": "MPRIS player name used when a request omits `player`. Unset = first available player."
       }
     },
     "additionalProperties": true

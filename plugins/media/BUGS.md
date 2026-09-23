@@ -2,6 +2,25 @@
 
 > File intentionally kept inside the plugin tree so future fixes can link commits to entries here. Each entry has `scope`, `repro`, `expected`, `actual`, `root cause` (if known) and `fix idea`. Triaged by severity. Updated for v0.0.2 (2026-08-20 real test, was 0.2.0).
 
+## Fixed on feat/media-streams (unreleased, 2026-09-23)
+
+### FIXED BUG-5 — every D-Bus call fails under the kernel sandbox (critical)
+
+- **Scope:** all MPRIS actions when `plugins.d/media.yaml` has `sandbox: true` (the `vynm install` default).
+- **Repro:** `media_list_players` → `ERR_MEDIA_BUS_UNAVAILABLE: D-Bus handshake failed: Exhausted available AUTH mechanisms`.
+- **Root cause:** `vynkor/src/plugins/shim.rs` unshares a user namespace with `uid_map "0 <uid> 1"`; zbus 4.4 sends `AUTH EXTERNAL hex(geteuid())` = uid 0, the bus sees peer uid 1000 and rejects.
+- **Fix:** `src/bus.rs` — standard connect first, then an empty-identity `AUTH EXTERNAL` handshake (as sd-bus does; the daemon uses peer credentials), `Builder::authenticated_socket`, explicit `Hello`. Verified live under the sandbox.
+- **Wider note:** any other zbus plugin running with `sandbox: true` has the same failure.
+
+### FIXED BUG-6 — default player = alphabetically first (high)
+
+- **Repro:** `mpd` paused + `spotify` playing → `media_pause {}` paused `mpd`.
+- **Fix:** active-player resolution (`src/resolve.rs`); `MEDIA_PLUGIN_DEFAULT_PLAYER` removed.
+
+### FIXED BUG-7 — `media_raise` / `media_quit` never dispatched (medium)
+
+- Declared in `plugin.json` and the manifest list, missing from `main.rs` dispatch → `unknown action`. Wired.
+
 ## Fixed in 0.2.0
 
 ### FIXED BUG-3 — `media_play_pause` race reports wrong `playing` (low) — fixed

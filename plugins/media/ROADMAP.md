@@ -44,16 +44,28 @@ needs `PERMISSION_EVENT_PUBLISH` plus an outbound path from the watcher task;
 the SDK's sequential serve loop owns `VynkorClient` exclusively (single-reader
 rule, `docs/PLUGIN_AUTHORING.md` §1), so events wait until the loop migration.
 
+## Unreleased — per-app streams (19 actions), branch feat/media-streams
+
+- **Streams:** `media_streams`, `media_stream_volume`, `media_stream_mute`, `media_stream_move` — per-application mixer control (only Firefox quieter, Spotify to the Bluetooth speaker) via `pw-dump`/`wpctl`/`pw-metadata`, `pactl` fallback. Host tools instead of `pipewire-rs`: no libpipewire link dependency, so the plugin still loads (and MPRIS keeps working) where PipeWire is absent.
+- **Active player instead of a default:** live-state resolution (`resolve.rs`), pause/stop-all without `player`, short player names.
+- **Sandbox D-Bus fix:** empty-identity `AUTH EXTERNAL` fallback (`bus.rs`) — MPRIS was dead under `sandbox: true`.
+- Verified live on `spotify` + `mpd` under the sandbox (2026-09-23): tie → `ERR_MEDIA_AMBIGUOUS`; muted Spotify → resolution picks audible mpd; `media_pause {}` pauses both; stream volume/mute/move applied and read back.
+
+Next for streams:
+- Ducking: `sound`/`tts` lower the active player's *stream* volume while speaking (stream level works for every app, MPRIS volume does not).
+- Firefox under the sandbox joins by name only (PID namespace hides host `/proc`); several Firefox instances then share one match. A kernel-side option to keep the host PID namespace for `media` would restore the exact join.
+- `sys_audio_output_set` (default sink) belongs in `system` next to `sys_volume`.
+
 ## v1.2 — loop migration + MPD/mpv hardening
 
 - Migrate to the calendar-style single-reader select loop (RPC proxy + outbound channel); then publish `media.state_changed` opt-in behind declared `PERMISSION_EVENT_PUBLISH`.
 - MPD `NoTrack` handling done (0.2.0). Next: `media_queue`/`media_playlist` (TrackList `GetTracksMetadata` + `AddTrack`/`RemoveTrack`/`GoTo`) for MPD, gated behind `MEDIA_PLUGIN_ENABLE_TRACKLIST=false` default (browsers don't implement TrackList).
 
-## v2 — remote providers (requires `network` + `secrets`)
+## v2 — remote providers → separate plugins
 
-- `media_search {query, limit}` + `media_play {uri}` for Spotify/YouTube Music via `network.http_request`, keys from `secrets` vault (`SPOTIFY_ACCESS_TOKEN`, `YOUTUBE_API_KEY` via `SECRETS_PLUGIN_MASTER_KEY`). Adds `PERMISSION_NETWORK` + `PERMISSION_SECRETS` (caller of gated actions).
-- System volume (`pactl`/`wpctl`) via `PERMISSION_SYSTEM` optional mode — currently `media_volume` only touches MPRIS player volume, not host mixer.
-- `config_schema` additions: `MEDIA_PLUGIN_SECRETS_ALLOWLIST`, `MEDIA_PLUGIN_SPOTIFY_MARKET` etc.
+- Spotify search/queue/"play X" moves to its own `spotify` plugin (Web API, OAuth via `secrets`, `network.http_request`); `media` stays the local control plane and keeps driving the Spotify app over MPRIS + its stream.
+- YouTube Music / other catalogues likewise as their own plugins, handing `media_play {uri}` or a local player (mpv) the result.
+- Host mixer: per-app volume added on feat/media-streams (`media_stream_*`); master volume stays `system`'s `sys_volume*`.
 
 ## Non-goals
 
