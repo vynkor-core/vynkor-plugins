@@ -6,8 +6,13 @@
 //! trait (sequential, one request at a time) and delegates every D-Bus call
 //! to the `mpris` module. See ROADMAP.md for the design rationale.
 
+mod audio;
+mod bus;
 mod manifest;
 mod mpris;
+mod resolve;
+mod runner;
+mod streams;
 
 use serde_json::Value;
 use vynkor_sdk::proto::{
@@ -47,6 +52,10 @@ impl Plugin for MediaPlugin {
                 "media_loop".to_string(),
                 "media_raise".to_string(),
                 "media_quit".to_string(),
+                "media_streams".to_string(),
+                "media_stream_volume".to_string(),
+                "media_stream_mute".to_string(),
+                "media_stream_move".to_string(),
             ],
             action_specs: manifest::action_specs(),
             ..Default::default()
@@ -152,7 +161,45 @@ async fn handle_action_request(req: ActionRequest) -> ActionResponse {
             Some(level) => mpris::set_volume(player.as_deref(), level).await,
             None => Err("ERR_MEDIA_BAD_PARAMS: missing or invalid `level`".to_string()),
         },
-        "media_status" => mpris::status(player.as_deref()).await,
+        "media_status" => match mpris::status(player.as_deref()).await {
+            Ok(mut v) => {
+                if let Some(p) = v["player"].as_str().map(str::to_string) {
+                    v["stream"] = audio::status_streams(&p).await;
+                }
+                Ok(v)
+            }
+            Err(e) => Err(e),
+        },
+        "media_raise" => mpris::raise(player.as_deref()).await,
+        "media_quit" => mpris::quit(player.as_deref()).await,
+        "media_streams" => match params.get("app") {
+            None | Some(Value::Null) => audio::list(None).await,
+            Some(v) => match v.as_str() {
+                Some(s) => audio::list(Some(s)).await,
+                None => Err("ERR_MEDIA_BAD_PARAMS: app must be string".to_string()),
+            },
+        },
+        "media_stream_volume" | "media_stream_mute" | "media_stream_move" => {
+            match audio::Target::from_params(&params, player.clone()) {
+                Err(e) => Err(e),
+                Ok(target) => match req.action.as_str() {
+                    "media_stream_volume" => match parse_volume(&params) {
+                        Some(level) => audio::set_volume(&target, level).await,
+                        None => Err("ERR_MEDIA_BAD_PARAMS: missing or invalid `level`".to_string()),
+                    },
+                    "media_stream_mute" => {
+                        match params.get("mode").and_then(Value::as_str).and_then(streams::MuteMode::parse) {
+                            Some(mode) => audio::set_mute(&target, mode).await,
+                            None => Err("ERR_MEDIA_BAD_PARAMS: missing or invalid `mode` (on/off/toggle)".to_string()),
+                        }
+                    }
+                    _ => match params.get("sink").and_then(Value::as_str).map(str::trim) {
+                        Some(sink) if !sink.is_empty() => audio::move_to(&target, sink).await,
+                        _ => Err("ERR_MEDIA_BAD_PARAMS: missing `sink` (id, name or description from media_streams)".to_string()),
+                    },
+                },
+            }
+        }
         "media_list_players" => mpris::list_players()
             .await
             .map(|players| serde_json::json!({ "players": players })),

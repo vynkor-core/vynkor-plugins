@@ -2,6 +2,25 @@
 
 All notable changes to `media` follow Keep a Changelog + SemVer. `plugin.json` `version` mirrors `Cargo.toml`.
 
+## [Unreleased] — per-app audio streams + active-player resolution (19 actions, 95 tests)
+
+### Added
+- Per-application audio streams (`streams.rs`, `audio.rs`): `media_streams` (apps making sound, volume/mute/audible/output device, owning MPRIS player, available sinks), `media_stream_volume`, `media_stream_mute`, `media_stream_move`. Targets `stream` id > `app` substring > `player` > active player.
+- Backends via host tools only, argv-only with 5s timeout (`runner.rs`): PipeWire `pw-dump` + `wpctl` + `pw-metadata` (all shipped by `pipewire`/`wireplumber`), `pactl -f json` fallback when `pw-dump` is absent. No new build/link dependencies.
+- Stream ↔ player join by PID: PipeWire client `pipewire.sec.pid` vs D-Bus `GetConnectionUnixProcessID`, stream-PID ancestor walk for browsers, app-name/binary heuristic fallback.
+- `media_status.stream` — the player's streams (volume, mute, sink), `null` when none.
+- Explicit `player` accepts short names: `spotify`, `firefox` (unique instance).
+- Every action result names the player(s) acted on (`player` / `players`).
+
+### Changed
+- **No default player.** A request without `player` targets the *active* player (`resolve.rs`): the one `Playing` (ties broken by which stream is actually audible), else the most recently paused; several candidates → `ERR_MEDIA_AMBIGUOUS` listing them. `media_pause` / `media_stop` without `player` act on every playing player; `media_play_pause` without `player` pauses everything playing or resumes the most recent player.
+- `MEDIA_PLUGIN_DEFAULT_PLAYER` removed (ignored if still set).
+
+### Fixed
+- Default resolution picked the alphabetically first player (`mpd`) while another (`spotify`) was playing, so "pause the music" hit the wrong player.
+- `media_raise` / `media_quit` were declared in the manifest but never dispatched (`unknown action`).
+- Every D-Bus call failed under the kernel sandbox (`sandbox: true`, the `vynm install` default): the user namespace maps inner uid 0 to the real uid, zbus 4 authenticates as uid 0 and the bus rejects it (`Exhausted available AUTH mechanisms`). `bus.rs` retries with an empty-identity `AUTH EXTERNAL` (what sd-bus does) and hands zbus the authenticated socket.
+
 ## [0.0.3] — 2026-08-21 — v1.1 polish (13 actions, 42 tests)
 
 ### Added

@@ -13,10 +13,11 @@ use std::time::Instant;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::Serialize;
-use zbus::Connection;
 use zbus::fdo::{DBusProxy, PropertiesProxy};
 use zbus::names::InterfaceName;
 use zvariant::{ObjectPath, OwnedValue, Value};
+
+use crate::resolve::{self, Candidate, Intent};
 
 const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -54,6 +55,10 @@ pub trait MprisBackend: Send + Sync {
     async fn set_loop_status(&self, player: &str, status: &str) -> Result<(), String>;
     async fn get_capability(&self, player: &str, prop: &str) -> Result<bool, String>;
     async fn call_root_method(&self, player: &str, method: &str) -> Result<(), String>;
+    /// Whether each player's audio stream is actually heard; players with no
+    /// matching stream are absent. Best-effort — an empty map just means
+    /// resolution can't use audibility to break ties.
+    async fn audible(&self, players: &[String]) -> HashMap<String, bool>;
 }
 
 // ---------------------------------------------------------------------------
@@ -65,9 +70,7 @@ pub struct RealBackend;
 #[async_trait]
 impl MprisBackend for RealBackend {
     async fn list_names(&self) -> Result<Vec<String>, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let proxy = DBusProxy::new(&conn)
             .await
             .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
@@ -84,9 +87,7 @@ impl MprisBackend for RealBackend {
         method: &str,
         arg: Option<&str>,
     ) -> Result<(), String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         if let Some(uri) = arg {
             conn.call_method(
                 Some(player),
@@ -112,9 +113,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn seek_offset(&self, player: &str, offset_us: i64) -> Result<(), String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         conn.call_method(
             Some(player),
             MPRIS_PATH,
@@ -128,9 +127,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn set_position(&self, player: &str, track_id: &str, position_us: i64) -> Result<(), String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let path = ObjectPath::try_from(track_id)
             .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: bad trackId '{track_id}': {e}"))?;
         conn.call_method(
@@ -155,9 +152,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_position(&self, player: &str) -> Result<i64, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -175,9 +170,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_volume(&self, player: &str) -> Result<f64, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -195,9 +188,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn set_volume(&self, player: &str, volume: f64) -> Result<(), String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -216,9 +207,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_playback_status(&self, player: &str) -> Result<String, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -236,9 +225,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_metadata(&self, player: &str) -> Result<HashMap<String, OwnedValue>, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -257,9 +244,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_rate(&self, player: &str) -> Result<f64, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -277,9 +262,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_shuffle(&self, player: &str) -> Result<bool, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -297,9 +280,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn set_shuffle(&self, player: &str, enabled: bool) -> Result<(), String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -318,9 +299,7 @@ impl MprisBackend for RealBackend {
     }
 
     async fn get_loop_status(&self, player: &str) -> Result<String, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -344,9 +323,7 @@ impl MprisBackend for RealBackend {
             "playlist" | "all" => "Playlist",
             _ => return Err(format!("ERR_MEDIA_BAD_PARAMS: invalid LoopStatus '{status}' (expected none/track/playlist)")),
         };
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -365,14 +342,12 @@ impl MprisBackend for RealBackend {
     }
 
     async fn call_root_method(&self, player: &str, method: &str) -> Result<(), String> {
-        let conn = Connection::session().await.map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         conn.call_method(Some(player), MPRIS_PATH, Some("org.mpris.MediaPlayer2"), method, &()).await.map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
         Ok(())
     }
     async fn get_capability(&self, player: &str, prop: &str) -> Result<bool, String> {
-        let conn = Connection::session()
-            .await
-            .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+        let conn = crate::bus::session().await?;
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
@@ -388,6 +363,25 @@ impl MprisBackend for RealBackend {
             .map_err(|e| wrap_control_err(player, &format!("get {prop}"), &e.to_string()))?;
         bool::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad {prop} type: {e}"))
     }
+
+    async fn audible(&self, players: &[String]) -> HashMap<String, bool> {
+        crate::audio::audible_map(players).await
+    }
+}
+
+/// PID of the process owning an MPRIS bus name — the join key to its
+/// PipeWire audio streams.
+pub async fn player_pid(player: &str) -> Result<u32, String> {
+    let conn = crate::bus::session().await?;
+    let proxy = DBusProxy::new(&conn)
+        .await
+        .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+    let name = zbus::names::BusName::try_from(player)
+        .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: bad player name '{player}': {e}"))?;
+    proxy
+        .get_connection_unix_process_id(name)
+        .await
+        .map_err(|e| wrap_control_err(player, "GetConnectionUnixProcessID", &e.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +428,7 @@ async fn watch_player(name: String) {
 }
 
 async fn run_watch(name: &str) -> Result<(), String> {
-    let conn = Connection::session().await.map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {e}"))?;
+    let conn = crate::bus::session().await?;
 
     let props = PropertiesProxy::builder(&conn)
         .destination(name.to_string())
@@ -498,6 +492,7 @@ fn handle_properties_changed(player: &str, sig: &zbus::fdo::PropertiesChanged) {
             }
             "PlaybackStatus" => {
                 if let Value::Str(s) = value {
+                    note_status_change(player);
                     if s.as_str() != "Playing" {
                         cache_note(player, None, Some(0.0));
                     }
@@ -588,13 +583,6 @@ fn allowlist() -> Option<Vec<String>> {
         .filter(|v| !v.is_empty())
 }
 
-fn default_player() -> Option<String> {
-    std::env::var("MEDIA_PLUGIN_DEFAULT_PLAYER")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-}
-
 fn is_allowed_with(list: &Option<Vec<String>>, name: &str) -> bool {
     match list {
         None => true,
@@ -602,30 +590,66 @@ fn is_allowed_with(list: &Option<Vec<String>>, name: &str) -> bool {
     }
 }
 
-fn resolve_player(requested: Option<&str>, available: &[String]) -> Result<String, String> {
-    let list = allowlist();
+static LAST_CHANGE: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn last_change() -> &'static Mutex<HashMap<String, Instant>> {
+    LAST_CHANGE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Record that a player's PlaybackStatus just changed (from the watcher, or
+/// from our own control call) — "resume" picks the most recent one.
+fn note_status_change(player: &str) {
+    last_change().lock().unwrap().insert(player.to_string(), Instant::now());
+}
+
+/// Resolve the target player(s) of a request. An explicit `player` accepts
+/// the full bus name or a short one (`spotify`, `firefox`). Without it the
+/// target comes from live state (see [`crate::resolve::choose`]) — there is
+/// no configured default player.
+async fn resolve_targets<B: MprisBackend>(
+    backend: &B,
+    requested: Option<&str>,
+    intent: Intent,
+) -> Result<Vec<String>, String> {
+    let available = list_players_with(backend).await?;
     if let Some(r) = requested {
-        if !is_allowed_with(&list, r) {
-            return Err(format!("ERR_MEDIA_PLAYER_NOT_ALLOWED: '{r}' not in MEDIA_PLUGIN_PLAYERS"));
-        }
-        if !available.contains(&r.to_string()) {
-            return Err(format!("ERR_MEDIA_PLAYER_NOT_FOUND: '{r}' not available (have: {available:?})"));
-        }
-        return Ok(r.to_string());
+        return match resolve::match_requested(r, &available) {
+            Ok(name) => Ok(vec![name]),
+            Err(e) if allowlist().is_some() && e.starts_with("ERR_MEDIA_PLAYER_NOT_FOUND") => Err(format!(
+                "ERR_MEDIA_PLAYER_NOT_ALLOWED: '{r}' not available or not in MEDIA_PLUGIN_PLAYERS (have: {available:?})"
+            )),
+            Err(e) => Err(e),
+        };
     }
-    if let Some(def) = default_player() {
-        if !is_allowed_with(&list, &def) {
-            return Err(format!("ERR_MEDIA_PLAYER_NOT_ALLOWED: default '{def}' not in allowlist"));
-        }
-        if available.contains(&def) {
-            return Ok(def);
+
+    let mut cands = Vec::with_capacity(available.len());
+    for name in available {
+        // A player that vanished between ListNames and here is just skipped.
+        let Ok(status) = backend.get_playback_status(&name).await else { continue };
+        let last = last_change().lock().unwrap().get(&name).copied();
+        cands.push(Candidate { name, status, audible: None, last_change: last });
+    }
+    if resolve::needs_audibility(&cands) {
+        let playing: Vec<String> =
+            cands.iter().filter(|c| c.status == "Playing").map(|c| c.name.clone()).collect();
+        let heard = backend.audible(&playing).await;
+        for c in &mut cands {
+            c.audible = heard.get(&c.name).copied();
         }
     }
-    available
-        .iter()
-        .find(|n| is_allowed_with(&list, n))
-        .cloned()
-        .ok_or_else(|| "ERR_MEDIA_NO_PLAYERS: no MPRIS players available".to_string())
+    resolve::choose(&cands, intent)
+}
+
+/// Exactly one target player (explicit or the active one).
+pub(crate) async fn resolve_one<B: MprisBackend>(backend: &B, requested: Option<&str>) -> Result<String, String> {
+    let mut v = resolve_targets(backend, requested, Intent::One).await?;
+    v.pop().ok_or_else(|| "ERR_MEDIA_NO_PLAYERS: no MPRIS players available".to_string())
+}
+
+/// The active player for a request without `player`, for callers outside
+/// this module (stream actions target the active player's audio).
+pub async fn active_player() -> Result<String, String> {
+    resolve_one(&RealBackend, None).await
 }
 
 // ---------------------------------------------------------------------------
@@ -659,33 +683,48 @@ async fn play_with<B: MprisBackend>(
     player: Option<&str>,
     uri: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanPlay", "play").await?;
     if let Some(u) = uri {
         backend.call_player_method(&target, "OpenUri", Some(u)).await?;
     }
     backend.call_player_method(&target, "Play", None).await?;
-    Ok(serde_json::json!({"ok": true}))
+    note_status_change(&target);
+    Ok(serde_json::json!({"ok": true, "player": target}))
 }
 
 pub async fn pause(player: Option<&str>) -> Result<serde_json::Value, String> {
     pause_with(&RealBackend, player).await
 }
+/// Without `player`, pauses every playing player ("pause the music").
 async fn pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
-    require_capability(backend, &target, "CanPause", "pause").await?;
-    backend.call_player_method(&target, "Pause", None).await?;
-    Ok(serde_json::json!({"ok": true}))
+    let targets = resolve_targets(backend, player, Intent::AllPlaying).await?;
+    for target in &targets {
+        require_capability(backend, target, "CanPause", "pause").await?;
+        backend.call_player_method(target, "Pause", None).await?;
+        note_status_change(target);
+    }
+    Ok(serde_json::json!({"ok": true, "players": targets}))
 }
 
 pub async fn play_pause(player: Option<&str>) -> Result<serde_json::Value, String> {
     play_pause_with(&RealBackend, player).await
 }
 async fn play_pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    if player.is_none() {
+        // Toggle without a target: something playing -> pause all of it,
+        // silence -> resume the most recent player (handled below).
+        let playing = resolve_targets(backend, None, Intent::AllPlaying).await?;
+        if !playing.is_empty() {
+            for target in &playing {
+                require_capability(backend, target, "CanPause", "play_pause").await?;
+                backend.call_player_method(target, "Pause", None).await?;
+                note_status_change(target);
+            }
+            return Ok(serde_json::json!({"ok": true, "playing": false, "players": playing}));
+        }
+    }
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanPause", "play_pause").await?;
     backend.call_player_method(&target, "PlayPause", None).await?;
     // BUG-3 fix: PlaybackStatus updates async via PropertiesChanged, so retry
@@ -708,39 +747,41 @@ async fn play_pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> 
             }
         }
     }
-    Ok(serde_json::json!({"ok": true, "playing": status == "Playing"}))
+    note_status_change(&target);
+    Ok(serde_json::json!({"ok": true, "playing": status == "Playing", "player": target}))
 }
 
 pub async fn next(player: Option<&str>) -> Result<serde_json::Value, String> {
     next_with(&RealBackend, player).await
 }
 async fn next_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanGoNext", "next").await?;
     backend.call_player_method(&target, "Next", None).await?;
-    Ok(serde_json::json!({"ok": true}))
+    Ok(serde_json::json!({"ok": true, "player": target}))
 }
 
 pub async fn prev(player: Option<&str>) -> Result<serde_json::Value, String> {
     prev_with(&RealBackend, player).await
 }
 async fn prev_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanGoPrevious", "prev").await?;
     backend.call_player_method(&target, "Previous", None).await?;
-    Ok(serde_json::json!({"ok": true}))
+    Ok(serde_json::json!({"ok": true, "player": target}))
 }
 
 pub async fn stop(player: Option<&str>) -> Result<serde_json::Value, String> {
     stop_with(&RealBackend, player).await
 }
+/// Without `player`, stops every playing player.
 async fn stop_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
-    backend.call_player_method(&target, "Stop", None).await?;
-    Ok(serde_json::json!({"ok": true}))
+    let targets = resolve_targets(backend, player, Intent::AllPlaying).await?;
+    for target in &targets {
+        backend.call_player_method(target, "Stop", None).await?;
+        note_status_change(target);
+    }
+    Ok(serde_json::json!({"ok": true, "players": targets}))
 }
 
 pub async fn seek(player: Option<&str>, position_ms: u64) -> Result<serde_json::Value, String> {
@@ -754,8 +795,9 @@ async fn seek_with<B: MprisBackend>(
     let target_us = (position_ms as i64)
         .checked_mul(1000)
         .ok_or_else(|| "ERR_MEDIA_BAD_PARAMS: position_ms overflow".to_string())?;
-    let reached_us = seek_absolute_to(backend, player, target_us).await?;
-    Ok(serde_json::json!({"position_ms": reached_us / 1000}))
+    let target = resolve_one(backend, player).await?;
+    let reached_us = seek_absolute_on(backend, &target, target_us).await?;
+    Ok(serde_json::json!({"position_ms": reached_us / 1000, "player": target}))
 }
 
 pub async fn seek_relative(player: Option<&str>, offset_ms: i64) -> Result<serde_json::Value, String> {
@@ -766,8 +808,7 @@ async fn seek_relative_with<B: MprisBackend>(
     player: Option<&str>,
     offset_ms: i64,
 ) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     let current = backend
         .get_position(&target)
         .await
@@ -780,17 +821,7 @@ async fn seek_relative_with<B: MprisBackend>(
         .ok_or_else(|| "ERR_MEDIA_BAD_PARAMS: seek target overflow".to_string())?
         .max(0);
     let reached_us = seek_absolute_on(backend, &target, target_us).await?;
-    Ok(serde_json::json!({"position_ms": reached_us / 1000}))
-}
-
-async fn seek_absolute_to<B: MprisBackend>(
-    backend: &B,
-    player: Option<&str>,
-    target_us: i64,
-) -> Result<i64, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
-    seek_absolute_on(backend, &target, target_us).await
+    Ok(serde_json::json!({"position_ms": reached_us / 1000, "player": target}))
 }
 
 /// Shared absolute-seek core: CanSeek guard, then `SetPosition` primary with
@@ -842,12 +873,11 @@ async fn set_volume_with<B: MprisBackend>(
     player: Option<&str>,
     level: f64,
 ) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanControl", "set volume").await?;
     let clamped = level.clamp(0.0, 1.0);
     backend.set_volume(&target, clamped).await?;
-    Ok(serde_json::json!({"volume": clamped}))
+    Ok(serde_json::json!({"volume": clamped, "player": target}))
 }
 
 pub async fn status(player: Option<&str>) -> Result<serde_json::Value, String> {
@@ -857,11 +887,7 @@ async fn status_with<B: MprisBackend>(
     backend: &B,
     player: Option<&str>,
 ) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    if available.is_empty() {
-        return Err("ERR_MEDIA_NO_PLAYERS: no MPRIS players available".to_string());
-    }
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     let playback = backend
         .get_playback_status(&target)
         .await
@@ -942,36 +968,32 @@ fn extrapolate_position(player: &str, raw_pos: i64, rate: f64, playback: &str) -
 
 pub async fn raise(player: Option<&str>) -> Result<serde_json::Value, String> { raise_with(&RealBackend, player).await }
 async fn raise_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     backend.call_root_method(&target, "Raise").await?;
-    Ok(serde_json::json!({"ok": true}))
+    Ok(serde_json::json!({"ok": true, "player": target}))
 }
 pub async fn quit(player: Option<&str>) -> Result<serde_json::Value, String> { quit_with(&RealBackend, player).await }
 async fn quit_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     backend.call_root_method(&target, "Quit").await?;
-    Ok(serde_json::json!({"ok": true}))
+    Ok(serde_json::json!({"ok": true, "player": target}))
 }
 
 pub async fn set_shuffle(player: Option<&str>, enabled: bool) -> Result<serde_json::Value, String> {
     set_shuffle_with(&RealBackend, player, enabled).await
 }
 async fn set_shuffle_with<B: MprisBackend>(backend: &B, player: Option<&str>, enabled: bool) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanControl", "set shuffle").await?;
     backend.set_shuffle(&target, enabled).await?;
-    Ok(serde_json::json!({"shuffle": enabled}))
+    Ok(serde_json::json!({"shuffle": enabled, "player": target}))
 }
 
 pub async fn set_loop(player: Option<&str>, mode: &str) -> Result<serde_json::Value, String> {
     set_loop_with(&RealBackend, player, mode).await
 }
 async fn set_loop_with<B: MprisBackend>(backend: &B, player: Option<&str>, mode: &str) -> Result<serde_json::Value, String> {
-    let available = list_players_with(backend).await?;
-    let target = resolve_player(player, &available)?;
+    let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanControl", "set loop").await?;
     backend.set_loop_status(&target, mode).await?;
     let normalized = backend.get_loop_status(&target).await.unwrap_or_else(|_| {
@@ -981,7 +1003,7 @@ async fn set_loop_with<B: MprisBackend>(backend: &B, player: Option<&str>, mode:
             _ => "Playlist".into(),
         }
     });
-    Ok(serde_json::json!({"loop_status": normalized}))
+    Ok(serde_json::json!({"loop_status": normalized, "player": target}))
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,13 +1199,18 @@ mod tests {
         shuffle: bool,
         loop_status: String,
         caps: HashMap<String, bool>,
+        /// Per-player PlaybackStatus overrides (else `status`).
+        statuses: HashMap<String, String>,
+        audible: HashMap<String, bool>,
+        calls: Mutex<Vec<(String, String)>>,
     }
     #[async_trait]
     impl MprisBackend for MockBackend {
         async fn list_names(&self) -> Result<Vec<String>, String> {
             Ok(self.names.clone())
         }
-        async fn call_player_method(&self, _player: &str, _method: &str, _arg: Option<&str>) -> Result<(), String> {
+        async fn call_player_method(&self, player: &str, method: &str, _arg: Option<&str>) -> Result<(), String> {
+            self.calls.lock().unwrap().push((player.to_string(), method.to_string()));
             Ok(())
         }
         async fn seek_offset(&self, _player: &str, _offset: i64) -> Result<(), String> {
@@ -1195,7 +1222,9 @@ mod tests {
         async fn get_position(&self, _player: &str) -> Result<i64, String> { Ok(self.position) }
         async fn get_volume(&self, _player: &str) -> Result<f64, String> { Ok(0.5) }
         async fn set_volume(&self, _player: &str, _v: f64) -> Result<(), String> { Ok(()) }
-        async fn get_playback_status(&self, _player: &str) -> Result<String, String> { Ok(self.status.clone()) }
+        async fn get_playback_status(&self, player: &str) -> Result<String, String> {
+            Ok(self.statuses.get(player).cloned().unwrap_or_else(|| self.status.clone()))
+        }
         async fn get_metadata(&self, _player: &str) -> Result<HashMap<String, OwnedValue>, String> {
             let mut m = HashMap::new();
             if let Some(tid) = &self.track_id {
@@ -1212,6 +1241,9 @@ mod tests {
         async fn get_capability(&self, _player: &str, prop: &str) -> Result<bool, String> {
             Ok(*self.caps.get(prop).unwrap_or(&true))
         }
+        async fn audible(&self, _players: &[String]) -> HashMap<String, bool> {
+            self.audible.clone()
+        }
     }
 
     fn mock(names: Vec<&str>, position: i64, status: &str, track_id: Option<&str>) -> MockBackend {
@@ -1225,16 +1257,105 @@ mod tests {
             shuffle: false,
             loop_status: "None".into(),
             caps: HashMap::new(),
+            statuses: HashMap::new(),
+            audible: HashMap::new(),
+            calls: Mutex::new(Vec::new()),
         }
     }
 
+    const SPOTIFY: &str = "org.mpris.MediaPlayer2.spotify";
+    const MPD: &str = "org.mpris.MediaPlayer2.mpd";
+    const FIREFOX: &str = "org.mpris.MediaPlayer2.firefox.instance_1_424";
+
+    /// mpd paused (sorts first), spotify + firefox as given.
+    fn three(spotify: &str, firefox: &str) -> MockBackend {
+        let mut b = mock(vec![FIREFOX, MPD, SPOTIFY], 0, "Paused", None);
+        b.statuses.insert(SPOTIFY.into(), spotify.into());
+        b.statuses.insert(FIREFOX.into(), firefox.into());
+        b
+    }
+
+    fn called(b: &MockBackend) -> Vec<(String, String)> {
+        b.calls.lock().unwrap().clone()
+    }
+
     #[tokio::test]
-    async fn resolve_first_available() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.spotify", "org.mpris.MediaPlayer2.vlc"], 0, "Playing", None);
-        let players = list_players_with(&b).await.unwrap();
-        assert!(players.contains(&"org.mpris.MediaPlayer2.spotify".to_string()));
-        let resolved = resolve_player(None, &players).unwrap();
-        assert_eq!(resolved, "org.mpris.MediaPlayer2.spotify");
+    async fn active_player_is_the_playing_one_not_the_first() {
+        // Regression: the old default resolved to `mpd` (alphabetically first)
+        // while Spotify was the one playing.
+        let b = three("Playing", "Paused");
+        let v = next_with(&b, None).await.unwrap();
+        assert_eq!(v["player"], SPOTIFY);
+        assert_eq!(called(&b), vec![(SPOTIFY.to_string(), "Next".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn two_playing_is_ambiguous_for_single_target_actions() {
+        let b = three("Playing", "Playing");
+        let err = next_with(&b, None).await.unwrap_err();
+        assert!(err.starts_with("ERR_MEDIA_AMBIGUOUS"), "{err}");
+        assert!(called(&b).is_empty());
+    }
+
+    #[tokio::test]
+    async fn audible_stream_breaks_the_tie() {
+        let mut b = three("Playing", "Playing");
+        b.audible.insert(SPOTIFY.into(), false);
+        b.audible.insert(FIREFOX.into(), true);
+        let v = seek_relative_with(&b, None, 1000).await.unwrap();
+        assert_eq!(v["player"], FIREFOX);
+    }
+
+    #[tokio::test]
+    async fn pause_without_player_pauses_everything_playing() {
+        let b = three("Playing", "Playing");
+        let v = pause_with(&b, None).await.unwrap();
+        assert_eq!(v["players"], serde_json::json!([FIREFOX, SPOTIFY]));
+        assert_eq!(
+            called(&b),
+            vec![(FIREFOX.to_string(), "Pause".to_string()), (SPOTIFY.to_string(), "Pause".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_when_nothing_plays_is_a_noop() {
+        let b = three("Paused", "Stopped");
+        let v = pause_with(&b, None).await.unwrap();
+        assert_eq!(v["players"], serde_json::json!([]));
+        assert!(called(&b).is_empty());
+    }
+
+    #[tokio::test]
+    async fn play_pause_without_player_pauses_all_playing() {
+        let b = three("Playing", "Playing");
+        let v = play_pause_with(&b, None).await.unwrap();
+        assert_eq!(v["playing"], false);
+        assert!(called(&b).iter().all(|(_, m)| m == "Pause"));
+        assert_eq!(called(&b).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn play_resumes_most_recently_changed_player() {
+        let b = three("Paused", "Stopped");
+        note_status_change(SPOTIFY);
+        let v = play_with(&b, None, None).await.unwrap();
+        assert_eq!(v["player"], SPOTIFY);
+    }
+
+    #[tokio::test]
+    async fn explicit_short_player_name_resolves() {
+        let b = three("Paused", "Playing");
+        let v = next_with(&b, Some("spotify")).await.unwrap();
+        assert_eq!(v["player"], SPOTIFY);
+        let v = next_with(&b, Some("firefox")).await.unwrap();
+        assert_eq!(v["player"], FIREFOX);
+    }
+
+    #[tokio::test]
+    async fn explicit_unknown_player_is_not_found() {
+        let b = three("Paused", "Playing");
+        let err = next_with(&b, Some("vlc")).await.unwrap_err();
+        assert!(err.starts_with("ERR_MEDIA_PLAYER_NOT_FOUND"), "{err}");
     }
 
     #[tokio::test]
