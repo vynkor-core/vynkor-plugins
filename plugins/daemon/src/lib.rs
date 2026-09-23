@@ -29,17 +29,11 @@ use vynkor_sdk::proto::{envelope, Envelope, EventPublish};
 
 use request::{parse_request, DaemonRequest};
 
-/// Slug of the plugin that receives mic's PCM stream and turns it into text.
-/// Fixed for v0.1: stt is the only shipped transcript provider.
-pub const STT_TARGET: &str = "stt";
-
-/// Kernel-namespaced event `stt` publishes when the (opt-in) energy VAD
-/// hears speech begin on a listen stream.
-pub const EV_SPEECH_STARTED: &str = "plugin.stt.stt_speech_started";
-
-/// Kernel-namespaced event `stt` publishes when an utterance ends —
-/// `silence_ms` of quiet after real speech. This is the vad-mode endpoint.
-pub const EV_SPEECH_ENDED: &str = "plugin.stt.stt_speech_ended";
+/// Default slug of the plugin that receives mic's PCM stream and turns it
+/// into text: the standalone `stt`. The merged `speech` plugin serves the
+/// same `stt_*` actions under its own slug — set `DAEMON_PLUGIN_STT_TARGET`
+/// accordingly (see [`Config::stt_target`]).
+pub const DEFAULT_STT_TARGET: &str = "stt";
 
 /// Kernel-namespaced events the `hotkey` plugin publishes for push-to-talk.
 pub const EV_HOTKEY_PRESSED: &str = "plugin.hotkey.hotkey_pressed";
@@ -52,7 +46,7 @@ pub enum ListenMode {
     #[default]
     Window,
     /// Open-ended capture; the turn ends when `stt` reports the utterance
-    /// ended (`EV_SPEECH_ENDED`, requires `STT_PLUGIN_VAD=on` on the stt
+    /// ended (`stt_speech_ended`, requires `STT_PLUGIN_VAD=on` on the stt
     /// side) or a configured cap elapses. Enables hands-free conversation:
     /// enable once, talk whenever.
     Vad,
@@ -138,6 +132,12 @@ pub struct Config {
     pub chunk_ms: u32,
     /// AudioStreamChunk stream_id shared by both sides of the mic→stt hop.
     pub stream_id: i32,
+    /// Plugin slug serving `stt_*`: the mic streams PCM to it, and its VAD
+    /// events arrive namespaced `plugin.<slug>.*`. A wrong slug fails
+    /// silently — the kernel drops chunks for an unregistered target and
+    /// `stt_listen_stop` then reports "no audio buffered". The mic's
+    /// `MIC_PLUGIN_IPC_TARGETS` must list the same slug.
+    pub stt_target: String,
     /// `tts_synthesize` provider.
     pub tts_provider: String,
     /// Provider-specific voice id.
@@ -166,6 +166,7 @@ impl Default for Config {
             sample_rate_hz: 16_000,
             chunk_ms: 100,
             stream_id: 7,
+            stt_target: DEFAULT_STT_TARGET.into(),
             tts_provider: "sherpa".into(),
             tts_voice: "af_heart".into(),
             tts_format: "wav".into(),
@@ -221,6 +222,11 @@ impl Config {
         if let Some(v) = read_u64("DAEMON_PLUGIN_STREAM_ID") {
             c.stream_id = v.max(1) as i32;
         }
+        if let Ok(v) = std::env::var("DAEMON_PLUGIN_STT_TARGET") {
+            if let Some(slug) = parse_slug(&v) {
+                c.stt_target = slug;
+            }
+        }
         if let Ok(v) = std::env::var("DAEMON_PLUGIN_TTS_PROVIDER") {
             let v = v.trim();
             if matches!(v, "sherpa" | "openai" | "elevenlabs") {
@@ -252,6 +258,28 @@ impl Config {
         }
         c
     }
+
+    /// Event the stt provider publishes when its (opt-in) energy VAD hears
+    /// speech begin on a listen stream.
+    pub fn speech_started_event(&self) -> String {
+        format!("plugin.{}.stt_speech_started", self.stt_target)
+    }
+
+    /// Event the stt provider publishes when an utterance ends —
+    /// `silence_ms` of quiet after real speech. This is the vad-mode endpoint.
+    pub fn speech_ended_event(&self) -> String {
+        format!("plugin.{}.stt_speech_ended", self.stt_target)
+    }
+}
+
+/// A plugin slug as the kernel namespaces it: lowercase ASCII letters,
+/// digits, `-` and `_`. Anything else is ignored (keeps the default) rather
+/// than building a target that can never match.
+fn parse_slug(v: &str) -> Option<String> {
+    let v = v.trim();
+    let ok = !v.is_empty()
+        && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    ok.then(|| v.to_string())
 }
 
 /// One pending kernel-routed call handed from a task to the serve loop,
@@ -660,7 +688,7 @@ async fn start_capture(rpc: &Rpc, config: &Config) -> Result<CaptureSession, Str
     let mic = rpc.call(
         "mic_start",
         json!({
-            "target": STT_TARGET,
+            "target": config.stt_target,
             "stream_id": config.stream_id,
             "sample_rate_hz": config.sample_rate_hz,
             "num_channels": 1,
@@ -724,6 +752,7 @@ enum SpeechEnd {
 /// channel's backlog.
 async fn wait_for_speech_end(config: &Config, bus: &Bus) -> SpeechEnd {
     let mut rx = bus.subscribe();
+    let (ev_started, ev_ended) = (config.speech_started_event(), config.speech_ended_event());
     let mut speaking = false;
     let mut idle_deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(config.vad_wait_ms);
@@ -742,14 +771,12 @@ async fn wait_for_speech_end(config: &Config, bus: &Bus) -> SpeechEnd {
                     if !ours {
                         continue;
                     }
-                    match etype.as_str() {
-                        EV_SPEECH_STARTED if !speaking => {
-                            speaking = true;
-                            idle_deadline = tokio::time::Instant::now()
-                                + std::time::Duration::from_millis(config.vad_wait_ms);
-                        }
-                        EV_SPEECH_ENDED => return SpeechEnd::Ended,
-                        _ => {}
+                    if etype == ev_started && !speaking {
+                        speaking = true;
+                        idle_deadline = tokio::time::Instant::now()
+                            + std::time::Duration::from_millis(config.vad_wait_ms);
+                    } else if etype == ev_ended {
+                        return SpeechEnd::Ended;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -972,5 +999,28 @@ pub fn event_envelope(event: &ChangeEvent) -> Envelope {
             payload_json: event.payload.to_string().into_bytes(),
         })),
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slug_accepts_plugin_ids_and_rejects_the_rest() {
+        assert_eq!(parse_slug(" speech ").as_deref(), Some("speech"));
+        assert_eq!(parse_slug("stt").as_deref(), Some("stt"));
+        assert_eq!(parse_slug("my-stt_2").as_deref(), Some("my-stt_2"));
+        assert_eq!(parse_slug(""), None);
+        assert_eq!(parse_slug("Speech"), None);
+        assert_eq!(parse_slug("plugin.speech"), None);
+    }
+
+    #[test]
+    fn default_provider_keeps_the_standalone_stt_events() {
+        let c = Config::default();
+        assert_eq!(c.stt_target, "stt");
+        assert_eq!(c.speech_started_event(), "plugin.stt.stt_speech_started");
+        assert_eq!(c.speech_ended_event(), "plugin.stt.stt_speech_ended");
     }
 }

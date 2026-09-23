@@ -344,6 +344,11 @@
         "minimum": 1,
         "description": "AudioStreamChunk stream_id shared by stt_listen_* and mic_start (default 7)."
       },
+      "DAEMON_PLUGIN_STT_TARGET": {
+        "type": "string",
+        "pattern": "^[a-z0-9_-]+$",
+        "description": "Plugin slug serving stt_* — the mic streams to it and its VAD events arrive as plugin.<slug>.*. `stt` (default, standalone plugin) or `speech` (merged plugin). mic's MIC_PLUGIN_IPC_TARGETS must list the same slug."
+      },
       "DAEMON_PLUGIN_TTS_PROVIDER": {
         "type": "string",
         "enum": [
