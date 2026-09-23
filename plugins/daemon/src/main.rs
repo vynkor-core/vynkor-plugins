@@ -102,11 +102,12 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
 
     println!("[{PLUGIN_ID}] registered with kernel");
     println!(
-        "[{PLUGIN_ID}] listen loop {} (mode {}, turn window {} ms, gap {} ms)",
+        "[{PLUGIN_ID}] listen loop {} (mode {}, turn window {} ms, gap {} ms, stt provider '{}')",
         if config.enabled_at_boot { "on" } else { "off (daemon_enable to start)" },
         config.mode.as_str(),
         config.turn_ms,
-        config.gap_ms
+        config.gap_ms,
+        config.stt_target
     );
 
     // The daemon reacts to other plugins' events: stt's VAD boundaries
@@ -114,8 +115,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     // Subscribing unconditionally is harmless in window mode — the kernel
     // just delivers a few extra events the bus drops unread.
     let event_types = [
-        daemon_plugin::EV_SPEECH_STARTED.to_string(),
-        daemon_plugin::EV_SPEECH_ENDED.to_string(),
+        config.speech_started_event(),
+        config.speech_ended_event(),
         daemon_plugin::EV_HOTKEY_PRESSED.to_string(),
         daemon_plugin::EV_HOTKEY_RELEASED.to_string(),
     ];
@@ -957,12 +958,12 @@ mod tests {
         // capture to open, then play speech start + end off the bus.
         shim.wait_for_calls("mic_start", 1).await;
         shim.inject_event(
-            daemon_plugin::EV_SPEECH_STARTED,
+            &vad_config().speech_started_event(),
             serde_json::json!({"stream_id": 7}),
         )
         .await;
         shim.inject_event(
-            daemon_plugin::EV_SPEECH_ENDED,
+            &vad_config().speech_ended_event(),
             serde_json::json!({"stream_id": 7, "speech_ms": 900}),
         )
         .await;
@@ -979,6 +980,32 @@ mod tests {
         for stage in ["stt_listen_start", "mic_start", "mic_stop", "stt_listen_stop"] {
             assert!(names.contains(&stage.to_string()), "{stage} missing: {names:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn stt_provider_slug_drives_mic_target_and_vad_events() {
+        // The merged `speech` plugin serves stt_* under its own slug: the
+        // mic must stream to it and its VAD events arrive as plugin.speech.*.
+        let cfg = Config { stt_target: "speech".into(), ..vad_config() };
+        let started = cfg.speech_started_event();
+        let ended = cfg.speech_ended_event();
+        assert_eq!(started, "plugin.speech.stt_speech_started");
+        assert_eq!(ended, "plugin.speech.stt_speech_ended");
+        let shim = start_plugin(cfg).await;
+
+        let shim2 = shim.clone();
+        let turn = tokio::spawn(async move {
+            shim2.call("daemon_turn", serde_json::json!({})).await
+        });
+        shim.wait_for_calls("mic_start", 1).await;
+        shim.inject_event(&started, serde_json::json!({"stream_id": 7})).await;
+        shim.inject_event(&ended, serde_json::json!({"stream_id": 7, "speech_ms": 900}))
+            .await;
+
+        let resp = turn.await.expect("turn task joined").expect("vad turn must reply");
+        assert_eq!(resp["status"], "answered");
+        let mics = shim.params_of("mic_start").await;
+        assert_eq!(mics[0]["target"], "speech");
     }
 
     #[tokio::test]

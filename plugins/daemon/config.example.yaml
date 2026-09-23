@@ -37,6 +37,12 @@ DAEMON_PLUGIN_SAMPLE_RATE_HZ=16000
 DAEMON_PLUGIN_CHUNK_MS=100
 DAEMON_PLUGIN_STREAM_ID=7
 
+# Plugin slug serving stt_* (mic streams PCM to it; VAD events come as
+# plugin.<slug>.*). `stt` for the standalone plugin, `speech` for the merged
+# one. mic's MIC_PLUGIN_IPC_TARGETS must list the same slug — otherwise the
+# kernel drops the audio and every turn fails with "no audio buffered".
+DAEMON_PLUGIN_STT_TARGET=stt
+
 # Speech output (tts_synthesize → sound_play). sherpa is fully offline;
 # openai/elevenlabs need tts's own key allowlist + vault/env.
 DAEMON_PLUGIN_TTS_PROVIDER=sherpa

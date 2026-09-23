@@ -6,7 +6,11 @@ verbatim from the standalone plugins — every action name (`tts_*`,
 `stt_*`, including `tts_speak_stream`), event type (`stt_text`,
 speech boundaries), and env knob (`TTS_PLUGIN_*`, `STT_PLUGIN_*`) is
 byte-identical, so `daemon`/webclient callers and operator configs need
-zero changes beyond the plugin id.
+zero changes beyond the plugin id — but the plugin id *does* matter for
+audio routing: set `DAEMON_PLUGIN_STT_TARGET=speech` on `daemon` and
+`MIC_PLUGIN_IPC_TARGETS=speech` on `mic`. With the old `stt` values the
+kernel drops every mic chunk (no plugin `stt` is registered) and each voice
+turn fails with "listen stream N has no audio buffered".
 
 **The standalone `tts` and `stt` plugins remain shipped.** Run either
 `speech` alone or the two singles — running all three on one machine
