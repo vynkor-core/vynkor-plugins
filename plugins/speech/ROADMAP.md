@@ -15,9 +15,26 @@ the identical failure mode under the supervisor.
 
 ## Known issue: sherpa inference never completes under the kernel supervisor
 
-**Status:** open, environment-level (not specific to the `speech` merge —
-standalone `tts` reproduces identically). Needs a debugging session with
-`strace`/`gdb` attached to the `__shim` → plugin pair.
+**Status: no longer reproduces (verified live, 2026-09-23).** Called the
+deployed `speech` plugin's `tts_synthesize` (`provider: sherpa`, piper model)
+three times via `vyn-act` against the running kernel: cold call 2.26s
+(RSS 4.9MB → 136MB, matching the ~160MB piper-medium footprint this doc
+recorded during the original repro), two warm calls 295ms and 109ms
+(wav and mp3), all returned valid audio, process idle at 0% CPU afterward —
+not livelocked. `ps` also shows `speech` spawned as a **direct child of the
+kernel process, no `__shim` wrapper in between** (unlike every sandboxed
+plugin, which shows `vyn __shim <path>` as the parent) — this machine's
+`speech.yaml` has `sandbox: false`, and the original repro matrix's "sandbox
+true/false, both hang" row must predate whatever kernel change stopped
+routing `sandbox: false` plugins through `__shim` at all. Not re-tested with
+`sandbox: true` — if a future edit sets it, re-verify before assuming the
+fix generalizes. Kept below for history; reopen with a fresh repro if it
+resurfaces.
+
+**Status (historical, until 2026-09-23):** open, environment-level (not
+specific to the `speech` merge — standalone `tts` reproduces identically).
+Needed a debugging session with `strace`/`gdb` attached to the `__shim` →
+plugin pair.
 
 **Symptom.** Under the supervisor, the first local-sherpa action loads the
 model (RSS grows to ~160 MB for piper medium, CPU burns during load) and
@@ -49,8 +66,9 @@ diff `/proc/<pid>/status` and `/proc/<pid>/stat` fully between manual and
 shimmed runs before the first synthesis; try ONNX verbosity
 (`ORT_LOG_LEVEL=VERBOSE` style env) inside the shimmed run.
 
-**Workaround until fixed:** voice plugins that need the local engine are
-best run against a kernel built without the resource-capping pre_exec
-(dev kernels), or use cloud providers (`openai`/`elevenlabs`), which never
-touch sherpa. The merge itself is sound: engines are verbatim copies, and
-synthesis outside the kernel is fast and correct.
+**Workaround (historical, may be unnecessary now — see Status above):** voice
+plugins that need the local engine are best run against a kernel built
+without the resource-capping pre_exec (dev kernels), or use cloud providers
+(`openai`/`elevenlabs`), which never touch sherpa. The merge itself is
+sound: engines are verbatim copies, and synthesis outside the kernel is
+fast and correct.
