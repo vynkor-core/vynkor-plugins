@@ -145,7 +145,7 @@ return opaque containers with no PCM source to encode.
   "provider": "sherpa",
   "text": "Hello from the host.",
   "voice": "af_heart",
-  "target": "device.phone.speaker"
+  "target": "phone-1.speaker"
 }
 ```
 

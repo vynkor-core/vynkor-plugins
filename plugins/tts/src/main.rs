@@ -24,7 +24,7 @@ const PLUGIN_VERSION: &str = "0.1.1";
 /// The kernel gates peer-to-peer unicast per-target (T-04): a target not
 /// listed here gets `ERR_PERMISSION_DENIED`. Default-deny — unset means
 /// `tts_speak` can only address peers the operator explicitly allows
-/// (e.g. `device.phone.speaker` for a remote speaker, D-12/D-14).
+/// (e.g. `phone-1.speaker` for a remote speaker, D-12/D-14).
 const IPC_TARGETS_ENV: &str = "TTS_PLUGIN_IPC_TARGETS";
 
 fn manifest() -> PluginManifest {

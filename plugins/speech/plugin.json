@@ -177,7 +177,7 @@
     },
     {
       "name": "tts_speak",
-      "description": "Synthesize and stream Opus audio straight to a peer (e.g. device.phone.speaker) instead of returning bytes — it comes out of a real speaker in the room. sherpa-only: streaming needs a local PCM source.",
+      "description": "Synthesize and stream Opus audio straight to a peer (e.g. phone-1.speaker) instead of returning bytes — it comes out of a real speaker in the room. sherpa-only: streaming needs a local PCM source.",
       "risk": "medium",
       "input": {
         "type": "object",
@@ -202,7 +202,7 @@
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "Peer to stream the Opus audio to, e.g. device.phone.speaker. Required."
+            "description": "Peer to stream the Opus audio to, e.g. phone-1.speaker. Required."
           },
           "stream_id": {
             "type": "integer",
@@ -316,7 +316,7 @@
           "target": {
             "type": "string",
             "minLength": 1,
-            "description": "Peer to stream the Opus audio to, e.g. device.phone.speaker. Required."
+            "description": "Peer to stream the Opus audio to, e.g. phone-1.speaker. Required."
           },
           "stream_id": {
             "type": "integer",

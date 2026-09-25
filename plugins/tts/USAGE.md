@@ -204,7 +204,7 @@ Request (`ActionRequest.params_json`):
   "provider": "sherpa",
   "text": "Hello from the host.",
   "voice": "af_heart",
-  "target": "device.phone.speaker",
+  "target": "phone-1.speaker",
   "stream_id": 1,
   "sample_rate_hz": 24000,
   "bitrate": 32000,
@@ -216,7 +216,7 @@ Request (`ActionRequest.params_json`):
 - `text` — required, 1..=4000 chars.
 - `voice` — required; sherpa Kokoro name (`af_heart`, ...) or `sid:N`.
 - `target` — required; the peer to stream to. For a remote device this is
-  the mirrored capability id (`device.<cap>`, D-06); on one machine it can
+  the mirrored capability id (`<device_id>.<cap>`, D-06); on one machine it can
   be any local plugin that receives `AudioStreamChunk`s.
 - `stream_id` — optional, default `1`. Echoed in every chunk; lets the
   receiver demux concurrent streams.
@@ -232,7 +232,7 @@ Response (`ActionResponse.data_json`) once the whole clip has been streamed:
 {
   "codec": "opus",
   "stream_id": 1,
-  "target": "device.phone.speaker",
+  "target": "phone-1.speaker",
   "sample_rate_hz": 24000,
   "num_channels": 1,
   "duration_seconds": 2.4,

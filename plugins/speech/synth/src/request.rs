@@ -258,7 +258,7 @@ pub const SPEAK_DEFAULT_STREAM_ID: u32 = 1;
 pub const SPEAK_DEFAULT_BITRATE: i32 = 32_000;
 
 /// Lower bound on the caller-supplied target length. The target is a
-/// kernel-routed plugin id / capability (`device.phone.speaker`, ...); a
+/// kernel-routed plugin id / capability (`phone-1.speaker`, ...); a
 /// bare minimum keeps typos from silently addressing the kernel.
 pub const MIN_TARGET_CHARS: usize = 1;
 
@@ -268,7 +268,7 @@ pub const MIN_TARGET_CHARS: usize = 1;
 pub struct SpeakParams {
     pub text: String,
     pub voice: String,
-    /// Peer to stream the Opus packets to (e.g. `device.phone.speaker`).
+    /// Peer to stream the Opus packets to (e.g. `phone-1.speaker`).
     pub target: String,
     /// Caller-chosen stream id echoed in every `AudioStreamChunk`.
     pub stream_id: u32,
@@ -624,12 +624,12 @@ mod tests {
     #[test]
     fn speak_accepts_minimal_request() {
         let params = parse_speak_request(
-            br#"{"provider":"sherpa","text":"hi","voice":"af_heart","target":"device.phone.speaker"}"#,
+            br#"{"provider":"sherpa","text":"hi","voice":"af_heart","target":"phone-1.speaker"}"#,
         )
         .unwrap();
         assert_eq!(params.text, "hi");
         assert_eq!(params.voice, "af_heart");
-        assert_eq!(params.target, "device.phone.speaker");
+        assert_eq!(params.target, "phone-1.speaker");
         assert_eq!(params.stream_id, SPEAK_DEFAULT_STREAM_ID);
         assert_eq!(params.sample_rate_hz, SPEAK_DEFAULT_SAMPLE_RATE);
         assert_eq!(params.bitrate, SPEAK_DEFAULT_BITRATE);
