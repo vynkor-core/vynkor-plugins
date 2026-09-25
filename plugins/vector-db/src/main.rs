@@ -199,31 +199,59 @@ async fn main() -> Result<(), VynkorError> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use std::time::Duration;
     use tokio::net::UnixStream;
-    use vector_db_plugin::db::{DbConfig, DbPools};
-    use vector_db_plugin::handler::Handler;
-    use vynkor_sdk::concurrent::run_concurrent_loop;
-    use vynkor_sdk::proto::{envelope, ActionRequest, ActionStatus, Envelope, PluginShutdown};
+    use vector_db_plugin::config::{Config, EmbedConfig, EmbedFallback};
+    use vector_db_plugin::db::DbConfig;
+    use vynkor_sdk::proto::{
+        envelope, ActionRequest, ActionStatus, Envelope, PluginRegisterAck, PluginShutdown,
+    };
     use vynkor_sdk::VynkorClient;
 
+    // Drives the production `serve()` loop (not a test-only handler impl) so
+    // the test breaks if the loop main() actually runs stops being concurrent.
     #[tokio::test]
     async fn concurrent_upserts_without_deadlock() {
         let dir = tempfile::tempdir().unwrap();
-        let pools = DbPools::new(DbConfig {
-            data_dir: dir.path().to_path_buf(),
-            pool_size: 4,
-            busy_timeout_ms: 2000,
-            max_db_bytes: 0,
-        });
-        let handler = Arc::new(Handler::new(pools, 4 * 1024 * 1024, 8));
+        let config = Config {
+            db: DbConfig {
+                data_dir: dir.path().to_path_buf(),
+                pool_size: 4,
+                busy_timeout_ms: 2000,
+                max_db_bytes: 0,
+            },
+            max_response_bytes: 4 * 1024 * 1024,
+            default_dim: 8,
+            embed: EmbedConfig {
+                enabled: false,
+                provider: String::new(),
+                base_url: String::new(),
+                model: String::new(),
+                api_key_env: String::new(),
+                timeout_ms: 0,
+                fallback: EmbedFallback::Error,
+            },
+        };
 
         let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
         let client = VynkorClient::from_stream(plugin_side, None);
         let mut kernel = VynkorClient::from_stream(kernel_side, None);
 
-        let loop_task = tokio::spawn(run_concurrent_loop(client, handler));
+        let loop_task = tokio::spawn(super::serve(client, config));
+
+        let reg = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+            .await
+            .expect("timed out waiting for registration")
+            .unwrap();
+        assert!(matches!(reg.payload, Some(envelope::Payload::PluginRegister(_))));
+        let ack = Envelope {
+            payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
+                accepted: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        kernel.send("vector-db", ack).await.unwrap();
 
         const N: usize = 20;
         for i in 0..N {

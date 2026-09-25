@@ -35,14 +35,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run cargo test for each plugin
+        # Without pipefail the `| tail` below owns the pipeline's exit status,
+        # so a failing (or non-compiling) test suite was reported as passing.
+        # --test-threads=1: several suites share process env across modules
+        # (see 244de69) and race under the default parallel runner.
         run: |
+          set -o pipefail
           failed=0
           for dir in plugins/*/; do
             if [ -f "$dir/Cargo.toml" ]; then
               echo "=== Testing $dir ==="
-              if ! cargo test --manifest-path "$dir/Cargo.toml" --quiet 2>&1 | tail -5; then
+              if ! cargo test --manifest-path "$dir/Cargo.toml" --quiet -- --test-threads=1 2>&1 | tail -5; then
                 echo "::error::Tests failed in $dir"
-                cargo test --manifest-path "$dir/Cargo.toml" 2>&1 | tail -30
+                cargo test --manifest-path "$dir/Cargo.toml" -- --test-threads=1 2>&1 | tail -30 || true
                 failed=1
               fi
             fi
