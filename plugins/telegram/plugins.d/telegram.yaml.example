@@ -9,8 +9,10 @@ sandbox: false
 env:
   # sub=telegram; the kernel injects the per-plugin frame-MAC key itself
   - VYN_JWT_TOKEN=${VYN_JWT_TOKEN}
+  # per-account suffix = account id UPPER-CASED (default -> _DEFAULT)
   - TELEGRAM_PLUGIN_ACCOUNTS=default
-  - TELEGRAM_PLUGIN_API_ID_default=${TELEGRAM_API_ID}
-  - TELEGRAM_PLUGIN_API_HASH_default=${TELEGRAM_API_HASH}
-  - TELEGRAM_PLUGIN_PHONE_default=${TELEGRAM_PHONE}
-  - TELEGRAM_PLUGIN_SESSION_DIR=~/.local/share/vyn/telegram
+  - TELEGRAM_PLUGIN_API_ID_DEFAULT=${TELEGRAM_API_ID}
+  - TELEGRAM_PLUGIN_API_HASH_DEFAULT=${TELEGRAM_API_HASH}
+  - TELEGRAM_PLUGIN_PHONE_DEFAULT=${TELEGRAM_PHONE}
+  # absolute path: the plugin does not expand ~ (default /tmp — never keep it)
+  - TELEGRAM_PLUGIN_SESSION_DIR=/home/you/.local/share/vyn/telegram
