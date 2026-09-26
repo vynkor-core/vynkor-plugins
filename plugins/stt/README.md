@@ -1,5 +1,10 @@
 # stt plugin
 
+> **Legacy.** New installs should use [`speech`](../speech/), which runs
+> this engine verbatim in one process alongside `tts`. Both declare the
+> same action names, and the kernel refuses to route an action declared by
+> two plugins — run `speech` *or* the standalone `stt`+`tts`, never both.
+
 Speech-to-text for Vynkor plugins. Exposes four actions: `stt_transcribe`
 (turn audio into text), `stt_models` (list transcribable models), and
 `stt_listen_start`/`stt_listen_stop` (stream PCM in, get a transcript out

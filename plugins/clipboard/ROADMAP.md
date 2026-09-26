@@ -40,21 +40,26 @@ Text-only system clipboard access via host binaries — one blessed path for
 
 ## Later (unscheduled)
 
-- `clipboard_clear` — only once a reliable cross-backend story exists
-  (Wayland has no standard clear; xclip clears only the selection it owns).
-  Empty writes are rejected today to keep "clear" an explicit future action.
+- Clearing the *live* clipboard — still open (Wayland has no standard
+  clear; xclip clears only the selection it owns). The shipped
+  `clipboard_clear` erases the stored history only.
 - Non-text MIME (images/HTML) behind a feature flag — needs a different
   transport than argv/stdin and a size policy of its own.
-- Clipboard history / multi-slot — out of scope; the kernel has no storage
-  surface for it and `database` covers persistence if a caller wants it.
+- ~~Clipboard history / multi-slot~~ — **shipped**: `clipboard_history` /
+  `clipboard_clear` over `database` (EXI-06). Open follow-ups: dedupe
+  consecutive identical entries, a secret filter (skip entries that look
+  like tokens/passwords, or honor the `x-kde-passwordManagerHint` MIME
+  hint password managers set), and an optional watcher
+  (`wl-paste --watch`) so copies made in other apps are recorded without a
+  `clipboard_read`.
 - Primary-selection support (`--primary` / `-selection primary`) if a caller
   actually needs it.
 
 ## Non-goals
 
 - No network sync between machines.
-- No daemon/watch mode — reads are on-demand spawns; a watch loop would need
-  the calendar-style select loop first (see `plugins/media/ROADMAP.md` v1.2).
+- No daemon/watch mode *by default* — reads are on-demand spawns. An
+  opt-in watcher for history is listed under "Later".
 - No new `PermissionType` enum value — `PERMISSION_CLIPBOARD` already exists.
 
 ## References

@@ -1,5 +1,12 @@
 # Telegram Full-Client for Vynkor — Plan (English)
 
+> **Status 2026-09-27:** historical P0 plan. The unchecked items below all
+> shipped and the plugin has since grown far past this scope (edit/delete/
+> forward/reactions/pins/media/voice — F4 no longer applies). Two claims
+> here are not true of the code: credentials are **env-only**, not
+> vault-first (item 2), and the session dir defaults to `/tmp`. The live
+> reference is `README.md`; open work is in `ROADMAP.md`.
+
 > Prototype: Rust + Grammers, inside `vyn` kernel. N-account (personal + corporate). P0 = read/write/search + status; media deferred to P2. Spec: `vynkor-wire/proto/vynkor_protocol.proto` v1.7 is single source of truth.
 
 ---

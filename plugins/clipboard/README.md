@@ -8,8 +8,9 @@ so clipboard content cannot inject commands (same delivery model as
 ## Status
 
 v0.1.0 — `clipboard_read` / `clipboard_write` / `clipboard_providers` over
-`wl-paste`/`wl-copy` (Wayland) and `xclip`/`xsel` (X11). Session detected
-from the environment; provider override via config.
+`wl-paste`/`wl-copy` (Wayland) and `xclip`/`xsel` (X11), plus a persisted
+history (`clipboard_history` / `clipboard_clear`) in `database`. Session
+detected from the environment; provider override via config.
 
 ## Providers
 
@@ -30,6 +31,19 @@ listing what was tried.
 | `clipboard_read` | — | `{ found, text, provider }` — `found:false` + `text:null` when the clipboard is empty |
 | `clipboard_write` | `text` (non-empty string) | `{ ok, provider, bytes }` |
 | `clipboard_providers` | — | `{ session, readers, writers }` |
+| `clipboard_history` | `query?` (case-insensitive substring), `limit?` (1..500, default 100), `offset?` | `{ entries, total }` — newest first |
+| `clipboard_clear` | — | `{ cleared }` — erases the stored history only, never the live clipboard |
+
+### History
+
+Every successful `clipboard_read` (non-empty) and `clipboard_write` through
+this plugin is appended to a ring in the plugin's own `database` namespace
+(`CLIPBOARD_PLUGIN_HISTORY_LIMIT`, default 1000; `CLIPBOARD_PLUGIN_HISTORY=off`
+disables capture). There is no background watcher: text copied in other
+apps is recorded only when something calls `clipboard_read`.
+
+`clipboard_history` is risk **critical** and `requires_confirmation` — the
+log outlives the live clipboard and can surface old passwords or tokens.
 
 ## Error taxonomy
 
