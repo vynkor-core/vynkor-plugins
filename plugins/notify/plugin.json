@@ -420,6 +420,19 @@
       "NOTIFY_PLUGIN_AUDIO_PLAYER": {
         "type": "string",
         "description": "Audio player binary for speak (paplay/pw-play/aplay for wav; ffplay for mp3/ogg). Default: auto-detect."
+      },
+      "NOTIFY_PLUGIN_PUSH_SERVERS": {
+        "type": "string",
+        "default": "ntfy.sh",
+        "description": "Comma-separated allowlist of push server hosts for push_send (default-deny except ntfy.sh). Add self-hosted ntfy/Gotify hosts here."
+      },
+      "NOTIFY_PLUGIN_NTFY_TOKEN": {
+        "type": "string",
+        "description": "ntfy access token, sent as Authorization: Bearer when set."
+      },
+      "NOTIFY_PLUGIN_GOTIFY_TOKEN": {
+        "type": "string",
+        "description": "Gotify app token, sent as X-Gotify-Token when set."
       }
     },
     "additionalProperties": true

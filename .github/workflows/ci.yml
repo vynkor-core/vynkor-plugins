@@ -26,6 +26,8 @@ jobs:
           echo "plugins CI done"
       - name: Check action descriptions
         run: python3 scripts/check-action-docs.py
+      - name: Check config_schema matches env vars read by code
+        run: python3 scripts/check-config-schema.py
 
   test:
     name: Test plugins

@@ -391,6 +391,42 @@
         "type": "integer",
         "minimum": 1000,
         "description": "Timeout for the agent goal_start call — LLM loops run long (default 120000)."
+      },
+      "DAEMON_PLUGIN_MODE": {
+        "type": "string",
+        "enum": [
+          "window",
+          "vad",
+          "ptt"
+        ],
+        "default": "window",
+        "description": "Listen mode: window = fixed capture window, vad = continuous conversation ended by stt speech events, ptt = push-to-talk via the hotkey plugin."
+      },
+      "DAEMON_PLUGIN_VAD_WAIT_MS": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 600000,
+        "default": 30000,
+        "description": "vad mode: max silence waited before any speech before the turn gives up (clamped 1000..600000)."
+      },
+      "DAEMON_PLUGIN_VAD_MAX_UTTERANCE_MS": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 120000,
+        "default": 20000,
+        "description": "vad mode: hard cap on one utterance even without a speech-ended event (clamped 500..120000)."
+      },
+      "DAEMON_PLUGIN_PTT_BINDING": {
+        "type": "string",
+        "default": "ptt",
+        "description": "ptt mode: hotkey binding id whose pressed/released events start and end a turn."
+      },
+      "DAEMON_PLUGIN_PTT_MAX_HOLD_MS": {
+        "type": "integer",
+        "minimum": 500,
+        "maximum": 600000,
+        "default": 60000,
+        "description": "ptt mode: auto-release after the key has been held this long (clamped 500..600000)."
       }
     },
     "additionalProperties": true

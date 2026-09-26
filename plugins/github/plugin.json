@@ -124,6 +124,12 @@
         "type": "string",
         "default": "GITHUB_TOKEN",
         "description": "Default PAT env var name when caller omits pat_env."
+      },
+      "GITHUB_PLUGIN_FETCH_TIMEOUT_MS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 10000,
+        "description": "network HTTP timeout per GitHub API call."
       }
     },
     "additionalProperties": true

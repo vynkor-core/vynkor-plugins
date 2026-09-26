@@ -482,42 +482,8 @@
   "config_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
-    "properties": {
-      "MQTT_PLUGIN_DEFAULT_BROKER": {
-        "type": "string",
-        "description": "Default MQTT broker URL (mqtt://host:port)"
-      },
-      "MQTT_PLUGIN_DEFAULT_USERNAME": {
-        "type": "string",
-        "description": "Default MQTT username"
-      },
-      "MQTT_PLUGIN_DEFAULT_PASSWORD": {
-        "type": "string",
-        "description": "Default MQTT password (vault-first via secrets)"
-      },
-      "MQTT_PLUGIN_CA_CERT_PATH": {
-        "type": "string",
-        "description": "Path to CA certificate for TLS"
-      },
-      "MQTT_PLUGIN_CLIENT_CERT_PATH": {
-        "type": "string",
-        "description": "Path to client certificate for mTLS"
-      },
-      "MQTT_PLUGIN_CLIENT_KEY_PATH": {
-        "type": "string",
-        "description": "Path to client key for mTLS"
-      },
-      "MQTT_PLUGIN_STREAM_IDLE_TIMEOUT_MS": {
-        "type": "integer",
-        "default": 300000,
-        "description": "Stream idle timeout in milliseconds (default: 5 min)"
-      },
-      "MQTT_PLUGIN_TOPIC_PREFIX": {
-        "type": "string",
-        "default": "vynkor",
-        "description": "MQTT topic prefix (default: vynkor)"
-      }
-    },
+    "description": "No environment config yet: broker, credentials and TLS are passed per call to mqtt_connect. Env defaults + auto-connect are on plugins/mqtt/ROADMAP.md.",
+    "properties": {},
     "additionalProperties": true
   }
 }
