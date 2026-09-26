@@ -7,7 +7,7 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "uptime";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 6] = ["uptime_add", "uptime_remove", "uptime_list", "uptime_check", "uptime_history", "status"];
 
 fn manifest() -> PluginManifest {
@@ -70,11 +70,12 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                 let rpc = rpc.clone(); let out = out_tx.clone(); let cfg = Arc::clone(&config);
                 tokio::spawn(async move {
                     match scan_all(rpc, &cfg).await {
-                        Ok(n) if n>0 => println!("[uptime] scanned {n} targets"),
-                        Ok(_) => {}
+                        Ok(scan) => {
+                            if scan.checked>0 { println!("[uptime] scanned {} targets, {} failed", scan.checked, scan.failed.len()); }
+                            for (t, p) in scan.failed { let _ = out.send(event_envelope(&t, &p)).await; }
+                        }
                         Err(e) => eprintln!("[uptime] scan failed: {e}"),
                     }
-                    let _ = out;
                 });
             }
         }

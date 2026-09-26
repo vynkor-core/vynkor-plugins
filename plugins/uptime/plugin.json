@@ -1,6 +1,6 @@
 {
   "plugin_id": "uptime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": ["PERMISSION_STORAGE", "PERMISSION_NETWORK", "PERMISSION_EVENT_PUBLISH"],
   "kernel_compatibility_range": { "min": "0.1.0", "max": "*" },
   "binary": "uptime",
