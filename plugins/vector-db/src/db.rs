@@ -99,11 +99,13 @@ impl DbPools {
     pub async fn pool_for(&self, caller_plugin_id: &str) -> Result<SqlitePool, String> {
         let caller_id = sanitize_caller_id(caller_plugin_id)?;
 
-        {
-            let pools = self.pools.lock().await;
-            if let Some(pool) = pools.get(caller_id) {
-                return Ok(pool.clone());
-            }
+        // Held across creation on purpose: concurrent first calls for one
+        // caller used to each open their own pool on the same fresh file and
+        // race the WAL switch into SQLITE_BUSY ("database is locked"), which
+        // busy_timeout does not cover. Creation happens once per caller.
+        let mut pools = self.pools.lock().await;
+        if let Some(pool) = pools.get(caller_id) {
+            return Ok(pool.clone());
         }
 
         std::fs::create_dir_all(&self.config.data_dir)
@@ -141,12 +143,8 @@ impl DbPools {
             .await
             .map_err(|e| format!("failed to init vectors index for {caller_id}: {e}"))?;
 
-        let mut pools = self.pools.lock().await;
-        let winner = pools
-            .entry(caller_id.to_string())
-            .or_insert_with(|| pool.clone())
-            .clone();
-        Ok(winner)
+        pools.insert(caller_id.to_string(), pool.clone());
+        Ok(pool)
     }
 }
 
