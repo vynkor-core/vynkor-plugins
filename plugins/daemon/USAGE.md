@@ -201,10 +201,9 @@ env:
   # Or push-to-talk with the hotkey plugin:
   # - DAEMON_PLUGIN_MODE=ptt
   # - DAEMON_PLUGIN_PTT_BINDING=ptt
-  # Under a secured kernel also add the frame-MAC secret and a JWT whose
-  # sub=daemon and whose claims carry PERMISSION_AUDIO +
-  # PERMISSION_EVENT_PUBLISH (claims override the manifest):
-  # - VYN_JWT_SECRET=…
+  # Under a secured kernel also add a JWT whose sub=daemon and whose
+  # claims carry PERMISSION_AUDIO + PERMISSION_EVENT_PUBLISH (claims
+  # override the manifest). The frame-MAC key is injected by the kernel:
   # - VYN_JWT_TOKEN=…
 ```
 

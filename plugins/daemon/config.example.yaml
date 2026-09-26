@@ -55,5 +55,5 @@ DAEMON_PLUGIN_TIMEOUT_MS=30000
 DAEMON_PLUGIN_GOAL_TIMEOUT_MS=120000
 
 # Secured-kernel only (operator mints per plugin; claims override manifest):
-# VYN_JWT_SECRET=<kernel jwt_secret>
+# (VYN_JWT_SECRET is injected per plugin by the kernel — never set the master jwt_secret here)
 # VYN_JWT_TOKEN=<jwt with sub=daemon, permissions=[PERMISSION_AUDIO, PERMISSION_EVENT_PUBLISH]>
