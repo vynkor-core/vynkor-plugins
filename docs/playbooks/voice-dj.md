@@ -1,48 +1,39 @@
 # PLAY-04: Voice DJ — "play something for work"
 
-`ai` picks → `media` plays (MPRIS) or `sound_play` local file.
+`agent` picks → `media` (MPRIS players) or `library` + `sound` (local files).
 
-## What it does
-
-- `ai` (or `agent`) picks a playlist by time/context.
-- `media_play` (MPRIS) for Spotify/mpd/browser, or `sound_play` for local file.
-
-## Simple variant (without agent, via `ai` directly)
-
-```json
-{
-  "action": "chat_completion",
-  "params": {
-    "provider": "openai",
-    "base_url": "http://localhost:11434/v1",
-    "model": "qwen3:8b",
-    "messages": [{"role": "user", "content": "Pick a work playlist: lofi, jazz, classical. Reply with one word."}]
-  }
-}
-// → "lofi"
-{"action": "media_play", "params": {"player": "spotify"}}
-// or
-{"action": "sound_play", "params": {"file": "/home/user/music/lofi.mp3"}}
-```
-
-## Via `agent` (recommended)
+## Via the agent (recommended)
 
 ```json
 {
   "action": "goal_start",
-  "params": {"goal": "play something for work, pick by my taste and time of day, play via media or sound"}
+  "params": {"goal": "Play something for focused work. Prefer my local library: library_search for lofi/jazz/ambient audio, pick one track and sound_play it. If nothing is found, media_play on the active player."}
 }
 ```
 
-Agent: `ai` → decision → `media`/`sound` + `library` search (CAP-09) `lib_search {"query": "lofi"}` → `sound_play`.
+Allowlist needed in `AGENT_PLUGIN_ALLOWED_ACTIONS`: `library_search`,
+`library_random`, `sound_play`, `media_play`, `media_shuffle`.
 
-## With library (CAP-09)
+## Deterministic variant (no LLM)
 
 ```json
-{"action": "lib_search", "params": {"query": "work"}}
-→ {"results": [{"path": "/music/lofi/01.mp3", "title": "Lofi Beats"}]}
+{"action": "library_search", "params": {"query": "lofi", "kind": "audio", "limit": 5}}
+// → {"results": [{"path": "/music/lofi/01.mp3", ...}], "total": 1}
 {"action": "sound_play", "params": {"file": "/music/lofi/01.mp3"}}
-{"action": "media_shuffle", "params": {"enabled": true}}
+```
+
+Random pick:
+
+```json
+{"action": "library_random", "params": {"kind": "audio", "count": 1}}
+```
+
+MPRIS player (Spotify, mpd, browser):
+
+```json
+{"action": "media_play", "params": {"player": "spotify"}}
+{"action": "media_shuffle", "params": {"enabled": true, "player": "spotify"}}
+{"action": "media_loop", "params": {"mode": "playlist", "player": "spotify"}}
 ```
 
 ## Via `vyn ask`
@@ -54,6 +45,8 @@ vyn ask "play jazz for focus"
 
 ## Notes
 
-- `media` controls foreign players (MPRIS), `sound` is the only speaker owner (local files).
-- Shuffle/loop via `media_shuffle`/`media_loop` for MPRIS, for `sound` — `sound_play` each track separately.
-- For random: `lib_random` (library) + `sound_play`.
+- `media` controls other players, `sound` owns the speakers for local files.
+- `sound` plays one clip at a time (no queue) — for a playlist use an MPRIS
+  player; a `sound` queue is on `plugins/sound/ROADMAP.md` "Later".
+- `library` must have scanned the roots first: `library_scan {}`
+  (`LIBRARY_PLUGIN_ALLOWED_ROOTS`).
