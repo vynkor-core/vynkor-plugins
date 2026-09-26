@@ -82,10 +82,9 @@ for slug, (binrel, envs) in PLUGINS_ENV.items():
     man = json.load(open(os.path.join(PLUGINS, slug, "plugin.json")))
     slug_id = man["plugin_id"]  # the id the binary registers with — token sub must match it
     token = mint(slug_id, man.get("permissions", []), man.get("ipc_targets", []))
-    envs = list(envs) + [
-        "VYN_JWT_SECRET=" + JWT_SECRET,
-        "VYN_JWT_TOKEN=" + token,
-    ]
+    # No VYN_JWT_SECRET: the supervisor injects the per-plugin frame-MAC key
+    # (kernel >= 0.1.3) and ignores a configured one. Never ship the master.
+    envs = list(envs) + ["VYN_JWT_TOKEN=" + token]
     env_block = ""
     if envs:
         env_block = "env:\n" + "".join(f"  - \"{e}\"\n" for e in envs)

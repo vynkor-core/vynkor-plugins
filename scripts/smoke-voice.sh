@@ -36,7 +36,9 @@ else
     TOK=$(cd "$(dirname "$CONFIG")" && vyn token mint --device vyn-act --ttl-seconds 31536000 \
         --permissions "network,files_read,files_write,system,audio,notify,scheduler,browser,ipc_send,audio_stream,kernel_admin,event_publish,storage,secrets,clipboard,launch" | tail -1)
 fi
-JS=$(python3 -c "import yaml;print(yaml.safe_load(open('$CONFIG'))['jwt_secret'])")
+# kernel >= 0.1.3: frame-MAC key is per plugin (HKDF of jwt_secret, plugin_id);
+# the master jwt_secret itself is rejected with "frame MAC invalid"
+JS=$(vyn token -c "$CONFIG" plugin-secret --plugin vyn-act)
 export VYN_JWT_TOKEN="$TOK" VYN_JWT_SECRET="$JS"
 
 FAILS=0
@@ -62,7 +64,21 @@ else
     FAILS=$((FAILS+1))
 fi
 
-run() { timeout 60 vyn-act "$@"; }
+# The kernel drops a disconnected plugin's registration asynchronously, so a
+# vyn-act started right after the previous one exits can hit "plugin already
+# registered: vyn-act" for a few hundred ms. Retry that one error only.
+run() {
+    local out err i
+    err=$(mktemp)
+    for i in 1 2 3 4 5 6; do
+        out=$(timeout 60 vyn-act "$@" 2>"$err")
+        [[ "$out$(<"$err")" == *"plugin already registered"* ]] || break
+        sleep 0.3
+    done
+    cat "$err" >&2
+    rm -f "$err"
+    printf '%s\n' "$out"
+}
 
 echo "==> system plugin (routing sanity)"
 check "sys_info" '"hostname"' run sys_info '{}'

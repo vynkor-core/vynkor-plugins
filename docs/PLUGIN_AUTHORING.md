@@ -177,12 +177,18 @@ Lessons from the first full audit (`LIVE_KERNEL_AUDIT_2026-08-22.md`,
 harness snapshot in `scripts/live-audit/`). The fake kernel (§3) proves
 handler logic; these are the things that only bite on a real secured one.
 
-- **The supervisor injects nothing auth-related.** A plugin under a
-  kernel with `jwt_secret` needs both `VYN_JWT_SECRET` (frame-MAC key
-  derivation) and `VYNKOR_JWT_TOKEN`, added by the operator to the
-  drop-in's `env:` list. The token's `sub` must equal the registering
-  `plugin_id`, and its claims **override** the manifest — mint per plugin
-  with that plugin's declared permissions. Missing either → registration
+- **The supervisor injects the frame-MAC key, not the token.** Since
+  kernel 0.1.3 every spawned plugin gets `VYN_JWT_SECRET` set to its own
+  per-plugin key, `HKDF(jwt_secret, plugin_id)`; a value in the drop-in is
+  ignored (with a warning), and the master `jwt_secret` must never be put
+  there. The operator still adds `VYN_JWT_TOKEN` to the drop-in's `env:`
+  list. The token's `sub` must equal the registering `plugin_id`, and its
+  claims **override** the manifest — mint per plugin with that plugin's
+  declared permissions. A plugin the kernel does not spawn (dev run,
+  external harness) gets its key from
+  `vyn token -c <config> plugin-secret --plugin <plugin_id>`; the master
+  secret fails with `frame MAC invalid` right after `plugin registered`.
+  Missing token or key → registration
   rejected → exit → silent restart loop until `max_restarts` runs out,
   with an empty log ring buffer and nothing at WARN kernel-side. When a
   plugin "won't start", check this before anything else; run the binary

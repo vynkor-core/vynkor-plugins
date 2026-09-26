@@ -16,5 +16,5 @@ HOTKEY_PLUGIN_BINDINGS=ptt=Ctrl+Shift+Space
 # HOTKEY_PLUGIN_BINDINGS=ptt=Super+X;mute=Ctrl+F8;next=Alt+Right
 
 # Secured-kernel only (operator mints per plugin; claims override manifest):
-# VYN_JWT_SECRET=<kernel jwt_secret>
+# (VYN_JWT_SECRET is injected per plugin by the kernel — never set the master jwt_secret here)
 # VYN_JWT_TOKEN=<jwt with sub=hotkey, permissions=[PERMISSION_SYSTEM, PERMISSION_EVENT_PUBLISH]>

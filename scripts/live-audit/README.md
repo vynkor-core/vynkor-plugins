@@ -8,7 +8,7 @@ adjusting before reuse.
 | File | Role |
 |---|---|
 | `vynkor_ws.py` | Minimal external WS client: 44-byte frame codec, protobuf envelopes, HKDF session-MAC derivation, `call()` that routes via target=`kernel` and matches `ActionResponse`/`error` envelopes |
-| `gen_dropins.py` | Generates `plugins.d/*.yaml` drop-ins (binary path, per-plugin env, `VYN_JWT_SECRET` + minted `VYNKOR_JWT_TOKEN` with `sub == plugin_id`) |
+| `gen_dropins.py` | Generates `plugins.d/*.yaml` drop-ins (binary path, per-plugin env, minted `VYN_JWT_TOKEN` with `sub == plugin_id`; the kernel injects the frame-MAC key) |
 | `simple_test.py` | Functional matrix: representative actions per plugin with expected-result notes |
 | `load_test.py` | Burst probe (125 db ops + 5 HTTPS GET) with a /proc RSS+CPU sampler around it |
 

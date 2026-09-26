@@ -2,11 +2,13 @@
 # Place this file in ~/.config/vyn/plugins.d/telegram.yaml
 # Requires: vyn kernel running, telegram account authenticated
 
-plugin_id: telegram
-jwt_secret: ${VYN_JWT_SECRET}
-jwt_token: ${VYNKOR_JWT_TOKEN}
+id: telegram
+binary: /home/you/.local/lib/vyn/plugins/telegram/telegram
+restart: on-failure
 sandbox: false
 env:
+  # sub=telegram; the kernel injects the per-plugin frame-MAC key itself
+  - VYN_JWT_TOKEN=${VYN_JWT_TOKEN}
   - TELEGRAM_PLUGIN_ACCOUNTS=default
   - TELEGRAM_PLUGIN_API_ID_default=${TELEGRAM_API_ID}
   - TELEGRAM_PLUGIN_API_HASH_default=${TELEGRAM_API_HASH}
