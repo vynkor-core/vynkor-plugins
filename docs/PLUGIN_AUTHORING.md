@@ -162,7 +162,7 @@ Every plugin should expose a status action (no input, always ungated) for
 Response shape:
 
 ```json
-// request: {"action": "status", "params_json": "{}"}
+// request: {"action": "<slug>_status", "params_json": "{}"}
 // response data_json:
 {
   "version": "0.1.0",
