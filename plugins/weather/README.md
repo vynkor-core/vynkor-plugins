@@ -8,13 +8,16 @@ Routes every call through `network`'s gated `http_request` (declares `PERMISSION
 
 | Action | Params | Result |
 |---|---|---|
-| `weather_now` | `{lat, lon, timezone?, timeout_ms?}` | `{latitude, longitude, timezone, current, raw}` |
-| `weather_forecast` | `{lat, lon, days?(1..16), timezone?, timeout_ms?}` | `{latitude, longitude, timezone, daily, raw}` |
+| `weather_now` | `{lat?, lon?, timezone?, timeout_ms?}` | `{latitude, longitude, timezone, current, raw}` |
+| `weather_forecast` | `{lat?, lon?, days?(1..16), timezone?, timeout_ms?}` | `{latitude, longitude, timezone, daily, raw}` |
 
-- `lat` `-90..90`, `lon` `-180..180` required, finite.
-- `timezone` IANA e.g. `Europe/Berlin` or `auto` (default `auto`).
+- `lat` `-90..90`, `lon` `-180..180`, finite. Give both, or omit both to use
+  the home location from `WEATHER_PLUGIN_DEFAULT_LAT`/`_LON` — one without
+  the other is rejected rather than mixed with the config.
+- `timezone` IANA e.g. `Europe/Berlin` or `auto` (default
+  `WEATHER_PLUGIN_DEFAULT_TIMEZONE`, else `auto`).
 - `days` 1..16, default 3.
-- `timeout_ms` 1..30000, default 10000.
+- `timeout_ms` 1..30000, default `WEATHER_PLUGIN_TIMEOUT_MS` (10000).
 
 Open-Meteo endpoints:
 - `current`: `https://api.open-meteo.com/v1/forecast?...&current=temperature_2m,...&timezone=...`
@@ -40,7 +43,13 @@ For `PLAY`-briefing: call `weather_forecast {lat,lon,days:1}` + `calendar.due` +
 
 | Env | Default | Meaning |
 |---|---|---|
-| `WEATHER_PLUGIN_TIMEOUT_MS` | `10000` | HTTP timeout for each open-meteo call |
+| `WEATHER_PLUGIN_DEFAULT_LAT` | — | Home latitude used when a call omits both `lat` and `lon` |
+| `WEATHER_PLUGIN_DEFAULT_LON` | — | Home longitude (set both, or neither) |
+| `WEATHER_PLUGIN_DEFAULT_TIMEZONE` | `auto` | Timezone when a call omits `timezone` |
+| `WEATHER_PLUGIN_TIMEOUT_MS` | `10000` | Default HTTP timeout per open-meteo call (capped at 30000) |
+
+With a home location set, `weather_now {}` answers "what's the weather?"
+without the agent having to know where you are.
 
 ## Testing
 
