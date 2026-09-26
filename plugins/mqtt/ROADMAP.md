@@ -20,3 +20,8 @@
 - **Persisted device registry** — survive plugin restarts (`database`).
 - **Events** — telemetry/state changes as `plugin.mqtt.*` events so
   `automations` can react (INT-09's Zigbee2MQTT/Tasmota use cases).
+- **Least privilege** — the manifest declares `network` and `secrets`, but
+  the plugin opens its own broker socket (rumqttc, not `network`'s
+  `http_request`) and never calls `secret_get`. Drop both until the
+  vault-first password lands (then keep only `secrets`); like `email`, it
+  needs `sandbox: false` for the raw socket.
