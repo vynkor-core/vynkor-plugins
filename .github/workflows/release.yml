@@ -6,8 +6,9 @@
 # The tag MUST have the form <slug>-v<semver> where <slug> is a plugin
 # directory under plugins/ and its manifest version matches <semver>.
 # Display name / description / category / tags / status are taken from the
-# slug's existing registry.json entry — register a NEW plugin locally once
-# (scripts/package.sh) before tagging it.
+# slug's registry.json entry; a plugin that has never been released falls
+# back to scripts/registry-meta.json (drop the slug from there once its first
+# release has written the real registry entry).
 #
 # Signing uses the Ed25519 seed from the SIGNING_KEY_HEX repository secret
 # (the same pinned maintainer key `vynm install` verifies against).
@@ -79,13 +80,20 @@ jobs:
 
       - name: Resolve registry metadata for the slug
         run: |
-          read -r NAME DESC CATEGORY TAGS STATUS < <(jq -r --arg s "$SLUG" '
-            .[$s] | [(.name // ""), (.description // ""), (.category // "utility"),
-                     ((.tags // []) | join(",")), (.status // "stable")] | @tsv' registry.json)
+          meta_query='.[$s] | [(.name // ""), (.description // ""), (.category // "utility"),
+                     ((.tags // []) | join(",")), (.status // "stable")] | join("\u001f")'
+          source=registry.json
+          if [[ "$(jq -r --arg s "$SLUG" 'has($s)' registry.json)" != "true" ]]; then
+            source=scripts/registry-meta.json
+          fi
+          # \x1f, not tab: tab is IFS whitespace, so an empty field would collapse
+          # and shift every later column.
+          IFS=$'\x1f' read -r NAME DESC CATEGORY TAGS STATUS < <(jq -r --arg s "$SLUG" "$meta_query" "$source")
           if [[ -z "$NAME" || -z "$DESC" ]]; then
-            echo "::error::no registry.json entry for slug '$SLUG' — run scripts/package.sh locally once to register it"
+            echo "::error::no metadata for slug '$SLUG' in registry.json or scripts/registry-meta.json — add it to registry-meta.json"
             exit 1
           fi
+          echo "metadata for $SLUG from $source"
           {
             echo "NAME=$NAME"
             echo "DESC=$DESC"

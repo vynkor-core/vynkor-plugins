@@ -1,0 +1,144 @@
+{
+  "_comment": "Display metadata for plugins not yet in registry.json. release.yml falls back to this file on a first tag (<slug>-v<semver>); package.sh then writes the real registry entry and the slug should be removed from here.",
+  "automations": {
+    "name": "Automations",
+    "description": "Declarative trigger → conditions → action rules over kernel events, with cooldowns and a confirmation gate.",
+    "category": "automation",
+    "tags": [
+      "rules",
+      "events",
+      "automation"
+    ],
+    "status": "stable"
+  },
+  "capture": {
+    "name": "Capture",
+    "description": "Screenshots, screen recording and local OCR over PipeWire and tesseract.",
+    "category": "desktop",
+    "tags": [
+      "screenshot",
+      "recording",
+      "ocr"
+    ],
+    "status": "stable"
+  },
+  "contacts": {
+    "name": "Contacts",
+    "description": "Contact store (name, email, phone, tags) as a thin schema over database.",
+    "category": "productivity",
+    "tags": [
+      "contacts",
+      "address-book"
+    ],
+    "status": "stable"
+  },
+  "github": {
+    "name": "GitHub",
+    "description": "List and create issues, list pull requests and CI runs through the GitHub REST API.",
+    "category": "integration",
+    "tags": [
+      "github",
+      "issues",
+      "ci"
+    ],
+    "status": "stable"
+  },
+  "library": {
+    "name": "Library",
+    "description": "Index local music, photos and video under allowlisted roots for search and random picks.",
+    "category": "media",
+    "tags": [
+      "library",
+      "music",
+      "photos",
+      "index"
+    ],
+    "status": "stable"
+  },
+  "metrics": {
+    "name": "Metrics",
+    "description": "Periodic CPU/RAM/disk/battery samples with range queries for graphs.",
+    "category": "system",
+    "tags": [
+      "metrics",
+      "monitoring"
+    ],
+    "status": "stable"
+  },
+  "mqtt": {
+    "name": "MQTT",
+    "description": "MQTT client with device registry, telemetry and OTA for Tasmota/ESPHome/Zigbee2MQTT-style devices.",
+    "category": "integration",
+    "tags": [
+      "mqtt",
+      "iot",
+      "home"
+    ],
+    "status": "stable"
+  },
+  "rss": {
+    "name": "RSS",
+    "description": "Subscribe to RSS/Atom feeds, fetch and query deduplicated articles.",
+    "category": "integration",
+    "tags": [
+      "rss",
+      "atom",
+      "feeds"
+    ],
+    "status": "stable"
+  },
+  "speech": {
+    "name": "Speech",
+    "description": "Text-to-speech and speech-to-text in one process: local ONNX (Kokoro/Piper/Zipformer/Whisper) plus cloud providers.",
+    "category": "voice",
+    "tags": [
+      "tts",
+      "stt",
+      "speech",
+      "voice"
+    ],
+    "status": "stable"
+  },
+  "tasks": {
+    "name": "Tasks",
+    "description": "To-do list with due dates, lists and tags as a thin schema over database.",
+    "category": "productivity",
+    "tags": [
+      "tasks",
+      "todo"
+    ],
+    "status": "stable"
+  },
+  "telegram": {
+    "name": "Telegram",
+    "description": "Telegram user-account client: dialogs, history, search, send/edit/forward, media and voice.",
+    "category": "integration",
+    "tags": [
+      "telegram",
+      "chat",
+      "messaging"
+    ],
+    "status": "stable"
+  },
+  "uptime": {
+    "name": "Uptime",
+    "description": "Periodic URL health checks with history and failure events for alerting.",
+    "category": "system",
+    "tags": [
+      "uptime",
+      "monitoring",
+      "health"
+    ],
+    "status": "stable"
+  },
+  "weather": {
+    "name": "Weather",
+    "description": "Current weather and daily forecast from Open-Meteo — no API key.",
+    "category": "integration",
+    "tags": [
+      "weather",
+      "forecast"
+    ],
+    "status": "stable"
+  }
+}
