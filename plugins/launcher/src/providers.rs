@@ -615,6 +615,21 @@ mod tests {
 
     #[test]
     fn resolve_terminal_providers() {
+        // Hermetic: resolve_launch_command refuses a terminal whose binary is
+        // not on PATH, and CI runners ship none of kitty/alacritty/ghostty.
+        // Prepend a dir of stub executables instead of relying on the host.
+        use std::os::unix::fs::PermissionsExt;
+        let stubs = tempfile::tempdir().unwrap();
+        for name in ["tmux", "kitty", "alacritty", "ghostty"] {
+            let p = stubs.path().join(name);
+            std::fs::write(&p, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![stubs.path().to_path_buf()];
+        dirs.extend(std::env::split_paths(&old_path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+
         let base = Config {
             desktop_dirs: vec![],
             steam_roots: vec![],
@@ -650,6 +665,7 @@ mod tests {
                 argv
             );
         }
+        std::env::set_var("PATH", old_path);
     }
 
     #[test]
