@@ -2,7 +2,7 @@
 
 use vynkor_sdk::VynkorClient;
 
-use crate::request::{parse_forecast, parse_now};
+use crate::request::{parse_forecast, parse_now, Defaults};
 
 #[derive(serde::Deserialize)]
 struct NetworkHttpResponse {
@@ -77,8 +77,9 @@ async fn fetch_via_network(
 pub async fn handle_weather_now(
     client: &mut VynkorClient,
     params_json: &[u8],
+    defaults: &Defaults,
 ) -> Result<Vec<u8>, String> {
-    let p = parse_now(params_json)?;
+    let p = parse_now(params_json, defaults)?;
     let url = open_meteo_now_url(p.lat, p.lon, &p.timezone);
     let raw = fetch_via_network(client, &url, p.timeout_ms).await?;
 
@@ -97,8 +98,9 @@ pub async fn handle_weather_now(
 pub async fn handle_weather_forecast(
     client: &mut VynkorClient,
     params_json: &[u8],
+    defaults: &Defaults,
 ) -> Result<Vec<u8>, String> {
-    let p = parse_forecast(params_json)?;
+    let p = parse_forecast(params_json, defaults)?;
     let url = open_meteo_forecast_url(p.lat, p.lon, p.days, &p.timezone);
     let raw = fetch_via_network(client, &url, p.timeout_ms).await?;
 

@@ -695,7 +695,93 @@
   "$defs": {},
   "config_schema": {
     "type": "object",
-    "properties": {},
+    "properties": {
+      "TTS_PLUGIN_ALLOWED_KEY_ENVS": {
+        "type": "string",
+        "description": "Required for cloud providers, default-deny: comma-separated allowlist of env var names a caller's api_key_env may reference."
+      },
+      "TTS_PLUGIN_LOCAL_MODEL_DIR": {
+        "type": "string",
+        "description": "Required for sherpa: directory with the ONNX model files."
+      },
+      "TTS_PLUGIN_LOCAL_MODEL_TYPE": {
+        "type": "string",
+        "enum": [
+          "kokoro",
+          "piper"
+        ],
+        "description": "Required for sherpa."
+      },
+      "TTS_PLUGIN_LOCAL_NUM_THREADS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2
+      },
+      "TTS_PLUGIN_KOKORO_LEXICON": {
+        "type": "string",
+        "description": "Optional comma-separated lexicon list; default auto-detects every lexicon-*.txt in the model dir."
+      },
+      "TTS_PLUGIN_IPC_TARGETS": {
+        "type": "string",
+        "description": "Required for tts_speak: comma-separated ipc_targets allowlist for streaming (e.g. phone-1.speaker). Default-deny — unset means tts_speak can't stream anywhere."
+      },
+      "STT_PLUGIN_ALLOWED_KEY_ENVS": {
+        "type": "string",
+        "description": "Required for the cloud provider, default-deny: comma-separated allowlist of env var names a caller's api_key_env may reference."
+      },
+      "STT_PLUGIN_LOCAL_MODEL_DIR": {
+        "type": "string",
+        "description": "Required for sherpa: directory with the ONNX model files."
+      },
+      "STT_PLUGIN_LOCAL_MODEL_TYPE": {
+        "type": "string",
+        "enum": [
+          "transducer",
+          "whisper"
+        ],
+        "description": "Required for sherpa."
+      },
+      "STT_PLUGIN_LOCAL_NUM_THREADS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2
+      },
+      "STT_PLUGIN_LOCAL_LANGUAGE": {
+        "type": "string",
+        "default": "en",
+        "description": "Whisper family only."
+      },
+      "STT_PLUGIN_VAD": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "off",
+        "description": "Energy VAD on listen streams, publishing stt_speech_started/stt_speech_ended. on/true/1/yes enables."
+      },
+      "STT_PLUGIN_VAD_RMS_THRESHOLD": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 30000,
+        "default": 500,
+        "description": "Per-chunk RMS threshold on s16 samples (clamped 1..30000)."
+      },
+      "STT_PLUGIN_VAD_SILENCE_MS": {
+        "type": "integer",
+        "minimum": 100,
+        "maximum": 10000,
+        "default": 1200,
+        "description": "Silence hangover that closes an utterance (clamped 100..10000)."
+      },
+      "STT_PLUGIN_VAD_MIN_SPEECH_MS": {
+        "type": "integer",
+        "minimum": 50,
+        "maximum": 5000,
+        "default": 240,
+        "description": "Minimum speech length for an ending to count (clamped 50..5000)."
+      }
+    },
     "additionalProperties": true,
     "description": "speech reads the union of the standalone plugins' env vars: every TTS_PLUGIN_* and STT_PLUGIN_* knob applies unchanged (model dirs, voices, VAD, key allowlists, TTS_PLUGIN_IPC_TARGETS)."
   }

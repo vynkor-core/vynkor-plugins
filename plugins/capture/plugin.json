@@ -106,5 +106,16 @@
         }
       }
     }
-  ]
+  ],
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "CAPTURE_PLUGIN_DIR": {
+        "type": "string",
+        "description": "Directory screenshots and recordings are written to. Default ~/.local/share/vyn/capture/."
+      }
+    },
+    "additionalProperties": true
+  }
 }

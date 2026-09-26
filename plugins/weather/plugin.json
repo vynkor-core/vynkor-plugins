@@ -1,6 +1,6 @@
 {
   "plugin_id": "weather",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "PERMISSION_NETWORK"
   ],
@@ -17,7 +17,7 @@
   "actions": [
     {
       "name": "weather_now",
-      "description": "Current conditions for a lat/lon (optional IANA timezone). Read-only; one outbound call to the weather API.",
+      "description": "Current conditions for a lat/lon, or the configured home location when both are omitted (optional IANA timezone). Read-only; one outbound call to the weather API.",
       "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
@@ -25,21 +25,17 @@
         "properties": {
           "lat": {
             "type": "number",
-            "description": "Latitude (-90..90)."
+            "description": "Latitude (-90..90). Give lat and lon together, or omit both to use the operator's home location (WEATHER_PLUGIN_DEFAULT_LAT/LON)."
           },
           "lon": {
             "type": "number",
-            "description": "Longitude (-180..180)."
+            "description": "Longitude (-180..180). Omit together with lat for the home location."
           },
           "timezone": {
             "type": "string",
-            "description": "IANA timezone e.g. Europe/Berlin or auto. Default auto."
+            "description": "IANA timezone e.g. Europe/Berlin or auto. Default WEATHER_PLUGIN_DEFAULT_TIMEZONE (auto)."
           }
         },
-        "required": [
-          "lat",
-          "lon"
-        ],
         "additionalProperties": false
       },
       "output": {
@@ -76,7 +72,7 @@
     },
     {
       "name": "weather_forecast",
-      "description": "Daily forecast for a lat/lon, 1..16 days ahead (optional IANA timezone). Read-only; one outbound call to the weather API.",
+      "description": "Daily forecast for a lat/lon (or the configured home location), 1..16 days ahead (optional IANA timezone). Read-only; one outbound call to the weather API.",
       "risk": "low",
       "permission": "PERMISSION_NETWORK",
       "input": {
@@ -84,11 +80,11 @@
         "properties": {
           "lat": {
             "type": "number",
-            "description": "Latitude (-90..90)."
+            "description": "Latitude (-90..90). Give lat and lon together, or omit both to use the operator's home location (WEATHER_PLUGIN_DEFAULT_LAT/LON)."
           },
           "lon": {
             "type": "number",
-            "description": "Longitude (-180..180)."
+            "description": "Longitude (-180..180). Omit together with lat for the home location."
           },
           "days": {
             "type": "integer",
@@ -99,13 +95,9 @@
           },
           "timezone": {
             "type": "string",
-            "description": "IANA timezone e.g. Europe/Berlin or auto. Default auto."
+            "description": "IANA timezone e.g. Europe/Berlin or auto. Default WEATHER_PLUGIN_DEFAULT_TIMEZONE (auto)."
           }
         },
-        "required": [
-          "lat",
-          "lon"
-        ],
         "additionalProperties": false
       },
       "output": {

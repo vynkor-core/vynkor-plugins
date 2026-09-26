@@ -228,9 +228,15 @@
       "EMAIL_PLUGIN_SMTP_STUB": {
         "type": "string",
         "description": "Optional: set to the exact string 'true' to skip the real SMTP send and return a stub success (debug/testing only)."
+      },
+      "EMAIL_PLUGIN_IMAP_STUB": {
+        "type": "string",
+        "description": "Testing only: the exact string true makes email_list return a clearly-marked stub instead of connecting to IMAP."
       }
     },
-    "required": ["EMAIL_PLUGIN_ALLOWED_CRED_ENVS"],
+    "required": [
+      "EMAIL_PLUGIN_ALLOWED_CRED_ENVS"
+    ],
     "additionalProperties": true
   }
 }

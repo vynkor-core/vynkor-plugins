@@ -12,9 +12,11 @@ audio routing: set `DAEMON_PLUGIN_STT_TARGET=speech` on `daemon` and
 kernel drops every mic chunk (no plugin `stt` is registered) and each voice
 turn fails with "listen stream N has no audio buffered".
 
-**The standalone `tts` and `stt` plugins remain shipped.** Run either
-`speech` alone or the two singles — running all three on one machine
-means two owners of the mic/model memory; pick one layout per host.
+**The standalone `tts` and `stt` plugins are legacy** — kept for existing
+installs, not for new ones. Run either `speech` alone or the two singles,
+never all three: they declare identical action names, and the kernel
+refuses to route an action that more than one registered plugin declares
+(every `tts_*`/`stt_*` call would fail with `ACTION_NOT_FOUND`).
 
 ## Actions
 

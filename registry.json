@@ -6,10 +6,13 @@
   "revoked": [],
   "agent": {
     "name": "Agent",
-    "description": "Multi-step goal loop for vynkor plugins: takes a natural-language goal, plans and acts by calling other plugins' kernel-routed actions as tools via ai's chat_completion (native tools->tool_calls passthrough with text-protocol fallback), and persists every goal as a JSON document in its own database namespace.",
-    "category": "utility",
+    "description": "Multi-step goal loop: plans a natural-language goal and calls other plugins' actions as tools, with long-term memory on vector-db.",
+    "category": "ai",
     "tags": [
-      "stable"
+      "agent",
+      "llm",
+      "tools",
+      "memory"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/agent",
@@ -46,10 +49,13 @@
   },
   "ai": {
     "name": "AI",
-    "description": "Provider-agnostic LLM chat completion for vynkor plugins (text + vision content blocks, native tools->tool_calls passthrough, provider-rate-limit retries) plus OpenAI-compatible embeddings; anthropic + openai-compatible providers via the network plugin.",
+    "description": "Provider-agnostic LLM chat completion, embeddings and vision (Anthropic, OpenAI-compatible, Ollama) routed through network.",
     "category": "ai",
     "tags": [
-      "llm"
+      "llm",
+      "chat",
+      "embeddings",
+      "vision"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/ai",
@@ -72,10 +78,13 @@
   },
   "calendar": {
     "name": "Calendar",
-    "description": "Event CRUD plus reminders as a thin schema layer over the [`database`](../database/) plugin. Every event is one JSON document stored under `event:<id>` in this plugin's own private `database` namespace; ids come from an atomic counter (`db_incr` on `meta:next_id`). No local state \u2014 restart-safe by construction.",
-    "category": "utility",
+    "description": "Event CRUD with reminders, recurrence and ICS import/export, stored in database.",
+    "category": "productivity",
     "tags": [
-      "stable"
+      "calendar",
+      "events",
+      "reminders",
+      "ics"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/calendar",
@@ -91,10 +100,12 @@
   },
   "clipboard": {
     "name": "Clipboard",
-    "description": "Read/write the system clipboard for vynkor plugins. v1 is text-only and local: it spawns host clipboard binaries directly with argv \u2014 never a shell \u2014 so clipboard content cannot inject commands (same delivery model as `notify`). Declares `PERMISSION_CLIPBOARD` (proto v1.4).",
-    "category": "utility",
+    "description": "Read and write the system clipboard (Wayland/X11) with history.",
+    "category": "desktop",
     "tags": [
-      "stable"
+      "clipboard",
+      "wayland",
+      "x11"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/clipboard",
@@ -109,11 +120,13 @@
     }
   },
   "daemon": {
-    "name": "Daemon",
-    "description": "The headless always-on voice client for the [`agent`](../agent/) plugin: mic \u2192 stt \u2192 agent \u2192 tts \u2192 sound, with no business logic of its own (root `ROADMAP.md`: \"thin clients to `agent` \u2014 no business logic of their own, just UI surface over the same kernel API\"; the daemon's surface is the absence of one \u2014 no window, no browser, just a listen loop and a speaker).",
-    "category": "utility",
+    "name": "Voice Daemon",
+    "description": "Headless always-on voice client: mic → stt → agent → tts → speakers, with VAD and push-to-talk modes.",
+    "category": "voice",
     "tags": [
-      "stable"
+      "voice",
+      "assistant",
+      "push-to-talk"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/daemon",
@@ -143,11 +156,12 @@
   },
   "database": {
     "name": "Database",
-    "description": "Per-caller-namespaced KV + raw SQL storage over SQLite, five db_* actions, gated by PERMISSION_STORAGE.",
+    "description": "Per-caller SQLite KV and SQL storage with TTLs, counters and change events.",
     "category": "data",
     "tags": [
       "storage",
-      "database"
+      "database",
+      "sqlite"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/database",
@@ -163,10 +177,12 @@
   },
   "email": {
     "name": "Email",
-    "description": "SMTP email sending + IMAP listing for vynkor plugins. Exposes two actions, `email_send` (SMTP via `lettre`) and `email_list` (IMAP listing, stub mode in `0.1.0`). Both resolve their password vault-first (via the `secrets` plugin's `secret_get` action). See `ROADMAP.md` for the design rationale.",
-    "category": "utility",
+    "description": "Send mail over SMTP and list IMAP mailboxes, with vault-first credentials.",
+    "category": "integration",
     "tags": [
-      "stable"
+      "email",
+      "smtp",
+      "imap"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/email",
@@ -182,10 +198,11 @@
   },
   "filesystem": {
     "name": "Filesystem",
-    "description": "Sandboxed local file browse/read/write for vynkor plugins. Three actions: `fs_list` (read-only directory browse), `fs_read` (windowed file read), and `fs_write` (full-file create/overwrite). No exec, no shell, no delete/rename \u2014 see `ROADMAP.md` non-goals.",
-    "category": "utility",
+    "description": "Sandboxed file browse/read/write/move/delete behind an allowlist of roots.",
+    "category": "system",
     "tags": [
-      "stable"
+      "files",
+      "sandbox"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/filesystem",
@@ -201,10 +218,12 @@
   },
   "gated-write": {
     "name": "Gated Write",
-    "description": "Reference high-risk plugin demonstrating the **D-09 confirmation gate** from the [Vynkor Rust SDK](https://github.com/vynkor-core/vynkor-sdk-rust).",
-    "category": "utility",
+    "description": "Reference plugin demonstrating the D-09 confirmation gate for risky writes.",
+    "category": "example",
     "tags": [
-      "stable"
+      "example",
+      "reference",
+      "security"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/gated-write",
@@ -220,10 +239,12 @@
   },
   "hotkey": {
     "name": "Hotkey",
-    "description": "Global key combos \u2192 kernel events. Hold a key, talk, release \u2014 the [`daemon`](../daemon/) turns that into a voice turn. The same events drive anything else an operator wants wired to the keyboard (mute toggles, \"stop talking\", scene switches).",
-    "category": "utility",
+    "description": "Global key combos to kernel events via the XDG GlobalShortcuts portal — push-to-talk and shortcuts.",
+    "category": "desktop",
     "tags": [
-      "stable"
+      "hotkey",
+      "shortcuts",
+      "push-to-talk"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/hotkey",
@@ -239,8 +260,8 @@
   },
   "launcher": {
     "name": "Launcher",
-    "description": "Launch apps and games by name",
-    "category": "utility",
+    "description": "Launch desktop apps and Steam games by name.",
+    "category": "desktop",
     "tags": [
       "desktop",
       "steam",
@@ -295,7 +316,7 @@
   },
   "media": {
     "name": "Media",
-    "description": "Local MPRIS media playback control - play/pause/seek/volume via session D-Bus",
+    "description": "Control MPRIS players and per-app audio streams: play/pause/seek/volume/shuffle/loop.",
     "category": "media",
     "tags": [
       "mpris",
@@ -315,11 +336,13 @@
     }
   },
   "mic": {
-    "name": "Mic",
-    "description": "Microphone capture primitive for vynkor plugins \u2014 the single owner of the mic. `mic_start` spawns a well-known host recorder binary directly with argv (never a shell), reads raw PCM from its stdout in a background task, and streams it out as `AudioStreamChunk` envelopes (codec `PCM_S16LE`) to the requested peer \u2014 D-12 machinery, `tts_speak` in reverse. `mic_stop` ends a session (idempotent), `mic_status` reports what is capturing. Declares `PERMISSION_AUDIO`, `PERMISSION_AUDIO_STREAM`, and `PERMISSION_IPC_SEND`.",
-    "category": "utility",
+    "name": "Microphone",
+    "description": "Microphone capture primitive streaming PCM frames to a target plugin.",
+    "category": "audio",
     "tags": [
-      "stable"
+      "mic",
+      "audio",
+      "capture"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/mic",
@@ -335,10 +358,11 @@
   },
   "network": {
     "name": "Network",
-    "description": "Outbound HTTP for plugins/kernel via one http_request action, gated by PERMISSION_NETWORK. HTTP-only v1.",
+    "description": "SSRF-guarded outbound HTTP for every other plugin, with compression, multipart, caching and cookies.",
     "category": "network",
     "tags": [
-      "http"
+      "http",
+      "network"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/network",
@@ -354,10 +378,10 @@
   },
   "notes": {
     "name": "Notes",
-    "description": "Note CRUD as a thin schema layer over the [`database`](../database/) plugin. Every note is one JSON document stored under `note:<id>` in this plugin's own private `database` namespace; ids come from an atomic counter (`db_incr` on `meta:next_id`). No local state \u2014 restart-safe by construction.",
-    "category": "utility",
+    "description": "Note CRUD with search as a thin schema over database.",
+    "category": "productivity",
     "tags": [
-      "stable"
+      "notes"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/notes",
@@ -373,10 +397,12 @@
   },
   "notify": {
     "name": "Notify",
-    "description": "Desktop/system notifications on the host, delivered by spawning external binaries. Exposes five actions: `notify_send` (deliver a notification \u2014 optionally silent, optionally spoken), `notify_providers` (list the delivery backends), and the inbox actions `notify_list` / `notify_mark_read` / `notify_delete` (review stored notifications).",
-    "category": "utility",
+    "description": "Desktop notifications, spoken alerts, a silent inbox and ntfy/Gotify phone push.",
+    "category": "system",
     "tags": [
-      "stable"
+      "notifications",
+      "push",
+      "ntfy"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/notify",
@@ -392,7 +418,7 @@
   },
   "ping-pong": {
     "name": "Ping Pong",
-    "description": "Minimal example plugin that responds to ping actions.",
+    "description": "Minimal example plugin that answers ping actions.",
     "category": "example",
     "tags": [
       "example"
@@ -411,10 +437,12 @@
   },
   "scheduler": {
     "name": "Scheduler",
-    "description": "Once/cron schedules as a thin schema layer over the [`database`](../database/) plugin. Every schedule is one JSON document stored under `sched:<id>` in this plugin's own private `database` namespace; generated ids come from an atomic counter (`db_incr` on `meta:next_id`). No local state \u2014 restart-safe by construction.",
-    "category": "utility",
+    "description": "One-shot and cron schedules (IANA time zones) that publish events or call actions.",
+    "category": "automation",
     "tags": [
-      "stable"
+      "cron",
+      "scheduler",
+      "timers"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/scheduler",
@@ -430,10 +458,11 @@
   },
   "search": {
     "name": "Search",
-    "description": "Web search for vynkor plugins. Exposes one action, `web_search`. Doesn't open its own sockets \u2014 every request is routed through the `network` plugin's `http_request` action, so `network` must also be registered and running (same model as `ai`/`tts`/`stt`). See `ROADMAP.md` for the design rationale.",
-    "category": "utility",
+    "description": "Web search through Brave or Tavily with vault-first API keys.",
+    "category": "integration",
     "tags": [
-      "stable"
+      "search",
+      "web"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/search",
@@ -449,10 +478,12 @@
   },
   "secrets": {
     "name": "Secrets",
-    "description": "Encrypted credential/API-key vault for Vynkor plugins, gated by `PERMISSION_SECRETS`. One ChaCha20-Poly1305-encrypted vault file per calling plugin \u2014 callers cannot see, read, or overwrite each other's secrets.",
-    "category": "utility",
+    "description": "Encrypted per-caller credential and API-key vault (ChaCha20-Poly1305).",
+    "category": "security",
     "tags": [
-      "stable"
+      "secrets",
+      "vault",
+      "credentials"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/secrets",
@@ -468,10 +499,11 @@
   },
   "sound": {
     "name": "Sound",
-    "description": "Audio output primitive for vynkor plugins \u2014 the single owner of the speakers. `sound_play` spawns a well-known host player binary directly with argv (never a shell) and returns immediately; clips play in the background. `sound_stop` kills the current clip (or a specific one), `sound_status` reports what is playing. Declares `PERMISSION_AUDIO` (existing enum value 5).",
-    "category": "utility",
+    "description": "Audio output primitive — plays files or inline audio as the single owner of the speakers.",
+    "category": "audio",
     "tags": [
-      "stable"
+      "audio",
+      "playback"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/sound",
@@ -486,13 +518,13 @@
     }
   },
   "stt": {
-    "name": "STT",
-    "description": "Speech-to-text via stt_transcribe + stt_models: in-process local ONNX (sherpa: zipformer/whisper) + openai audio cloud via network, gated by PERMISSION_NETWORK.",
-    "category": "audio",
+    "name": "STT (legacy)",
+    "description": "Standalone speech-to-text — superseded by the speech plugin; kept for existing installs.",
+    "category": "voice",
     "tags": [
       "stt",
-      "audio",
-      "speech"
+      "speech",
+      "legacy"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/stt",
@@ -508,10 +540,11 @@
   },
   "sync": {
     "name": "Sync",
-    "description": "Host-side versioned KV state store for Vynkor plugins (SQLite-backed), gated by `PERMISSION_STORAGE` and publishing a `sync.delta` event on every mutation (`PERMISSION_EVENT_PUBLISH`). This is the D-13 host side: clients pull a snapshot then subscribe to deltas; on reconnect they re-pull the snapshot. See `docs/REMOTE_DEVICES_PLAN.md` \u00a711 (\"Sync\") and the D-13 task in `docs/REMOTE_DEVICES_ROADMAP.md` in the `vynkor` (kernel) repo.",
-    "category": "utility",
+    "description": "Host-side versioned KV state that publishes a delta event on every change.",
+    "category": "data",
     "tags": [
-      "stable"
+      "sync",
+      "state"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/sync",
@@ -527,10 +560,11 @@
   },
   "sync-client": {
     "name": "Sync Client",
-    "description": "The D-13 client side: a local mirror of the host `sync` plugin's store, plus a periodic heartbeat. On every (re)connect it subscribes to the host's delta events, pulls a `sync_get_snapshot` to seed the mirror, then applies deltas as they arrive. The heartbeat pushes this device's liveness into the host's sync state via `sync_set`, and reconnect re-pulls the snapshot so an offline device catches up.",
-    "category": "utility",
+    "description": "Client-side mirror of the host sync store with a heartbeat.",
+    "category": "data",
     "tags": [
-      "stable"
+      "sync",
+      "state"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/sync-client",
@@ -546,8 +580,8 @@
   },
   "system": {
     "name": "System",
-    "description": "Local host queries and simple reversible controls: battery, processes, memory, volume, backlight, session lock, power profile. Linux + macOS.",
-    "category": "utility",
+    "description": "Host info and reversible controls: battery, processes, volume, brightness, lock, power profile.",
+    "category": "system",
     "tags": [
       "system",
       "battery",
@@ -568,13 +602,13 @@
     }
   },
   "tts": {
-    "name": "TTS",
-    "description": "Text-to-speech via tts_synthesize + tts_voices: in-process local ONNX (sherpa: Kokoro/Piper) + openai/elevenlabs cloud via network, gated by PERMISSION_NETWORK.",
-    "category": "audio",
+    "name": "TTS (legacy)",
+    "description": "Standalone text-to-speech — superseded by the speech plugin; kept for existing installs.",
+    "category": "voice",
     "tags": [
       "tts",
-      "audio",
-      "speech"
+      "speech",
+      "legacy"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/tts",
@@ -589,11 +623,13 @@
     }
   },
   "vector-db": {
-    "name": "Vector Db",
-    "description": "Embedding upsert + similarity search for Vynkor plugins, gated by `PERMISSION_STORAGE`. One SQLite file per calling plugin \u2014 callers cannot see each other's collections. Brute-force cosine on L2-normalized vectors, per-collection dimension enforcement.",
-    "category": "utility",
+    "name": "Vector DB",
+    "description": "Per-caller embedding store with cosine similarity search.",
+    "category": "data",
     "tags": [
-      "stable"
+      "vectors",
+      "embeddings",
+      "search"
     ],
     "status": "stable",
     "source_url": "https://github.com/vynkor-core/vynkor-plugins/tree/main/plugins/vector-db",

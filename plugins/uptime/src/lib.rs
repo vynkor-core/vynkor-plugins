@@ -92,7 +92,7 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
         }
         request::UptimeRequest::Status => {
             let uptime_ms = start.elapsed().as_millis() as u64;
-            ok(json!({"version": "0.1.0", "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
+            ok(json!({"version": env!("CARGO_PKG_VERSION"), "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
         }
     }
 }
@@ -115,23 +115,77 @@ async fn do_check(rpc: Rpc, url: &str, timeout_ms: u64) -> CheckResult {
     }
 }
 
-pub async fn scan_all(rpc: Rpc, config: &Config) -> Result<usize, String> {
+/// Outcome of one background scan: how many targets were checked, plus a
+/// `check_failed` event for each failing one (same shape `uptime_check`
+/// publishes) for the serve loop to put on the bus.
+pub struct ScanResult { pub checked: usize, pub failed: Vec<(String, Value)> }
+
+pub async fn scan_all(rpc: Rpc, config: &Config) -> Result<ScanResult, String> {
     let db = store::Db::new(rpc.clone(), config.db_timeout_ms);
     let targets = db.list_targets().await?;
-    let mut n=0;
+    let mut scan = ScanResult { checked: 0, failed: Vec::new() };
     for t in targets {
         let res = do_check(rpc.clone(), &t.url, config.check_timeout_ms as u64).await;
         let id = db.next_id(store::NEXT_CHECK_ID).await?.to_string();
         let now = store::now_ms();
+        if !res.ok { scan.failed.push(("check_failed".into(), json!({"url": t.url, "status": res.status, "error": res.error}))); }
         let check = Check { id, url: t.url.clone(), timestamp_ms: now, ok: res.ok, status: res.status, latency_ms: res.latency_ms, error: res.error };
         let _ = db.put_check(&check).await;
-        n+=1;
+        scan.checked+=1;
     }
     let _ = db.trim_checks(config.max_checks).await;
-    Ok(n)
+    Ok(scan)
 }
 
 fn ok(data: Value, event: Option<(String, Value)>) -> Result<ActionResult, String> {
     let data = serde_json::to_vec(&data).map_err(|e| format!("encode: {e}"))?;
     Ok(ActionResult { data, event })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// Fake kernel for `scan_all`: in-memory `db_*`, `http_request` answers
+    /// 200 for URLs containing "up" and 503 otherwise.
+    fn spawn_fake(mut rx: mpsc::Receiver<RpcCall>) {
+        tokio::spawn(async move {
+            let mut kv: BTreeMap<String, Value> = BTreeMap::new();
+            while let Some(call) = rx.recv().await {
+                let p: Value = serde_json::from_slice(&call.params_json).unwrap();
+                let key = p.get("key").and_then(Value::as_str).unwrap_or_default().to_string();
+                let res = match call.action.as_str() {
+                    "db_incr" => { let n = kv.get(&key).and_then(Value::as_i64).unwrap_or(0) + 1; kv.insert(key, json!(n)); json!({"ok": true, "value": n}) }
+                    "db_set" => { kv.insert(key, p["value"].clone()); json!({"ok": true}) }
+                    "db_get" => match kv.get(&key) { Some(v) => json!({"found": true, "value": v}), None => json!({"found": false, "value": null}) },
+                    "db_keys" => { let pre = p["prefix"].as_str().unwrap_or(""); json!({"keys": kv.keys().filter(|k| k.starts_with(pre)).collect::<Vec<_>>()}) }
+                    "db_batch_get" => { let mut m = serde_json::Map::new(); for k in p["keys"].as_array().unwrap() { let k = k.as_str().unwrap(); m.insert(k.into(), kv.get(k).cloned().unwrap_or(Value::Null)); } json!({"values": m}) }
+                    "db_delete" => json!({"deleted": kv.remove(&key).is_some()}),
+                    "http_request" => { let up = p["url"].as_str().unwrap().contains("up"); json!({"status": if up {200} else {503}, "body": "", "body_encoding": "utf8"}) }
+                    other => { let _ = call.reply.send(Err(format!("unknown {other}"))); continue; }
+                };
+                let _ = call.reply.send(Ok(res));
+            }
+        });
+    }
+
+    #[tokio::test]
+    async fn scan_all_reports_failed_targets_as_events() {
+        let (tx, rx) = mpsc::channel(16);
+        spawn_fake(rx);
+        let rpc = Rpc::new(tx);
+        let cfg = Config::default();
+        for url in ["https://up.example", "https://down.example"] {
+            let req = serde_json::to_vec(&json!({"url": url})).unwrap();
+            handle_action(rpc.clone(), &cfg, "uptime_add", &req, std::time::Instant::now()).await.unwrap();
+        }
+        let scan = scan_all(rpc, &cfg).await.unwrap();
+        assert_eq!(scan.checked, 2);
+        assert_eq!(scan.failed.len(), 1, "only the 503 target is reported");
+        let (event_type, payload) = &scan.failed[0];
+        assert_eq!(event_type, "check_failed");
+        assert_eq!(payload["url"], "https://down.example");
+        assert_eq!(payload["status"], 503);
+    }
 }

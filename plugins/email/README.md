@@ -1,8 +1,8 @@
 # email plugin
 
 SMTP email sending + IMAP listing for vynkor plugins. Exposes two actions,
-`email_send` (SMTP via `lettre`) and `email_list` (IMAP listing, stub mode
-in `0.1.0`). Both resolve their password vault-first (via the `secrets`
+`email_send` (SMTP via `lettre`) and `email_list` (IMAP header listing; an
+offline stub mode exists for tests). Both resolve their password vault-first (via the `secrets`
 plugin's `secret_get` action). See `ROADMAP.md` for the design rationale.
 
 ## Operator note
@@ -119,7 +119,7 @@ Request (`ActionRequest.params_json`):
 - `limit` — optional, default `10`, capped at `50`.
 - `timeout_ms` — optional, default and cap `30000`.
 
-Response on success (stub mode in `0.1.0`):
+Response on success (stub mode shown):
 
 ```json
 {

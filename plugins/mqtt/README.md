@@ -40,16 +40,28 @@ The MQTT plugin provides a bridge between Vynkor and IoT devices using the [Vynk
 
 ## Configuration
 
-Set these environment variables in the plugin's `env:` list:
+No environment configuration yet — the broker, credentials and TLS files
+are passed per call to `mqtt_connect`:
 
-```yaml
-env:
-  - MQTT_PLUGIN_DEFAULT_BROKER=mqtt://mqtt.local:1883
-  - MQTT_PLUGIN_DEFAULT_USERNAME=user
-  - MQTT_PLUGIN_DEFAULT_PASSWORD=pass  # or use secrets plugin
-  - MQTT_PLUGIN_CA_CERT_PATH=/path/to/ca.pem
-  - MQTT_PLUGIN_TOPIC_PREFIX=vynkor
+```json
+{
+  "broker_host": "mqtt.local",
+  "broker_port": 1883,
+  "client_id": "vynkor-mqtt-plugin",
+  "username": "user",
+  "password": "pass",
+  "keepalive_secs": 60,
+  "tls": {"ca_cert_path": "/path/to/ca.pem", "client_cert_path": "...", "client_key_path": "..."}
+}
 ```
+
+Only `broker_host` is required. The connection lives in the plugin
+process: after a plugin restart, call `mqtt_connect` again.
+
+> The password travels as an action parameter, so it is visible to whoever
+> builds the call (e.g. an agent transcript). Env defaults, vault-first
+> credentials via `secrets`, and auto-connect at startup are planned — see
+> `ROADMAP.md`.
 
 ## Quick Start
 

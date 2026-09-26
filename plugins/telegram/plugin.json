@@ -213,7 +213,6 @@
       "description": "Delete a message",
       "risk": "high",
       "requires_confirmation": true,
-      "requires_confirmation": true,
       "input": {
         "type": "object",
         "properties": {
@@ -240,14 +239,12 @@
       "name": "tg_delete_messages",
       "description": "Delete multiple messages",
       "risk": "high",
-      "requires_confirmation": true,
       "requires_confirmation": true
     },
     {
       "name": "tg_forward_message",
       "description": "Forward a message to another peer",
       "risk": "high",
-      "requires_confirmation": true,
       "requires_confirmation": true,
       "input": {
         "type": "object",
@@ -280,7 +277,6 @@
       "name": "tg_forward_messages",
       "description": "Forward multiple messages to another peer",
       "risk": "high",
-      "requires_confirmation": true,
       "requires_confirmation": true
     },
     {
@@ -613,16 +609,39 @@
     "plugin.telegram.message_sent"
   ],
   "requires": [],
-  "config": {
-    "TELEGRAM_PLUGIN_ACCOUNTS": {
-      "type": "string",
-      "description": "Comma-separated list of account names (e.g. 'personal,corporate')",
-      "default": "default"
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "TELEGRAM_PLUGIN_ACCOUNTS": {
+        "type": "string",
+        "default": "default",
+        "description": "Comma-separated account ids (e.g. 'personal,corporate'). Each id's credentials come from TELEGRAM_PLUGIN_API_ID_<ID>, TELEGRAM_PLUGIN_API_HASH_<ID> and TELEGRAM_PLUGIN_PHONE_<ID>, where <ID> is the id upper-cased."
+      },
+      "TELEGRAM_PLUGIN_SESSION_DIR": {
+        "type": "string",
+        "default": "/tmp",
+        "description": "Absolute directory for <account>.session files (~ is not expanded). A session file is a logged-in account, so do not keep the /tmp default."
+      },
+      "TELEGRAM_PLUGIN_PROXY_URL": {
+        "type": "string",
+        "description": "Optional SOCKS5 proxy (socks5://host:port) for every account, for networks that block the home DC."
+      },
+      "TG_API_ID": {
+        "type": "integer",
+        "description": "Shared fallback api_id for accounts without TELEGRAM_PLUGIN_API_ID_<ID>."
+      },
+      "TG_API_HASH": {
+        "type": "string",
+        "description": "Shared fallback api_hash for accounts without TELEGRAM_PLUGIN_API_HASH_<ID>."
+      }
     },
-    "TELEGRAM_PLUGIN_SESSION_DIR": {
-      "type": "string",
-      "description": "Directory for session files",
-      "default": "~/.local/share/vyn/telegram"
-    }
+    "patternProperties": {
+      "^TELEGRAM_PLUGIN_(API_ID|API_HASH|PHONE)_[A-Z0-9_]+$": {
+        "type": "string",
+        "description": "Per-account credential; the suffix is the account id upper-cased."
+      }
+    },
+    "additionalProperties": true
   }
 }

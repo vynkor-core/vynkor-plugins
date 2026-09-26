@@ -54,15 +54,23 @@ Full MTProto user-client for vynkor (N-account, Rust + Grammers). Acts as your d
 
 ```bash
 TELEGRAM_PLUGIN_ACCOUNTS=default,corporate
-TELEGRAM_PLUGIN_API_ID_default=12345
-TELEGRAM_PLUGIN_API_HASH_default=abc123...
-TELEGRAM_PLUGIN_PHONE_default=+998...
-TELEGRAM_PLUGIN_API_ID_corporate=...
-TELEGRAM_PLUGIN_SESSION_DIR=~/.local/share/vyn/telegram
+TELEGRAM_PLUGIN_API_ID_DEFAULT=12345
+TELEGRAM_PLUGIN_API_HASH_DEFAULT=abc123...
+TELEGRAM_PLUGIN_PHONE_DEFAULT=+998...
+TELEGRAM_PLUGIN_API_ID_CORPORATE=...
+TELEGRAM_PLUGIN_SESSION_DIR=/home/you/.local/share/vyn/telegram
 TELEGRAM_PLUGIN_PROXY_URL=socks5://127.0.0.1:1080   # optional, all accounts
 ```
 
-Secrets resolved vault-first via `secrets` plugin; env is fallback.
+| Env | Default | Meaning |
+|---|---|---|
+| `TELEGRAM_PLUGIN_ACCOUNTS` | `default` | Comma-separated account ids. |
+| `TELEGRAM_PLUGIN_API_ID_<ID>` / `_API_HASH_<ID>` / `_PHONE_<ID>` | — | Per-account credentials. `<ID>` is the account id **upper-cased** (`default` → `_DEFAULT`); a lower-case suffix is silently ignored. `TG_API_ID` / `TG_API_HASH` are a shared fallback. |
+| `TELEGRAM_PLUGIN_SESSION_DIR` | `/tmp` | Where `<account>.session` (SQLite) lives. Use an absolute path — the plugin does not expand `~` — and never leave the `/tmp` default in production: a session file is a logged-in account. |
+| `TELEGRAM_PLUGIN_PROXY_URL` | — | SOCKS5 proxy for every account (see "Unreachable DC"). |
+
+Credentials come from env only — the plugin declares `PERMISSION_SECRETS`
+but does not read the `secrets` vault yet (`plugins/telegram/ROADMAP.md`).
 
 ## Antiban (`src/mtproto/antiban.rs`)
 

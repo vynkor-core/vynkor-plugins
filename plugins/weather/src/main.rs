@@ -4,9 +4,10 @@
 use vynkor_sdk::proto::{envelope, ActionResponse, ActionStatus, Envelope, PluginManifest, Pong};
 use vynkor_sdk::{VynkorClient, VynkorError};
 use weather_plugin::handler;
+use weather_plugin::request::Defaults;
 
 const PLUGIN_ID: &str = "weather";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -40,9 +41,10 @@ fn unix_millis() -> u64 {
 async fn handle_action_request(
     client: &mut VynkorClient,
     req: vynkor_sdk::proto::ActionRequest,
+    defaults: &Defaults,
 ) -> Envelope {
     let reply = match req.action.as_str() {
-        "weather_now" => match handler::handle_weather_now(client, &req.params_json).await {
+        "weather_now" => match handler::handle_weather_now(client, &req.params_json, defaults).await {
             Ok(data_json) => ActionResponse {
                 action_id: req.action_id,
                 status: ActionStatus::ActionOk as i32,
@@ -56,7 +58,7 @@ async fn handle_action_request(
                 error: e,
             },
         },
-        "weather_forecast" => match handler::handle_weather_forecast(client, &req.params_json).await {
+        "weather_forecast" => match handler::handle_weather_forecast(client, &req.params_json, defaults).await {
             Ok(data_json) => ActionResponse {
                 action_id: req.action_id,
                 status: ActionStatus::ActionOk as i32,
@@ -89,7 +91,7 @@ async fn handle_action_request(
     }
 }
 
-async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
+async fn serve(mut client: VynkorClient, defaults: Defaults) -> Result<(), VynkorError> {
     let jwt_token = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
     let ack = client
         .register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt_token)
@@ -122,7 +124,7 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
                 let _ = client.ack_event(&e.event_id).await;
             }
             Some(envelope::Payload::ActionRequest(req)) => {
-                let resp = handle_action_request(&mut client, req).await;
+                let resp = handle_action_request(&mut client, req, &defaults).await;
                 let _ = client.send("kernel", resp).await;
             }
             other => println!("[{PLUGIN_ID}] unhandled: {other:?}"),
@@ -141,7 +143,7 @@ async fn main() -> Result<(), VynkorError> {
         Some(s) => VynkorClient::connect_with_secret(&socket_path, s.as_bytes()).await?,
         None => VynkorClient::connect(&socket_path).await?,
     };
-    serve(client).await
+    serve(client, Defaults::from_env()).await
 }
 
 #[cfg(test)]
@@ -179,7 +181,7 @@ mod tests {
         let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
         let pc = VynkorClient::from_stream(plugin_side, None);
         let kc = VynkorClient::from_stream(kernel_side, None);
-        tokio::spawn(async move { let _ = serve(pc).await; });
+        tokio::spawn(async move { let _ = serve(pc, Defaults::default()).await; });
         let (tx, rx) = tokio::sync::mpsc::channel(16);
         let http: HttpRequests = Arc::new(Mutex::new(Vec::new()));
         tokio::spawn(run_shim(kc, rx, http.clone(), http_data));

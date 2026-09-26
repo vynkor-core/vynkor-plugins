@@ -1,5 +1,10 @@
 # tts plugin
 
+> **Legacy.** New installs should use [`speech`](../speech/), which runs
+> this engine verbatim in one process alongside `stt`. Both declare the
+> same action names, and the kernel refuses to route an action declared by
+> two plugins — run `speech` *or* the standalone `stt`+`tts`, never both.
+
 Text-to-speech for Vynkor plugins. Exposes three actions: `tts_synthesize`
 (turn text into audio), `tts_voices` (list selectable voices), and
 `tts_speak` (stream Opus audio to a peer plugin — the D-12 voice

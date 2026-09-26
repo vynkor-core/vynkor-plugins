@@ -70,3 +70,11 @@ All buildable now — no kernel changes. Status updated after implementation:
 Deferred (above medium cost): multi-statement transactions (BEGIN/COMMIT
 across calls needs a transaction-pinning design against the pooled
 connections).
+
+## STAT-01 (audit 2026-09-27)
+
+This plugin declares a bare `status` action, as do 8 others. The kernel
+refuses to route an action declared by more than one registered plugin
+(`ACTION_NOT_FOUND`), so `status` is unreachable on any real install.
+Rename to `database_status` (keep `status` for one release only if a client
+still calls it — none in this repo does).

@@ -473,6 +473,62 @@
         "type": "string",
         "default": "agent-memory",
         "description": "Vector-db collection name for agent memory"
+      },
+      "AGENT_PLUGIN_AI_MAX_RETRIES": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 0,
+        "description": "Provider 429/5xx retries delegated to ai. Keep 0 for interactive goals: long retry chains trip the kernel watchdog; use AGENT_PLUGIN_FALLBACK_AGENT_ID instead."
+      },
+      "AGENT_PLUGIN_AI_TIMEOUT_MS": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 300000,
+        "default": 30000,
+        "description": "Per-completion timeout, clamped 1000..300000. Raise for local CPU models together with the kernel watchdog."
+      },
+      "AGENT_PLUGIN_FALLBACK_AGENT_ID": {
+        "type": "string",
+        "description": "Named ai profile used when the primary LLM leg fails (429/5xx, timeout, unknown model). Unset = no fallback."
+      },
+      "AGENT_PLUGIN_APPROVALS_FILE": {
+        "type": "string",
+        "description": "Path to a JSON object {\"<action>\": bool} that overrides requires_confirmation per tool (true = ask before dispatch)."
+      },
+      "AGENT_PLUGIN_DYNAMIC_CATALOG": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "on",
+        "description": "Narrow the tool catalog to tools relevant to the goal before each LLM call. off/false/0/no disables."
+      },
+      "AGENT_PLUGIN_EMBEDDING_FILTER": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "off",
+        "description": "Rank catalog tools by embedding similarity to the goal (needs vector-db + ai embeddings). on/true/1/yes enables."
+      },
+      "AGENT_PLUGIN_FACTS": {
+        "type": "string",
+        "description": "Literal facts text (ids, accounts, who-is-who); overrides _facts.md in AGENT_PLUGIN_PROMPTS_DIR."
+      },
+      "AGENT_PLUGIN_PROMPTS_DIR": {
+        "type": "string",
+        "description": "Directory of prompt files: <group>.md per tool group (/ becomes -), plus reserved _identity.md, _personality.md, _channel.md, _facts.md."
+      },
+      "AGENT_PLUGIN_PLUGIN_PROMPTS": {
+        "type": "string",
+        "description": "Single-line JSON object {\"<group>\": \"<prompt>\"}; wins over AGENT_PLUGIN_PROMPTS_DIR for the groups it names."
+      },
+      "AGENT_PLUGIN_GOAL_RETENTION_LIMIT": {
+        "type": "integer",
+        "minimum": 1,
+        "description": "Max goal docs kept; the oldest by updated_at_ms beyond it are pruned after each new goal. Unset = unlimited."
       }
     },
     "additionalProperties": true
