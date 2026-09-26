@@ -72,3 +72,14 @@ without the resource-capping pre_exec (dev kernels), or use cloud providers
 (`openai`/`elevenlabs`), which never touch sherpa. The merge itself is
 sound: engines are verbatim copies, and synthesis outside the kernel is
 fast and correct.
+
+## Next (EXI-03, audit 2026-09-27)
+
+- **Wake word** — sherpa-onnx keyword spotting on the listen stream,
+  publishing `plugin.speech.wake_word {keyword}`; the daemon's `vad` mode
+  then only starts a turn after the keyword. This is the biggest missing
+  piece for an always-on assistant that doesn't need a hotkey.
+- **Partial hypotheses** — streaming zipformer interim text as
+  `stt_partial` events for live captions in clients.
+- **STAT-01** — `status` → `speech_status`.
+- Retire the standalone `stt`/`tts` plugins once no install depends on them.

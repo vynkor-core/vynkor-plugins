@@ -62,19 +62,40 @@ surfaces).
   only delays the caller past `timeout_ms`. Verified live: a call against an
   RFC 5737 TEST-NET-3 host (`203.0.113.1`, guaranteed non-routable) failed
   after exactly 1 attempt with a connection-timeout error, not a retry loop.
-- **`email_list`** — outbox listing backed by `database` (or the `secrets`
-  plugin for a sent-log), so callers can query what was sent. Deferred until
-  a caller needs it.
+- **Sent log** — a `database`-backed outbox so callers can query what was
+  sent (`email_list` reads IMAP mailboxes, not this plugin's own sends).
+  Deferred until a caller needs it.
 - **Provider abstraction** — optional: a trait over `lettre` vs a
   `network`-routed HTTP email API (Resend/Postmark/SendGrid), mirroring
   `search`'s provider adapters, if an HTTP-only deployment is needed.
 
 ## Non-goals / follow-ups
 
-- **No inbound email (IMAP/POP3)** — `email` sends only.
+- **No POP3, no push (IDLE) yet** — inbound is on-demand IMAP listing only.
 - **No templating** — the caller builds the subject/body; `email` transmits
   them verbatim.
 - **No secret logging** — the resolved password is never logged, cached to
   disk, or embedded in any error string; the stub response carries only
   non-secret debug fields.
 - **No kernel special-casing for "email"** — an ordinary plugin like any other.
+
+## Next — inbound (INT-07, audit 2026-09-27)
+
+`email_list` returns headers + a snippet only, so the agent can see *that*
+mail arrived but not act on it. In order:
+
+- **`email_read {uid, mailbox?}`** — full body (text/plain preferred,
+  HTML → text fallback), attachment names/sizes without contents. Needs a
+  body-size cap like `network`'s.
+- **`email_search {query, since?, from?, unseen?}`** — IMAP `SEARCH`
+  mapped from a small safe grammar (no raw IMAP passthrough).
+- **`email_flag {uid, seen?, flagged?}`** and **`email_move {uid, to}`**
+  (archive/trash) — `risk: medium`, `requires_confirmation` for move.
+- **Reply** — `email_send {in_reply_to}` setting `In-Reply-To`/`References`
+  so threads stay intact.
+- **Mailbox profiles** — `EMAIL_PLUGIN_ACCOUNTS` with per-account
+  host/port/user, so callers stop passing `imap_host`/`smtp_host` on every
+  call (the agent currently has to know them).
+- **New-mail event** — periodic `UNSEEN` poll publishing
+  `plugin.email.received {uid, from, subject}` so `automations` can react
+  (INT-14, INT-22 build on this).

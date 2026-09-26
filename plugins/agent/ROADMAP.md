@@ -84,3 +84,16 @@ actions, state persisted in `database`). Shipped as v0.1.0 — see README.md.
 - No multi-goal concurrency within one plugin instance beyond what the
   serve loop naturally allows; goal documents are independent, ordering is
   first-come.
+
+## Audit 2026-09-27 — next
+
+- **`goal_cancel {id}`** (AGT-10) — stop a running goal between steps; no
+  way to abort a runaway goal exists today short of restarting the plugin.
+- **Step events** — `plugin.agent.step {goal_id, n, tool, ok}` so
+  webclient/daemon/telegram can show progress (see "Streaming steps").
+- **`status` collision is confirmed, not hypothetical** — the kernel
+  refuses to route any action declared by more than one plugin
+  (`vynkor/src/ipc/protocol/router.rs`, `ActionLookup::Ambiguous` →
+  `ACTION_NOT_FOUND`). Never allowlist a bare `status`; STAT-01 in
+  `PLANS.md` renames them to `<slug>_status`.
+- **Token/cost budgets** per goal and per day (AGT-06).

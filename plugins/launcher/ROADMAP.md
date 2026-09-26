@@ -28,3 +28,9 @@ Local app/game launch for vynkor — six providers, one permission.
 - No process kill/management.
 - No window focus — that belongs to `window` plugin.
 - No remote launch.
+
+## Audit 2026-09-27
+
+- **Recents** — remember launches (`database`) and rank them first in
+  `launch_list`; "open the last game" (EXI-10 remainder — fuzzy matching
+  already shipped).
