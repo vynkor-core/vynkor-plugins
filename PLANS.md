@@ -1,12 +1,12 @@
 # PLANS.md — план развития экосистемы vynkor
 
-> **Статус 2026-08-26 (ветка `feat/p0-batch`):** реализованы и проверены
-> тестами/live-аудитом: **INT-20** (рецепты в `plugins/ai/USAGE.md`),
-> **INF-01** (`.github/workflows/release.yml`), **EXI-01** (ICS в calendar),
-> **INT-02** + **MRG-03** (`push_send` в notify), **AGT-01** (memory агента),
-> **EXI-02** (`tts_speak_stream`), **CAP-01** (плагин `automations`),
-> **MRG-01** (плагин `speech`; старые tts/stt на месте). Соответствующие
-> секции ниже удаляются при мерже, детали — в root `ROADMAP.md`.
+> **Статус 2026-09-27 (аудит документации против кода, ветка
+> `chore/docs-registry-sync`):** колонка «Статус» в сводной таблице отражает
+> фактический код — ✅ сделано, 🟡 частично, — не начато. Секции сделанных
+> пунктов ниже оставлены как история решений; источник правды о Shipped —
+> root `ROADMAP.md`. Новые пункты аудита: **STAT-01**, **SIG-01**, **REL-01**,
+> **EXI-11**, **AGT-10** (в конце таблицы). Задачи уровня плагина — в
+> `plugins/<slug>/ROADMAP.md`.
 >
 > Идеи по плагинам, клиентам, интеграциям и инфраструктуре. Составлено
 > 2026-08-25 после релиза `agent@0.1.3` / `ai@0.1.1`. Живой документ:
@@ -31,86 +31,91 @@
 
 ## Сводная таблица
 
-| ID | Идея | Категория | Приоритет | Сложность | Зависит от |
-|---|---|---|---|---|---|
-| INF-01 | Релизы по тегу в CI (package+sign) | Инфра | **P0** | S | GH Secrets |
-| EXI-01 | ICS импорт/экспорт в `calendar` | Существующие | **P0** | M | — |
-| AGT-01 | Memory агента на `vector-db` | Agent | **P0** | M | — |
-| INT-01 | Telegram-бот как клиент агента | Интеграции | **P0** | M | — |
-| EXI-02 | `tts`: синтез по предложениям | Существующие | **P0** | M | daemon |
-| CAP-01 | `automations` — rules engine | Новый плагин | **P1** | L | event bus |
-| EXI-03 | `stt`: wake-word + промежуточные гипотезы | Существующие | **P1** | L | sherpa |
-| CAP-02 | `capture` — экран/камера/OCR | Новый плагин | **P1** | XL | PipeWire |
-| CAP-03 | `metrics` — хост-метрики для графиков | Новый плагин | **P1** | M | — |
-| EXI-04 | `calendar`: повторяющиеся события (RRULE) | Существующие | **P1** | M | — |
-| INT-02 | ntfy/Gotify push на телефон | Интеграции | **P1** | S | network |
-| EXI-05 | `filesystem`: delete/rename/move/trash | Существующие | **P1** | M | — |
-| CLI-01 | `vyn ask` — терминальный клиент агенту | Клиенты | P2 | S | WS API |
-| CLI-02 | vynkor-web: чат + inbox + графики | Клиенты | P2 | L | metrics |
-| INT-03 | Google Calendar полная синхронизация | Интеграции | P2 | L | EXI-01 |
-| INT-04 | CalDAV (Nextcloud/iCloud/Fastmail) | Интеграции | P2 | L | EXI-01 |
-| INT-05 | `rss` читалка + «что нового» | Интеграции | P2 | M | vector-db |
-| INT-06 | `github` — issues/CI/PR голосом | Интеграции | P2 | M | network |
-| INT-07 | `email`: IMAP-тело + триаж агентом | Интеграции | P2 | M | — |
-| EXI-06 | `clipboard`: история + поиск | Существующие | P2 | S | database |
-| AGT-02 | Background goals (detach >30 с) | Agent | P2 | L | — |
-| AGT-03 | Playbooks — декларативные макро без LLM | Agent | P2 | M | — |
-| INF-02 | vynm: авто-deps, rollback, каналы, search | Инфра | P2 | M | kernel |
-| INT-08 | `weather` + плейбук «брифинг» | Интеграции | P2 | S | search |
-| CAP-04 | `window` — список/фокус окон | Новый плагин | P2 | M | — |
-| CAP-05 | `input` — виртуальные клавиатура/мышь | Новый плагин | P2 | M | — |
-| CAP-06 | `wifi` — NetworkManager D-Bus | Новый плагин | P2 | M | wire bump |
-| CAP-07 | `bluetooth` — BlueZ D-Bus | Новый плагин | P2 | M | wire bump |
-| EXI-07 | `scheduler`: IANA-таймзоны вместо offset | Существующие | P2 | S | — |
-| AGT-04 | Eval-harness: регресс-цели на fake-LLM | Agent | P2 | M | — |
-| HW-01  | ESP32 voice-satellite (wake-word → stt) | Железо | P3 | XL | stt |
-| INT-09 | `mqtt` — Zigbee2MQTT/Tasmota/ESPHome | Интеграции | P3 | M | network* |
-| INT-10 | Home Assistant bridge | Интеграции | P3 | M | network |
-| INT-11 | `spotify` Web API | Интеграции | P3 | M | media |
-| INT-12 | `contacts` — vCard-хранилище | Интеграции | P3 | S | database |
-| INT-13 | `files-index` — RAG по файлам | Интеграции | P3 | L | vector-db |
-| INT-14 | Email→agent шлюз (управление почтой) | Интеграции | P3 | M | INT-07 |
-| CLI-03 | Android: PTT-кнопка + зеркало нотификаций | Клиенты | P3 | M | device-agent |
-| CLI-04 | Трей-индикатор десктопа | Клиенты | P3 | M | — |
-| CLI-05 | Браузерное расширение «вкладка → агенту» | Клиенты | P3 | M | WS API |
-| AGT-05 | Мультиагент: planner/worker | Agent | P3 | XL | AGT-02 |
-| AGT-06 | Бюджеты токенов/стоимости per goal/day | Agent | P3 | S | — |
-| INF-03 | Мультихост: fleet/mesh между ядрами | Инфра | P3 | XL | D-13 |
-| INF-04 | `backup` — снапшоты состояния vyn | Инфра | P3 | M | scheduler |
-| EXI-08 | `ai`: батч-эмбеддинги + SSE-стриминг | Существующие | P3 | M/L | — |
-| EXI-09 | `network`: WebSocket-действия | Существующие | P3 | XL | kernel proto |
-| EXI-10 | Мелочи: media Raise/Quit, sound devices, launcher fuzzy/recents | Существующие | P3 | S | — |
-| INT-20 | Провайдер-рецепты `ai`: Gemini/Groq/OpenRouter (почти только доки) | Интеграции | **P0** | S | — |
-| INT-19 | `tasks` локально + google-tasks синк | Интеграции | P1 | M | INT-03 (OAuth-инфраструктура) |
-| CAP-08 | Dictation mode — системный голосовой ввод (hold-hotkey → речь → текст в курсор) | Режим daemon'а | P1 | M | CAP-05 (`input`) |
-| PLAY-01 | Sleep timer («подкаст на полчаса») | Плейбук | P1 | S | scheduler+sound |
-| PLAY-02 | Умный будильник (крон + нарастающий volume + брифинг) | Плейбук | P1 | S | PLAY-01, INT-08 |
-| PLAY-03 | Focus mode («не беспокоить час» → silent-inbox + таймер) | Плейбук | P2 | S | notify inbox |
-| PLAY-04 | Голосовой DJ («что-нибудь для работы») | Плейбук | P2 | S | ai+media |
-| PLAY-05 | Языковой тренажёр (persona-pack агента) | Плейбук | P3 | S | tts+stt |
-| INT-21 | Obsidian-мост для notes (notes ↔ .md файлы vault'а) | Интеграции | P2 | M | filesystem |
-| INT-22 | Email→календарь: извлечение событий из писем | Интеграции | P2 | M | INT-07 |
-| CAP-09 | `library` — индекс фото/музыки/видео (слой индексации, НЕ плеер) | Новый плагин | P2 | M | database, vector-db |
-| INT-23 | YouTube «включи X» (piped/invidious поиск → открытие) | Интеграции | P3 | S-M | launcher |
-| INT-24 | Google Photos «этот день N лет назад» в брифинге | Интеграции | P3 | M | INT-03 |
-| MRG-01 | Слияние `tts`+`stt` → **`speech`** | Рефакторинг | P1 | M | приурочить к следующей содержательной правке tts/stt |
-| MRG-02 | Слияние `wifi`+`bluetooth` → **`connectivity`** | Рефакторинг | P2 | M | CAP-06/07, wire bump |
-| MRG-03 | Push-каналы (ntfy/Gotify) внутрь `notify` | Рефакторинг | P1 | S | INT-02 |
-| MRG-04 | `window` внутрь `system` (опционально) | Рефакторинг | P3 | S | CAP-04 |
-| MRG-05 | `fs_delete{to_trash}` вытесняет gated-write из production | Рефакторинг | — | — | EXI-05 (не отдельная работа) |
-| ARCH-01 | Крейт scan-harness: общий скан-цикл (calendar/scheduler/metrics/automations/rss/backup) | Архитектура | P1 | M | — |
-| ARCH-02 | Крейт `gauth`: OAuth refresh-цикл для всех Google-интеграций | Архитектура | P2 | M | INT-03 первый |
-| ARCH-03 | Крейт crawl: обход allowlist-корней + mtime-чекпоинты (library, files-index) | Архитектура | P3 | M | CAP-09 второй индексатор |
-| ARCH-04 | Крейт thin-schema helpers: doc CRUD + atomic id counter + event boilerplate | Архитектура | P2 | S | notes/calendar/tasks |
-| INF-07 | Конвенция `plugin_status` + дашборд здоровья плагинов | Инфра | P1 | S-M | — |
-| INF-08 | `vyn doctor` — предзапускная проверка окружения | Инфра | P1 | M | kernel/tooling |
-| INF-09 | Ночной fake-kernel e2e по ВСЕМ плагинам в CI | Инфра | P1 | M | INF-01 |
-| AGT-09 | Per-tool квоты/кулдауны в каталоге агента | Agent | P2 | S | — |
-| CLI-07 | Голосовые шорткаты: hotkey → playbook binding | Клиенты | P2 | S | CAP-01, hotkey |
-| INF-10 | Граф зависимостей плагинов в web (requires + ipc_targets из манифестов) | Инфра | P3 | S | list_plugins |
-| INF-11 | Perf-бенчмарки в CI: time-to-first-audio, latency шага goal | Инфра | P3 | M | — |
-| SEC-01 | Threat-model документ (STRIDE по плагинам: input/mic/hotkey/network) | Безопасность | P2 | M | — |
-| HYG-01 | Репо-гигиена: ping-pong-rs → examples/, gated-write → reference/ | Инфра | P3 | S | — |
+| ID | Идея | Категория | Приоритет | Сложность | Зависит от | Статус |
+|---|---|---|---|---|---|---|
+| INF-01 | Релизы по тегу в CI (package+sign) | Инфра | **P0** | S | GH Secrets | ✅ |
+| EXI-01 | ICS импорт/экспорт в `calendar` | Существующие | **P0** | M | — | ✅ |
+| AGT-01 | Memory агента на `vector-db` | Agent | **P0** | M | — | ✅ |
+| INT-01 | Telegram-бот как клиент агента | Интеграции | **P0** | M | — | 🟡 user-клиент `telegram` (MTProto) есть; бот-клиент агента — нет |
+| EXI-02 | `tts`: синтез по предложениям | Существующие | **P0** | M | daemon | ✅ |
+| CAP-01 | `automations` — rules engine | Новый плагин | **P1** | L | event bus | ✅ |
+| EXI-03 | `stt`: wake-word + промежуточные гипотезы | Существующие | **P1** | L | sherpa | 🟡 VAD и события начала/конца речи есть; wake-word и partial-гипотезы — нет |
+| CAP-02 | `capture` — экран/камера/OCR | Новый плагин | **P1** | XL | PipeWire | ✅ |
+| CAP-03 | `metrics` — хост-метрики для графиков | Новый плагин | **P1** | M | — | ✅ |
+| EXI-04 | `calendar`: повторяющиеся события (RRULE) | Существующие | **P1** | M | — | ✅ |
+| INT-02 | ntfy/Gotify push на телефон | Интеграции | **P1** | S | network | ✅ |
+| EXI-05 | `filesystem`: delete/rename/move/trash | Существующие | **P1** | M | — | ✅ |
+| CLI-01 | `vyn ask` — терминальный клиент агенту | Клиенты | P2 | S | WS API | ✅ |
+| CLI-02 | vynkor-web: чат + inbox + графики | Клиенты | P2 | L | metrics | — |
+| INT-03 | Google Calendar полная синхронизация | Интеграции | P2 | L | EXI-01 | — |
+| INT-04 | CalDAV (Nextcloud/iCloud/Fastmail) | Интеграции | P2 | L | EXI-01 | — |
+| INT-05 | `rss` читалка + «что нового» | Интеграции | P2 | M | vector-db | ✅ |
+| INT-06 | `github` — issues/CI/PR голосом | Интеграции | P2 | M | network | ✅ |
+| INT-07 | `email`: IMAP-тело + триаж агентом | Интеграции | P2 | M | — | — |
+| EXI-06 | `clipboard`: история + поиск | Существующие | P2 | S | database | ✅ |
+| AGT-02 | Background goals (detach >30 с) | Agent | P2 | L | — | — |
+| AGT-03 | Playbooks — декларативные макро без LLM | Agent | P2 | M | — | — |
+| INF-02 | vynm: авто-deps, rollback, каналы, search | Инфра | P2 | M | kernel | — |
+| INT-08 | `weather` + плейбук «брифинг» | Интеграции | P2 | S | search | ✅ |
+| CAP-04 | `window` — список/фокус окон | Новый плагин | P2 | M | — | — |
+| CAP-05 | `input` — виртуальные клавиатура/мышь | Новый плагин | P2 | M | — | — |
+| CAP-06 | `wifi` — NetworkManager D-Bus | Новый плагин | P2 | M | wire bump | — |
+| CAP-07 | `bluetooth` — BlueZ D-Bus | Новый плагин | P2 | M | wire bump | — |
+| EXI-07 | `scheduler`: IANA-таймзоны вместо offset | Существующие | P2 | S | — | ✅ |
+| AGT-04 | Eval-harness: регресс-цели на fake-LLM | Agent | P2 | M | — | — |
+| HW-01  | ESP32 voice-satellite (wake-word → stt) | Железо | P3 | XL | stt | — |
+| INT-09 | `mqtt` — Zigbee2MQTT/Tasmota/ESPHome | Интеграции | P3 | M | network* | ✅ |
+| INT-10 | Home Assistant bridge | Интеграции | P3 | M | network | — |
+| INT-11 | `spotify` Web API | Интеграции | P3 | M | media | — |
+| INT-12 | `contacts` — vCard-хранилище | Интеграции | P3 | S | database | ✅ |
+| INT-13 | `files-index` — RAG по файлам | Интеграции | P3 | L | vector-db | — |
+| INT-14 | Email→agent шлюз (управление почтой) | Интеграции | P3 | M | INT-07 | — |
+| CLI-03 | Android: PTT-кнопка + зеркало нотификаций | Клиенты | P3 | M | device-agent | — |
+| CLI-04 | Трей-индикатор десктопа | Клиенты | P3 | M | — | — |
+| CLI-05 | Браузерное расширение «вкладка → агенту» | Клиенты | P3 | M | WS API | — |
+| AGT-05 | Мультиагент: planner/worker | Agent | P3 | XL | AGT-02 | — |
+| AGT-06 | Бюджеты токенов/стоимости per goal/day | Agent | P3 | S | — | — |
+| INF-03 | Мультихост: fleet/mesh между ядрами | Инфра | P3 | XL | D-13 | — |
+| INF-04 | `backup` — снапшоты состояния vyn | Инфра | P3 | M | scheduler | — |
+| EXI-08 | `ai`: батч-эмбеддинги + SSE-стриминг | Существующие | P3 | M/L | — | — |
+| EXI-09 | `network`: WebSocket-действия | Существующие | P3 | XL | kernel proto | — |
+| EXI-10 | Мелочи: media Raise/Quit, sound devices, launcher fuzzy/recents | Существующие | P3 | S | — | 🟡 media Raise/Quit, `sound_devices`, fuzzy в launcher — есть; recents — нет |
+| INT-20 | Провайдер-рецепты `ai`: Gemini/Groq/OpenRouter (почти только доки) | Интеграции | **P0** | S | — | ✅ |
+| INT-19 | `tasks` локально + google-tasks синк | Интеграции | P1 | M | INT-03 (OAuth-инфраструктура) | 🟡 локальный `tasks` есть; google-tasks синк — нет |
+| CAP-08 | Dictation mode — системный голосовой ввод (hold-hotkey → речь → текст в курсор) | Режим daemon'а | P1 | M | CAP-05 (`input`) | — |
+| PLAY-01 | Sleep timer («подкаст на полчаса») | Плейбук | P1 | S | scheduler+sound | ✅ |
+| PLAY-02 | Умный будильник (крон + нарастающий volume + брифинг) | Плейбук | P1 | S | PLAY-01, INT-08 | ✅ |
+| PLAY-03 | Focus mode («не беспокоить час» → silent-inbox + таймер) | Плейбук | P2 | S | notify inbox | ✅ |
+| PLAY-04 | Голосовой DJ («что-нибудь для работы») | Плейбук | P2 | S | ai+media | ✅ |
+| PLAY-05 | Языковой тренажёр (persona-pack агента) | Плейбук | P3 | S | tts+stt | — |
+| INT-21 | Obsidian-мост для notes (notes ↔ .md файлы vault'а) | Интеграции | P2 | M | filesystem | — |
+| INT-22 | Email→календарь: извлечение событий из писем | Интеграции | P2 | M | INT-07 | — |
+| CAP-09 | `library` — индекс фото/музыки/видео (слой индексации, НЕ плеер) | Новый плагин | P2 | M | database, vector-db | ✅ |
+| INT-23 | YouTube «включи X» (piped/invidious поиск → открытие) | Интеграции | P3 | S-M | launcher | — |
+| INT-24 | Google Photos «этот день N лет назад» в брифинге | Интеграции | P3 | M | INT-03 | — |
+| MRG-01 | Слияние `tts`+`stt` → **`speech`** | Рефакторинг | P1 | M | приурочить к следующей содержательной правке tts/stt | ✅ |
+| MRG-02 | Слияние `wifi`+`bluetooth` → **`connectivity`** | Рефакторинг | P2 | M | CAP-06/07, wire bump | — |
+| MRG-03 | Push-каналы (ntfy/Gotify) внутрь `notify` | Рефакторинг | P1 | S | INT-02 | ✅ |
+| MRG-04 | `window` внутрь `system` (опционально) | Рефакторинг | P3 | S | CAP-04 | — |
+| MRG-05 | `fs_delete{to_trash}` вытесняет gated-write из production | Рефакторинг | — | — | EXI-05 (не отдельная работа) | — |
+| ARCH-01 | Крейт scan-harness: общий скан-цикл (calendar/scheduler/metrics/automations/rss/backup) | Архитектура | P1 | M | — | — |
+| ARCH-02 | Крейт `gauth`: OAuth refresh-цикл для всех Google-интеграций | Архитектура | P2 | M | INT-03 первый | — |
+| ARCH-03 | Крейт crawl: обход allowlist-корней + mtime-чекпоинты (library, files-index) | Архитектура | P3 | M | CAP-09 второй индексатор | — |
+| ARCH-04 | Крейт thin-schema helpers: doc CRUD + atomic id counter + event boilerplate | Архитектура | P2 | S | notes/calendar/tasks | — |
+| INF-07 | Конвенция `plugin_status` + дашборд здоровья плагинов | Инфра | P1 | S-M | — | 🟡 конвенция описана, но голый `status` ломает роутинг — см. STAT-01 |
+| INF-08 | `vyn doctor` — предзапускная проверка окружения | Инфра | P1 | M | kernel/tooling | — |
+| INF-09 | Ночной fake-kernel e2e по ВСЕМ плагинам в CI | Инфра | P1 | M | INF-01 | — |
+| AGT-09 | Per-tool квоты/кулдауны в каталоге агента | Agent | P2 | S | — | ✅ |
+| CLI-07 | Голосовые шорткаты: hotkey → playbook binding | Клиенты | P2 | S | CAP-01, hotkey | ✅ |
+| INF-10 | Граф зависимостей плагинов в web (requires + ipc_targets из манифестов) | Инфра | P3 | S | list_plugins | — |
+| INF-11 | Perf-бенчмарки в CI: time-to-first-audio, latency шага goal | Инфра | P3 | M | — | — |
+| SEC-01 | Threat-model документ (STRIDE по плагинам: input/mic/hotkey/network) | Безопасность | P2 | M | — | — |
+| HYG-01 | Репо-гигиена: ping-pong-rs → examples/, gated-write → reference/ | Инфра | P3 | S | — | ✅ |
+| STAT-01 | `status` → `<slug>_status`: голый `status` объявлен в 9 плагинах, ядро отказывается роутить неоднозначные действия (`router.rs` ActionLookup::Ambiguous → ACTION_NOT_FOUND) | Инфра | **P0** | S-M | — | — |
+| SIG-01 | Переподписать реестр: `resign.py --check` — 23 версии invalid, launcher 0.1.1–0.1.5 unsigned | Инфра | **P0** | S | ключ мейнтейнера | — |
+| REL-01 | Первый релиз 13 плагинов из `scripts/registry-meta.json` (тег `<slug>-v<ver>`) | Инфра | **P0** | S | SIG-01 | — |
+| EXI-11 | Алерты: `metrics` пороги → событие, `uptime` recovered + N-подряд | Существующие | P1 | S | — | — |
+| AGT-10 | `goal_cancel` + пошаговые события цели для UI | Agent | P1 | M | — | — |
 
 ---
 
@@ -722,23 +727,23 @@ Persona-pack агента: разговорная практика голосо�
 
 ## Дополнительные идеи (второй проход)
 
-| ID | Идея | Приоритет | Сложность | Суть |
-|---|---|---|---|---|
-| AGT-07 | Персистентные approval-политики per tool | P2 | S | Вместо only-per-goal `requires_confirmation`: operator-конфиг «для notify_send — всегда, для fs_delete — всегда спрашивать, для media — никогда». Файл рядом с `AGENT_PLUGIN_TOOLS_FILE`, читается при построении каталога |
-| AGT-08 | Scheduled goals как документированный паттерн | P2 | S | Уже работает сегодня: scheduler dispatch → `goal_start`. Нужен только рецепт в USAGE.md + плейбук-примеры («каждое утро goal: брифинг») |
-| INT-15 | `uptime`/health-monitor | P2 | M | Cron-ping хостов/URL (`http_request`), деградация → notify/ntfy; история статусов в database. Личный mini-status-page |
-| INT-16 | `speedtest` | P3 | S | Раз в N минут через известные endpoints, результат в metrics — корреляция «лагал голос = упал канал» |
-| INT-17 | `printer` (CUPS) | P3 | S | `print_file` через lp/lpr argv-only в allowlist-очередь. Голосом распечатать PDF — нишево, но смешно дёшево |
-| INT-18 | SMS/calls через Android-relay | P3 | L | Device-agent читает входящие SMS → sync.delta → automations; отправка через telephony API. «Скажи vyn, что я опаздываю» без телефона в руках |
-| CLI-06 | GNOME/KDE global search provider | P3 | S | Desktop-search-provider интеграция: ввод в системном поиске → launcher/search/agent. Делает vyn частью ОС |
-| INF-05 | Sandbox-hardening: seccomp-профили плагинов | P2 | L | Kernel-side: профиль syscall-фильтра per-plugin категорий (offline-плагинам сетевые syscalls не нужны вовсе). Усиливает M-03 политику лимитов |
-| INF-06 | Документационный сайт из README/USAGE | P2 | M | mdBook/Zola поверх существующих README+USAGE+docs/*, автодеплой GH Pages; единый toc по плагинам |
-| AGT-09 | Per-tool квоты/кулдауны в каталоге агента (`cooldown_ms`, `max_per_goal`) | P2 | S | Спам-петля LLM («notify_send ×20») отсекается на dispatch, не в плагине |
-| CLI-07 | Голосовые шорткаты: hotkey binding → playbook/цель | P2 | S | automations-rule типа «hotkey_pressed{binding:X} → playbook_run» — физические кнопки для сценариев |
-| INF-10 | Граф зависимостей плагинов в web (requires + ipc_targets из манифестов) | P3 | S | Кто кого вызывает — визуально; вау для README и отладки прав |
-| INF-11 | Perf-бенчмарки в CI: time-to-first-audio (tts), latency шага goal | P3 | M | Ловим деградации до пользователей; критерий EXI-02 |
-| SEC-01 | Threat-model документ: STRIDE по опасным плагинам (input/mic/hotkey/network/filesystem) | P2 | M | Что злоумышленник получает при компрометации каждого; обоснование границ «слушатель ≠ инъектор» |
-| HYG-01 | ping-pong-rs → examples/, gated-write → reference/, README-ссылки обновить | P3 | S | Репо-гигиена после MRG-05 |
+| ID | Идея | Приоритет | Сложность | Суть | Статус |
+|---|---|---|---|---|---|
+| AGT-07 | Персистентные approval-политики per tool | P2 | S | Вместо only-per-goal `requires_confirmation`: operator-конфиг «для notify_send — всегда, для fs_delete — всегда спрашивать, для media — никогда». Файл рядом с `AGENT_PLUGIN_TOOLS_FILE`, читается при построении каталога | — |
+| AGT-08 | Scheduled goals как документированный паттерн | P2 | S | Уже работает сегодня: scheduler dispatch → `goal_start`. Нужен только рецепт в USAGE.md + плейбук-примеры («каждое утро goal: брифинг») | ✅ docs/playbooks/scheduled-goals.md |
+| INT-15 | `uptime`/health-monitor | P2 | M | Cron-ping хостов/URL (`http_request`), деградация → notify/ntfy; история статусов в database. Личный mini-status-page | ✅ плагин `uptime` |
+| INT-16 | `speedtest` | P3 | S | Раз в N минут через известные endpoints, результат в metrics — корреляция «лагал голос = упал канал» | — |
+| INT-17 | `printer` (CUPS) | P3 | S | `print_file` через lp/lpr argv-only в allowlist-очередь. Голосом распечатать PDF — нишево, но смешно дёшево | — |
+| INT-18 | SMS/calls через Android-relay | P3 | L | Device-agent читает входящие SMS → sync.delta → automations; отправка через telephony API. «Скажи vyn, что я опаздываю» без телефона в руках | — |
+| CLI-06 | GNOME/KDE global search provider | P3 | S | Desktop-search-provider интеграция: ввод в системном поиске → launcher/search/agent. Делает vyn частью ОС | — |
+| INF-05 | Sandbox-hardening: seccomp-профили плагинов | P2 | L | Kernel-side: профиль syscall-фильтра per-plugin категорий (offline-плагинам сетевые syscalls не нужны вовсе). Усиливает M-03 политику лимитов | — |
+| INF-06 | Документационный сайт из README/USAGE | P2 | M | mdBook/Zola поверх существующих README+USAGE+docs/*, автодеплой GH Pages; единый toc по плагинам | — |
+| AGT-09 | Per-tool квоты/кулдауны в каталоге агента (`cooldown_ms`, `max_per_goal`) | P2 | S | Спам-петля LLM («notify_send ×20») отсекается на dispatch, не в плагине | ✅ |
+| CLI-07 | Голосовые шорткаты: hotkey binding → playbook/цель | P2 | S | automations-rule типа «hotkey_pressed{binding:X} → playbook_run» — физические кнопки для сценариев | ✅ docs/playbooks/hotkey-shortcuts.md |
+| INF-10 | Граф зависимостей плагинов в web (requires + ipc_targets из манифестов) | P3 | S | Кто кого вызывает — визуально; вау для README и отладки прав | — |
+| INF-11 | Perf-бенчмарки в CI: time-to-first-audio (tts), latency шага goal | P3 | M | Ловим деградации до пользователей; критерий EXI-02 | — |
+| SEC-01 | Threat-model документ: STRIDE по опасным плагинам (input/mic/hotkey/network/filesystem) | P2 | M | Что злоумышленник получает при компрометации каждого; обоснование границ «слушатель ≠ инъектор» | — |
+| HYG-01 | ping-pong-rs → examples/, gated-write → reference/, README-ссылки обновить | P3 | S | Репо-гигиена после MRG-05 | ✅ |
 
 ### Детализация второго прохода
 

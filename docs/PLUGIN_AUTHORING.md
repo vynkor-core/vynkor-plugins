@@ -144,8 +144,22 @@ and the vault-vs-env precedence gets tested for free.
 
 ## 7. Status convention (INF-07)
 
-Every plugin should expose a `status` action (no input, always ungated) for
-`vyn status` / web health dashboards:
+Every plugin should expose a status action (no input, always ungated) for
+`vyn status` / web health dashboards.
+
+> **Name it `<slug>_status`, not `status`.** The kernel routes an action by
+> name alone, and an action declared by more than one registered plugin is
+> refused as ambiguous (`vynkor/src/ipc/protocol/router.rs`,
+> `ActionLookup::Ambiguous` → `ACTION_NOT_FOUND`). A bare `status` is
+> already declared by 9 plugins (network, database, metrics, rss, tasks,
+> uptime, weather, speech, telegram), so on a kernel running two of them
+> *none* of their `status` actions is reachable. New plugins use
+> `<slug>_status` (`weather_status`, …); migrating the existing nine is
+> STAT-01 in `PLANS.md`. The same rule applies to any other action name —
+> `speech` and the legacy `stt`/`tts` declare identical names, which is why
+> a host runs one layout or the other, never both.
+
+Response shape:
 
 ```json
 // request: {"action": "status", "params_json": "{}"}
