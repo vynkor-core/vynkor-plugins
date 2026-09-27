@@ -114,7 +114,7 @@
 | STAT-01 | `status` → `<slug>_status`: голый `status` объявлен в 9 плагинах, ядро отказывается роутить неоднозначные действия (`router.rs` ActionLookup::Ambiguous → ACTION_NOT_FOUND) | Инфра | **P0** | S-M | — | ✅ |
 | SIG-01 | Переподписать реестр: `resign.py --check` — 23 версии invalid, launcher 0.1.1–0.1.5 unsigned | Инфра | **P0** | S | ключ мейнтейнера | — |
 | REL-01 | Первый релиз 13 плагинов из `scripts/registry-meta.json` (тег `<slug>-v<ver>`) | Инфра | **P0** | S | SIG-01 | — |
-| EXI-11 | Алерты: `metrics` пороги → событие, `uptime` recovered + N-подряд | Существующие | P1 | S | — | — |
+| EXI-11 | Алерты: `metrics` пороги → событие, `uptime` recovered + N-подряд | Существующие | P1 | S | — || ✅ `metrics` пороги+гистерезис, `uptime` recovered+flap guard, `automations` шаблоны `{{/ptr}}` |
 | AGT-10 | `goal_cancel` + пошаговые события цели для UI | Agent | P1 | M | — | — |
 
 ---

@@ -1,6 +1,6 @@
 {
   "plugin_id": "automations",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -50,7 +50,7 @@
             "type": "object",
             "properties": {
               "target_action": {"type": "string", "minLength": 1, "maxLength": 128},
-              "params_json": {"type": "object", "default": {}}
+              "params_json": {"type": "object", "default": {}, "description": "Params for target_action. String values may hold {{/json/pointer}} placeholders resolved against the triggering event payload: a string that is exactly one placeholder takes the pointed value with its type; inside longer text it is interpolated."}
             },
             "required": ["target_action"],
             "additionalProperties": false,

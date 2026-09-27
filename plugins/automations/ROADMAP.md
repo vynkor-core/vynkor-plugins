@@ -4,12 +4,14 @@
 > file holds the plugin-level backlog. **STAT-01** (rename a bare `status`
 > action to `<slug>_status`) applies wherever this plugin declares `status`.
 
+## Shipped
+
+- 0.1.1 — payload templating: `{{/json/pointer}}` placeholders in
+  `action.params_json` resolved from the triggering event, so an alert can
+  say *which* URL is down without routing through the agent.
+
 ## Next
 
-- **Payload templating** — `params_json` values like `"{{/url}}"` resolved
-  from the triggering event (JSON pointer only, no expressions). Today rule
-  params are static, so an alert can't say *which* URL is down without
-  routing through the agent.
 - **Richer conditions** — `not_equals`, `exists`, numeric `gt`/`lt`, `in`,
   and OR groups; still no scripting surface.
 - **Multi-action rules** — ordered `actions[]`, so a playbook like focus
