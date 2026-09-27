@@ -178,7 +178,7 @@ def main() -> None:
     ordered = {"meta": registry.get("meta", {}), "revoked": registry.get("revoked", [])}
     for slug in sorted(k for k in registry if k not in ("meta", "revoked")):
         ordered[slug] = registry[slug]
-    REGISTRY_PATH.write_text(json.dumps(ordered, indent=2) + "\n")
+    REGISTRY_PATH.write_text(json.dumps(ordered, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     for slug, version, _, _ in results:
         print(f"  {slug}@{version}: re-signed")
