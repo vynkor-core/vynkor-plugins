@@ -224,6 +224,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
 
 #[tokio::main]
 async fn main() -> Result<(), VynkorError> {
+    start_instant(); // anchor uptime_ms at process start, not the first status call
     let config = Config::from_env();
     let client = VynkorClient::connect_from_env().await?;
     serve(client, config).await
