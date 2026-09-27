@@ -594,7 +594,7 @@ fn manifest() -> PluginManifest {
         actions: vec![
             "http_request".into(),
             "network_stats".into(),
-            "status".into(),
+            "network_status".into(),
         ],
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
@@ -698,7 +698,7 @@ impl ConcurrentHandler for NetworkPlugin {
     }
 
     fn accept(&self, req: &ActionRequest) -> Result<(), String> {
-        if req.action == "network_stats" || req.action == "status" {
+        if req.action == "network_stats" || req.action == "network_status" {
             return Ok(()); // does not use the network — never cap-gated
         }
         self.inflight.check(&req.caller_plugin_id)
@@ -708,7 +708,7 @@ impl ConcurrentHandler for NetworkPlugin {
         if req.action == "network_stats" {
             return vec![response_envelope(req.action_id, Ok(self.network_stats_json()))];
         }
-        if req.action == "status" {
+        if req.action == "network_status" {
             return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
         }
         if req.action != "http_request" {

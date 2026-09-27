@@ -14,7 +14,6 @@ The original P0 plan is in `PLANS.md` (historical).
 - **Safer session default** — default `TELEGRAM_PLUGIN_SESSION_DIR` to
   `$XDG_DATA_HOME/vyn/telegram` (0700) instead of `/tmp`, and expand `~`;
   refuse a world-readable session dir.
-- **STAT-01** — `status` → `telegram_status`.
 - **Bot client** (`telegram-bot`, root `ROADMAP.md` Planned) is a separate
   plugin: two-way chat with `agent` through the Bot API, not this
   user-account client.

@@ -1,6 +1,6 @@
 {
   "plugin_id": "network",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "network",
     "event_publish"
@@ -244,7 +244,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "network_status",
       "description": "Plugin status: uptime and configured limits. Read-only.",
       "risk": "low",
       "input": {

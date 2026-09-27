@@ -14,7 +14,7 @@ atomic counter. Callers need no storage permission — `tasks` holds it (T-19).
 | `task_update` | `{id, title?, notes?, list?, due_ms?, tags?, done?}` | `{updated, task}` |
 | `task_done` | `{id, done?}` | `{done, task}` — `done: false` reopens |
 | `task_delete` | `{id}` | `{deleted}` |
-| `status` | — | `{version, uptime_ms, engine_ready, …}` (see STAT-01 in `PLANS.md`) |
+| `tasks_status` | — | `{version, uptime_ms, engine_ready, …}` |
 
 `task_list`:
 

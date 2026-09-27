@@ -43,7 +43,7 @@ impl ConcurrentHandler for Handler {
                 "db_keys".into(),
                 "db_append".into(),
                 "db_patch".into(),
-                "status".into(),
+                "database_status".into(),
             ],
             action_specs: vynkor_plugin_manifest::action_specs(),
             ..Default::default()
@@ -51,7 +51,7 @@ impl ConcurrentHandler for Handler {
     }
 
     async fn on_action(&self, req: ActionRequest) -> Vec<Envelope> {
-        if req.action == "status" {
+        if req.action == "database_status" {
             return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
         }
         let mut envelopes = Vec::new();

@@ -81,5 +81,4 @@ fast and correct.
   piece for an always-on assistant that doesn't need a hotkey.
 - **Partial hypotheses** — streaming zipformer interim text as
   `stt_partial` events for live captions in clients.
-- **STAT-01** — `status` → `speech_status`.
 - Retire the standalone `stt`/`tts` plugins once no install depends on them.

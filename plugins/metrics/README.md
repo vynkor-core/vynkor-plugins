@@ -9,7 +9,7 @@ Periodic host sampling for graphs and `vynkor-web` — CPU/RAM/disk/battery into
 | `metrics_query` | `{from_ms?, to_ms?, limit?, offset?}` | `{samples: [...], total}` — newest first |
 | `metrics_latest` | — | `{found, sample?}` |
 | `metrics_stats` | — | `{count, oldest_ms, newest_ms}` |
-| `status` | — | `{version, uptime_ms, engine_ready}` |
+| `metrics_status` | — | `{version, uptime_ms, engine_ready}` |
 
 Sample document:
 

@@ -1,6 +1,6 @@
 {
   "plugin_id": "tasks",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -295,7 +295,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "tasks_status",
       "description": "Plugin health check: version, uptime_ms, engine_ready, last_error, and counters. No parameters.",
       "risk": "low",
       "input": {

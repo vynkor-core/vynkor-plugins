@@ -1,6 +1,6 @@
 {
   "plugin_id": "weather",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "permissions": [
     "PERMISSION_NETWORK"
   ],
@@ -132,7 +132,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "weather_status",
       "description": "Plugin status: configured provider and last call result. Read-only.",
       "risk": "low",
       "input": {

@@ -8,8 +8,8 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "metrics";
-const PLUGIN_VERSION: &str = "0.1.0";
-const ACTIONS: [&str; 4] = ["metrics_query", "metrics_latest", "metrics_stats", "status"];
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ACTIONS: [&str; 4] = ["metrics_query", "metrics_latest", "metrics_stats", "metrics_status"];
 
 fn manifest() -> PluginManifest {
     PluginManifest { permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_EVENT_PUBLISH".into()], actions: ACTIONS.iter().map(|s| s.to_string()).collect(), action_specs: vynkor_plugin_manifest::action_specs(), ..Default::default() }
@@ -221,8 +221,8 @@ mod tests {
     #[tokio::test]
     async fn status_ok() {
         let shim=start_plugin(test_cfg()).await;
-        let res=shim.call("status", serde_json::json!({})).await.unwrap();
-        assert_eq!(res["version"], "0.1.0");
+        let res=shim.call("metrics_status", serde_json::json!({})).await.unwrap();
+        assert_eq!(res["version"], env!("CARGO_PKG_VERSION"));
         assert!(res["uptime_ms"].as_u64().is_some());
     }
 }

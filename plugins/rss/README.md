@@ -15,7 +15,7 @@ Polling, not push — the plugin fetches on demand (`rss_fetch` / `rss_fetch_all
 | `rss_fetch_all` | `{timeout_ms?}` | `{fetched, new, feeds}` |
 | `rss_articles` | `{feed_id?, unread_only?, query?, limit?, offset?}` | `{articles: [...], total}` |
 | `rss_mark_read` | `{id, read?}` | `{updated, article?}` |
-| `status` | — | `{version, uptime_ms, engine_ready}` |
+| `rss_status` | — | `{version, uptime_ms, engine_ready}` |
 
 - `url` must be `http://` or `https://`, 1..2048 bytes, trimmed.
 - `timeout_ms` 1..30000, default `10000`.

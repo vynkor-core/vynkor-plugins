@@ -178,7 +178,7 @@ async fn handle_action_inner(
     params: &Value,
 ) -> Result<HandleResult, String> {
     match action {
-        "status" => handle_status(config).await,
+        "telegram_status" => handle_status(config).await,
         "tg_list_dialogs" => handle_list_dialogs(config, params).await,
         "tg_get_history" => handle_get_history(config, params).await,
         "tg_get_message" => handle_get_message(config, params).await,
@@ -1666,9 +1666,9 @@ mod tests {
 
     #[tokio::test]
     async fn status_returns_version_and_accounts() {
-        let res = call("status", json!({})).await.unwrap();
+        let res = call("telegram_status", json!({})).await.unwrap();
         let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(v["default_account"], "personal");
         let accounts = v["accounts"].as_array().unwrap();
         assert_eq!(accounts.len(), 1);
@@ -1760,7 +1760,7 @@ mod tests {
             let cfg = cfg.clone();
             handles.push(tokio::spawn(async move {
                 let bytes = serde_json::to_vec(&serde_json::json!({})).unwrap();
-                handle_action(&cfg, "status", &bytes).await
+                handle_action(&cfg, "telegram_status", &bytes).await
             }));
         }
         for h in handles {

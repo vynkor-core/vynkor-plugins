@@ -22,7 +22,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "speech";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -42,7 +42,7 @@ fn manifest() -> PluginManifest {
             "stt_models".to_string(),
             "stt_listen_start".to_string(),
             "stt_listen_stop".to_string(),
-            "status".to_string(),
+            "speech_status".to_string(),
         ],
         action_specs: vynkor_plugin_manifest::action_specs(),
         ipc_targets: ipc_targets(),
@@ -113,7 +113,7 @@ async fn dispatch(client: &mut VynkorClient, req: vynkor_sdk::proto::ActionReque
         "stt_listen_stop" => {
             listen::handler::handle_stt_listen_stop(client, &req.params_json).await
         }
-        "status" => Ok(status_payload()),
+        "speech_status" => Ok(status_payload()),
         other => return Envelope {
             payload: Some(envelope::Payload::ActionResponse(err(
                 req.action_id,
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn status_payload_reports_inf07_shape() {
         let v: serde_json::Value = serde_json::from_slice(&status_payload()).unwrap();
-        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(v["engine_ready"], true);
         assert_eq!(v["last_error"], serde_json::Value::Null);
         assert_eq!(v["counters"], serde_json::json!({}));

@@ -61,7 +61,7 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<RssRequest, Str
             if p.id.trim().is_empty() { return Err("params.id must not be empty".into()); }
             Ok(RssRequest::MarkRead { id: p.id.trim().to_string(), read: p.read.unwrap_or(true) })
         }
-        "status" => Ok(RssRequest::Status),
+        "rss_status" => Ok(RssRequest::Status),
         other => Err(format!("unknown action: {other}")),
     }
 }

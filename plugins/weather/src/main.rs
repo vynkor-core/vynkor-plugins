@@ -12,7 +12,7 @@ const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 fn manifest() -> PluginManifest {
     PluginManifest {
         permissions: vec!["PERMISSION_NETWORK".into()],
-        actions: vec!["weather_now".into(), "weather_forecast".into(), "status".into()],
+        actions: vec!["weather_now".into(), "weather_forecast".into(), "weather_status".into()],
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
     }
@@ -72,7 +72,7 @@ async fn handle_action_request(
                 error: e,
             },
         },
-        "status" => ActionResponse {
+        "weather_status" => ActionResponse {
             action_id: req.action_id,
             status: ActionStatus::ActionOk as i32,
             data_json: status_payload(),

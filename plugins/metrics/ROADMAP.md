@@ -15,4 +15,3 @@
   network rx/tx bytes/s, temperatures (`/sys/class/thermal`), per-mount disk.
 - **Downsampling** — `metrics_query {bucket_ms}` returning min/avg/max per
   bucket so a week of 30 s samples renders as ~300 points.
-- **STAT-01** — `status` → `metrics_status`.

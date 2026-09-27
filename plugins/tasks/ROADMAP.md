@@ -14,4 +14,3 @@
 - **Subtasks / checklist items.**
 - **Google Tasks sync** (INT-19 remainder) — after the shared OAuth crate
   (ARCH-02).
-- **STAT-01** — `status` → `tasks_status`.

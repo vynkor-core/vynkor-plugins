@@ -1,6 +1,6 @@
 {
   "plugin_id": "rss",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": ["PERMISSION_STORAGE", "PERMISSION_NETWORK"],
   "kernel_compatibility_range": { "min": "0.1.0", "max": "*" },
   "binary": "rss",
@@ -63,7 +63,7 @@
       "output": { "type": "object", "properties": { "updated": { "type": "boolean" }, "article": { "$ref": "#/$defs/article" } }, "required": ["updated"], "additionalProperties": false }
     },
     {
-      "name": "status",
+      "name": "rss_status",
       "description": "Plugin status: feed count, stored article count and last fetch result. Read-only.",
       "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },

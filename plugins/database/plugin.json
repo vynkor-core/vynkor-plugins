@@ -1,6 +1,6 @@
 {
   "plugin_id": "database",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "PERMISSION_STORAGE",
     "event_publish"
@@ -349,7 +349,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "database_status",
       "description": "Report the database plugin's own version, uptime, and readiness — not a query over stored data.",
       "risk": "low",
       "input": {

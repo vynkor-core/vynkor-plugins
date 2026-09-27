@@ -10,9 +10,9 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "telegram";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 29] = [
-    "status",
+    "telegram_status",
     "tg_list_dialogs",
     "tg_get_history",
     "tg_get_message",
@@ -197,9 +197,9 @@ mod tests {
             start_instant: std::time::Instant::now(),
             metrics: std::sync::Arc::new(telegram_plugin::Metrics::default()),
         };
-        let res = handle_action(&cfg, "status", b"{}").await.unwrap();
+        let res = handle_action(&cfg, "telegram_status", b"{}").await.unwrap();
         let v: Value = serde_json::from_slice(&res.data).unwrap();
-        assert_eq!(v["version"], "0.1.0");
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]

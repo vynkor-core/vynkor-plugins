@@ -78,7 +78,7 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
         }
         request::MetricsRequest::Status => {
             let uptime_ms = start.elapsed().as_millis() as u64;
-            ok(json!({"version": "0.1.0", "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
+            ok(json!({"version": env!("CARGO_PKG_VERSION"), "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
         }
     }
 }

@@ -105,10 +105,8 @@ its own HTTP client, it needs, roughly in priority order:
 5. WebSocket, last — most plugins doing simple API calls only need HTTP;
    don't let this block the above.
 
-## STAT-01 (audit 2026-09-27)
+## STAT-01 (audit 2026-09-27) — shipped in 0.1.1
 
-This plugin declares a bare `status` action, as do 8 others. The kernel
-refuses to route an action declared by more than one registered plugin
-(`ACTION_NOT_FOUND`), so `status` is unreachable on any real install.
-Rename to `network_status` (keep `status` for one release only if a client
-still calls it — none in this repo does).
+The bare `status` action is now `network_status`. The kernel refuses to route
+an action declared by more than one registered plugin (`ACTION_NOT_FOUND`),
+and nine plugins declared `status`, so none of them was reachable.

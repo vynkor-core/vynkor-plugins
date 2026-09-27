@@ -24,9 +24,9 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "tasks";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 7] =
-    ["task_create", "task_get", "task_list", "task_update", "task_done", "task_delete", "status"];
+    ["task_create", "task_get", "task_list", "task_update", "task_done", "task_delete", "tasks_status"];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -142,7 +142,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                         let out = outbound_tx.clone();
                         let config = Arc::clone(&config);
                         tokio::spawn(async move {
-                            if req.action == "status" {
+                            if req.action == "tasks_status" {
                                 let _ = out.send(action_response(req.action_id, ActionStatus::ActionOk, status_payload(), String::new())).await;
                                 return;
                             }
