@@ -230,6 +230,7 @@ async fn publish_vad(
 
 #[tokio::main]
 async fn main() -> Result<(), VynkorError> {
+    start_instant(); // anchor uptime_ms at process start, not the first status call
     let socket_path = std::env::var("VYN_SOCKET_PATH")
         .unwrap_or_else(|_| vynkor_wire::socket::default_socket_path());
     let secret = std::env::var("VYN_JWT_SECRET").ok().filter(|s| !s.is_empty());
