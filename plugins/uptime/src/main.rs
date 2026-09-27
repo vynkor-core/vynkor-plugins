@@ -8,7 +8,7 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "uptime";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 6] = ["uptime_add", "uptime_remove", "uptime_list", "uptime_check", "uptime_history", "status"];
+const ACTIONS: [&str; 6] = ["uptime_add", "uptime_remove", "uptime_list", "uptime_check", "uptime_history", "uptime_status"];
 
 fn manifest() -> PluginManifest {
     PluginManifest { permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_NETWORK".into(), "PERMISSION_EVENT_PUBLISH".into()], actions: ACTIONS.iter().map(|s| s.to_string()).collect(), action_specs: vynkor_plugin_manifest::action_specs(), ..Default::default() }
@@ -71,8 +71,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                 tokio::spawn(async move {
                     match scan_all(rpc, &cfg).await {
                         Ok(scan) => {
-                            if scan.checked>0 { println!("[uptime] scanned {} targets, {} failed", scan.checked, scan.failed.len()); }
-                            for (t, p) in scan.failed { let _ = out.send(event_envelope(&t, &p)).await; }
+                            if scan.checked>0 { println!("[uptime] scanned {} targets, {} alert events", scan.checked, scan.events.len()); }
+                            for (t, p) in scan.events { let _ = out.send(event_envelope(&t, &p)).await; }
                         }
                         Err(e) => eprintln!("[uptime] scan failed: {e}"),
                     }
@@ -173,7 +173,7 @@ mod tests {
             }
         }
     }
-    fn test_cfg() -> Config { Config { interval_secs: 3600, max_checks: 100, db_timeout_ms: 5000, check_timeout_ms: 5000 } }
+    fn test_cfg() -> Config { Config { interval_secs: 3600, max_checks: 100, db_timeout_ms: 5000, check_timeout_ms: 5000, fail_threshold: 2 } }
     #[tokio::test]
     async fn add_list_remove() {
         let shim=start_plugin(test_cfg()).await;

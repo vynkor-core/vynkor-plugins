@@ -26,7 +26,7 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<MetricsRequest,
         }
         "metrics_latest" => Ok(MetricsRequest::Latest),
         "metrics_stats" => Ok(MetricsRequest::Stats),
-        "status" => Ok(MetricsRequest::Status),
+        "metrics_status" => Ok(MetricsRequest::Status),
         other => Err(format!("unknown action: {other}")),
     }
 }

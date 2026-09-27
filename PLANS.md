@@ -102,7 +102,7 @@
 | ARCH-02 | Крейт `gauth`: OAuth refresh-цикл для всех Google-интеграций | Архитектура | P2 | M | INT-03 первый | — |
 | ARCH-03 | Крейт crawl: обход allowlist-корней + mtime-чекпоинты (library, files-index) | Архитектура | P3 | M | CAP-09 второй индексатор | — |
 | ARCH-04 | Крейт thin-schema helpers: doc CRUD + atomic id counter + event boilerplate | Архитектура | P2 | S | notes/calendar/tasks | — |
-| INF-07 | Конвенция `plugin_status` + дашборд здоровья плагинов | Инфра | P1 | S-M | — | 🟡 конвенция описана, но голый `status` ломает роутинг — см. STAT-01 |
+| INF-07 | Конвенция `plugin_status` + дашборд здоровья плагинов | Инфра | P1 | S-M | — | 🟡 конвенция описана, все 9 плагинов на `<slug>_status` (STAT-01); `vyn status`-агрегатора нет |
 | INF-08 | `vyn doctor` — предзапускная проверка окружения | Инфра | P1 | M | kernel/tooling | — |
 | INF-09 | Ночной fake-kernel e2e по ВСЕМ плагинам в CI | Инфра | P1 | M | INF-01 | — |
 | AGT-09 | Per-tool квоты/кулдауны в каталоге агента | Agent | P2 | S | — | ✅ |
@@ -111,10 +111,10 @@
 | INF-11 | Perf-бенчмарки в CI: time-to-first-audio, latency шага goal | Инфра | P3 | M | — | — |
 | SEC-01 | Threat-model документ (STRIDE по плагинам: input/mic/hotkey/network) | Безопасность | P2 | M | — | — |
 | HYG-01 | Репо-гигиена: ping-pong-rs → examples/, gated-write → reference/ | Инфра | P3 | S | — | ✅ |
-| STAT-01 | `status` → `<slug>_status`: голый `status` объявлен в 9 плагинах, ядро отказывается роутить неоднозначные действия (`router.rs` ActionLookup::Ambiguous → ACTION_NOT_FOUND) | Инфра | **P0** | S-M | — | — |
+| STAT-01 | `status` → `<slug>_status`: голый `status` объявлен в 9 плагинах, ядро отказывается роутить неоднозначные действия (`router.rs` ActionLookup::Ambiguous → ACTION_NOT_FOUND) | Инфра | **P0** | S-M | — | ✅ |
 | SIG-01 | Переподписать реестр: `resign.py --check` — 23 версии invalid, launcher 0.1.1–0.1.5 unsigned | Инфра | **P0** | S | ключ мейнтейнера | — |
 | REL-01 | Первый релиз 13 плагинов из `scripts/registry-meta.json` (тег `<slug>-v<ver>`) | Инфра | **P0** | S | SIG-01 | — |
-| EXI-11 | Алерты: `metrics` пороги → событие, `uptime` recovered + N-подряд | Существующие | P1 | S | — | — |
+| EXI-11 | Алерты: `metrics` пороги → событие, `uptime` recovered + N-подряд | Существующие | P1 | S | — || ✅ `metrics` пороги+гистерезис, `uptime` recovered+flap guard, `automations` шаблоны `{{/ptr}}` |
 | AGT-10 | `goal_cancel` + пошаговые события цели для UI | Agent | P1 | M | — | — |
 
 ---

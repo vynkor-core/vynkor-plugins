@@ -17,26 +17,14 @@ Text-only system clipboard access via host binaries — one blessed path for
   compositor needed in CI.
 - Declares `PERMISSION_CLIPBOARD` (proto v1.4, value 16).
 
-## Known bugs (live-kernel audit 2026-08-22)
+## Fixed bugs
 
-> **Fixed 2026-08 (`fix/live-audit-defects`, merged):** the spawn → stdin →
-> wait path now uses a real `tokio::time::timeout` with `kill_on_drop(true)`,
-> and writers (`wl-copy`/`xclip -in`) complete on direct-child exit instead
-> of waiting for daemon-inherited pipe EOF — `clipboard_write` is ~25 ms.
-> See `docs/LIVE_KERNEL_AUDIT_2026-08-22.md` defect #1.
-
-- **`clipboard_write` takes 35–60+ s** on Wayland while `clipboard_read`
-  is 3–22 ms and the same `wl-copy` binary answers instantly from a
-  shell. Found in the first full live-kernel audit
-  (`docs/LIVE_KERNEL_AUDIT_2026-08-22.md`, defect #1); latency varies
-  between runs, so the wait is not a fixed timeout. Working hypothesis:
-  `wl-copy` daemonizes to keep serving the selection, and our spawn/wait
-  path waits on something the daemonized child keeps alive (fd or pipe),
-  only unwinding when some outer timeout trips. Fix direction: spawn
-  `wl-copy` with stdin from the payload and detach its stdio
-  (`Stdio::null()`/`make_contiguous` equivalent) so no inherited pipe pins
-  the wait; verify against `wl-copy --foreground` semantics; add a
-  regression test with a fake runner that emulates a daemonizing child.
+- **`clipboard_write` took 35–60+ s on Wayland** (live-kernel audit
+  2026-08-22, `docs/LIVE_KERNEL_AUDIT_2026-08-22.md` defect #1). The wait
+  hung on a pipe that the daemonized `wl-copy` kept open. Fixed 2026-08
+  (`fix/live-audit-defects`): a real `tokio::time::timeout` with
+  `kill_on_drop(true)`, and writers complete on direct-child exit instead
+  of pipe EOF — `clipboard_write` is ~25 ms.
 
 ## Later (unscheduled)
 

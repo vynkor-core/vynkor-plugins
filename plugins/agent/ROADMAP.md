@@ -47,21 +47,11 @@ actions, state persisted in `database`). Shipped as v0.1.0 — see README.md.
 
 ## Known issues
 
-- **`status` action name collision across plugins.** `network` and
-  `database` both declare a bare `status` action; `metrics`, `rss`,
-  `tasks`, `uptime`, `weather`, and `speech` (added 2026-09-19) declare it
-  too — 8 plugins, one name. `AGENT_PLUGIN_ALLOWED_ACTIONS` currently
-  excludes `status` from every one of them, so the collision has not been
-  exercised: nobody has verified whether the kernel rejects the second
-  registration, silently shadows it, or routes by some plugin-qualified
-  mechanism this doc doesn't know about. Before allowlisting `status` for
-  any of these plugins, confirm the kernel's actual behavior on duplicate
-  action names (dispatch semantics, not just whether the process stays
-  up — `network`/`database` both running today proves nothing about which
-  one would answer a `status` call). The likely fix is namespacing
-  (`network_status`, `metrics_status`, …) at the plugin.json level, but
-  that is a manifest change each owning plugin would need to make, not an
-  agent-side fix.
+- **`status` action name collision — resolved (STAT-01).** Nine plugins
+  declared a bare `status`; the kernel refuses to route an action declared
+  by more than one plugin (`ActionLookup::Ambiguous` → `ACTION_NOT_FOUND`),
+  so none was reachable. Each now declares `<slug>_status`
+  (`network_status`, `metrics_status`, …); allowlist those names.
 - **`AGENT_PLUGIN_ALLOWED_ACTIONS` is baked in at process start, not
   hot-reloaded.** The catalog rebuild described above (tools file +
   discovery, "per goal start") only rereads the tools *file*; the allowlist
@@ -91,9 +81,4 @@ actions, state persisted in `database`). Shipped as v0.1.0 — see README.md.
   way to abort a runaway goal exists today short of restarting the plugin.
 - **Step events** — `plugin.agent.step {goal_id, n, tool, ok}` so
   webclient/daemon/telegram can show progress (see "Streaming steps").
-- **`status` collision is confirmed, not hypothetical** — the kernel
-  refuses to route any action declared by more than one plugin
-  (`vynkor/src/ipc/protocol/router.rs`, `ActionLookup::Ambiguous` →
-  `ACTION_NOT_FOUND`). Never allowlist a bare `status`; STAT-01 in
-  `PLANS.md` renames them to `<slug>_status`.
 - **Token/cost budgets** per goal and per day (AGT-06).

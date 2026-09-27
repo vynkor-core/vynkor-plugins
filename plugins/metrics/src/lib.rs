@@ -1,3 +1,4 @@
+pub mod alerts;
 pub mod request;
 pub mod sampler;
 pub mod store;
@@ -11,10 +12,14 @@ pub struct Config {
     pub interval_secs: u64,
     pub max_samples: usize,
     pub db_timeout_ms: u32,
+    /// `METRICS_PLUGIN_ALERTS` rule list, e.g. `battery_percent<15,disk_used_percent>90`.
+    pub alerts: String,
+    /// Margin a metric must move back past its limit before the alert clears.
+    pub alert_hysteresis: f64,
 }
 
 impl Default for Config {
-    fn default() -> Self { Self { interval_secs: 30, max_samples: 10000, db_timeout_ms: 5000 } }
+    fn default() -> Self { Self { interval_secs: 30, max_samples: 10000, db_timeout_ms: 5000, alerts: String::new(), alert_hysteresis: 2.0 } }
 }
 
 impl Config {
@@ -22,7 +27,9 @@ impl Config {
         let interval_secs = std::env::var("METRICS_PLUGIN_INTERVAL_SECS").ok().and_then(|s| s.parse().ok()).unwrap_or(30);
         let max_samples = std::env::var("METRICS_PLUGIN_MAX_SAMPLES").ok().and_then(|s| s.parse().ok()).unwrap_or(10000);
         let db_timeout_ms = std::env::var("METRICS_PLUGIN_DB_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
-        Self { interval_secs, max_samples, db_timeout_ms }
+        let alerts = std::env::var("METRICS_PLUGIN_ALERTS").unwrap_or_default();
+        let alert_hysteresis = std::env::var("METRICS_PLUGIN_ALERT_HYSTERESIS").ok().and_then(|s| s.parse().ok()).unwrap_or(2.0);
+        Self { interval_secs, max_samples, db_timeout_ms, alerts, alert_hysteresis }
     }
 }
 
@@ -78,12 +85,12 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
         }
         request::MetricsRequest::Status => {
             let uptime_ms = start.elapsed().as_millis() as u64;
-            ok(json!({"version": "0.1.0", "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
+            ok(json!({"version": env!("CARGO_PKG_VERSION"), "uptime_ms": uptime_ms, "engine_ready": true, "last_error": Value::Null, "counters": {}}), None)
         }
     }
 }
 
-pub async fn sample_and_store(rpc: Rpc, config: &Config) -> Result<String, String> {
+pub async fn sample_and_store(rpc: Rpc, config: &Config) -> Result<sampler::Sample, String> {
     let db = Db::new(rpc.clone(), config.db_timeout_ms);
     let id = db.next_id().await?.to_string();
     let now = store::now_ms();
@@ -91,7 +98,7 @@ pub async fn sample_and_store(rpc: Rpc, config: &Config) -> Result<String, Strin
     db.put(&sample).await?;
     let _ = db.trim(config.max_samples).await;
     // best-effort event publish handled by caller via outbound channel
-    Ok(id)
+    Ok(sample)
 }
 
 fn ok(data: Value, event: Option<(String, Value)>) -> Result<ActionResult, String> {

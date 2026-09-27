@@ -15,4 +15,3 @@
 - **Per-feed metadata** — title/site from the feed itself, last error,
   last fetch time in `rss_list`.
 - **Semantic dedupe/search** over `vector-db` (INT-05's "what's new" angle).
-- **STAT-01** — `status` → `rss_status`.

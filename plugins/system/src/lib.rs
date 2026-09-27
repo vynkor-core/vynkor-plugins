@@ -37,7 +37,7 @@ use crate::error::SystemError;
 use crate::request::SysRequest;
 
 pub const PLUGIN_ID: &str = "system";
-pub const PLUGIN_VERSION: &str = "0.3.0";
+pub const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Actions this plugin serves; must stay in sync with `plugin.json` and the
 /// kernel refuses ambiguous manifest declarations anyway.

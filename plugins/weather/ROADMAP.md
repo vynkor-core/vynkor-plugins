@@ -21,4 +21,3 @@
 - **Alerts** — optional poll publishing `plugin.weather.alert` (rain within
   N hours, frost) for `automations`.
 - **Units** — `units: metric|imperial`.
-- **STAT-01** — `status` → `weather_status`.

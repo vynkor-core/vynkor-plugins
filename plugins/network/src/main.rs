@@ -53,7 +53,7 @@ const CLIENT_IDENTITY_PATH_ENV: &str = "NETWORK_PLUGIN_CLIENT_IDENTITY_PATH";
 const MAX_INFLIGHT_PER_CALLER_ENV: &str = "NETWORK_PLUGIN_MAX_INFLIGHT_PER_CALLER";
 const DEFAULT_MAX_INFLIGHT_PER_CALLER: usize = 8;
 
-const PLUGIN_VERSION: &str = "0.4.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Everything operator-configurable that shapes a `reqwest::Client`, read
 /// once at startup so per-cap redirect clients don't re-read env/files.
@@ -594,7 +594,7 @@ fn manifest() -> PluginManifest {
         actions: vec![
             "http_request".into(),
             "network_stats".into(),
-            "status".into(),
+            "network_status".into(),
         ],
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
@@ -698,7 +698,7 @@ impl ConcurrentHandler for NetworkPlugin {
     }
 
     fn accept(&self, req: &ActionRequest) -> Result<(), String> {
-        if req.action == "network_stats" || req.action == "status" {
+        if req.action == "network_stats" || req.action == "network_status" {
             return Ok(()); // does not use the network — never cap-gated
         }
         self.inflight.check(&req.caller_plugin_id)
@@ -708,7 +708,7 @@ impl ConcurrentHandler for NetworkPlugin {
         if req.action == "network_stats" {
             return vec![response_envelope(req.action_id, Ok(self.network_stats_json()))];
         }
-        if req.action == "status" {
+        if req.action == "network_status" {
             return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
         }
         if req.action != "http_request" {

@@ -7,8 +7,8 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "rss";
-const PLUGIN_VERSION: &str = "0.1.0";
-const ACTIONS: [&str; 8] = ["rss_add", "rss_remove", "rss_list", "rss_fetch", "rss_fetch_all", "rss_articles", "rss_mark_read", "status"];
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+const ACTIONS: [&str; 8] = ["rss_add", "rss_remove", "rss_list", "rss_fetch", "rss_fetch_all", "rss_articles", "rss_mark_read", "rss_status"];
 
 fn manifest() -> PluginManifest {
     PluginManifest { permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_NETWORK".into()], actions: ACTIONS.iter().map(|s| s.to_string()).collect(), action_specs: vynkor_plugin_manifest::action_specs(), ..Default::default() }

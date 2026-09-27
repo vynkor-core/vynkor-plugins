@@ -1,6 +1,6 @@
 {
   "plugin_id": "speech",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "permissions": [
     "PERMISSION_AUDIO_STREAM",
     "PERMISSION_EVENT_PUBLISH",
@@ -653,7 +653,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "speech_status",
       "description": "Plugin status: loaded local models, configured providers and stream state. Read-only.",
       "risk": "low",
       "input": {

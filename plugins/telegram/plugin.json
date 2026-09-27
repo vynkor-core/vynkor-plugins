@@ -1,7 +1,7 @@
 {
   "plugin_id": "telegram",
   "name": "Telegram",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Full Telegram MTProto user-client for vynkor — N-account, agent delegate. Read/write/search from personal and corporate accounts.",
   "author": "vynkor-core",
   "license": "MIT",
@@ -22,7 +22,7 @@
   ],
   "actions": [
     {
-      "name": "status",
+      "name": "telegram_status",
       "description": "Plugin status with version and account info",
       "risk": "low"
     },

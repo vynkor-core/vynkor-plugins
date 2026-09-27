@@ -1,6 +1,6 @@
 {
   "plugin_id": "uptime",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "permissions": ["PERMISSION_STORAGE", "PERMISSION_NETWORK", "PERMISSION_EVENT_PUBLISH"],
   "kernel_compatibility_range": { "min": "0.1.0", "max": "*" },
   "binary": "uptime",
@@ -87,7 +87,7 @@
       }
     },
     {
-      "name": "status",
+      "name": "uptime_status",
       "description": "Plugin status: number of monitored URLs, scheduler state and last check time. Read-only.",
       "risk": "low",
       "input": { "type": "object", "properties": {}, "additionalProperties": false },
@@ -138,7 +138,8 @@
       "UPTIME_PLUGIN_INTERVAL_SECS": { "type": "integer", "minimum": 5, "default": 60 },
       "UPTIME_PLUGIN_MAX_CHECKS": { "type": "integer", "minimum": 1, "default": 5000 },
       "UPTIME_PLUGIN_DB_TIMEOUT_MS": { "type": "integer", "minimum": 1, "default": 5000 },
-      "UPTIME_PLUGIN_CHECK_TIMEOUT_MS": { "type": "integer", "minimum": 1, "default": 5000 }
+      "UPTIME_PLUGIN_CHECK_TIMEOUT_MS": { "type": "integer", "minimum": 1, "default": 5000 },
+      "UPTIME_PLUGIN_FAIL_THRESHOLD": { "type": "integer", "minimum": 1, "default": 2 }
     },
     "additionalProperties": true
   }

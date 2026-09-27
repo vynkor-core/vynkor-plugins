@@ -21,7 +21,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{Plugin, VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "media";
-const PLUGIN_VERSION: &str = "0.0.3";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct MediaPlugin;
 

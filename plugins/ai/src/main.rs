@@ -56,7 +56,7 @@ const DEFAULT_OUTBOUND_TIMEOUT: Duration = Duration::from_secs(30);
 const CHANNEL_CAPACITY: usize = 256;
 
 const PLUGIN_ID: &str = "ai";
-const PLUGIN_VERSION: &str = "0.1.2";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Startup model-refresh retries: the first attempts typically race the
 /// `network` plugin's registration (`ActionNotFound`).

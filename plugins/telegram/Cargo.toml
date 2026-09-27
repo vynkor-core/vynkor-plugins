@@ -1,6 +1,6 @@
 [package]
 name = "telegram-plugin"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Full Telegram MTProto user-client for vynkor (N-account, agent delegate)"
 publish = false

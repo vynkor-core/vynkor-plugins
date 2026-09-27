@@ -30,7 +30,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "daemon";
-const PLUGIN_VERSION: &str = "0.2.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 6] = [
     "daemon_enable",
     "daemon_disable",

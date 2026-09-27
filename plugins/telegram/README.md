@@ -6,7 +6,7 @@ Full MTProto user-client for vynkor (N-account, Rust + Grammers). Acts as your d
 
 | Action | Params | Result | Confirmation |
 |---|---|---|---|
-| `status` | `{}` | `{version, accounts[], default_account, uptime_ms, engine_ready}` | — |
+| `telegram_status` | `{}` | `{version, accounts[], default_account, uptime_ms, engine_ready}` | — |
 | `tg_list_dialogs` | `{account?, limit?, query?, unread_only?, fields?}` | `{account, dialogs: [{peer, name, unread_count}], total, matched?}` — `fields=minimal/full or peer,name,unread_count`, 10s cache | — |
 | `tg_get_history` | `{account?, peer, limit?}` | `{peer, messages: [...], total}` | — |
 | `tg_get_message` | `{account?, peer, id}` | `{found, message?}` | — |
@@ -89,7 +89,7 @@ One `spawn_live_listener` task per account owns the whole `UpdateStream` and pus
 
 ## Session auth (`src/mtproto/session.rs`)
 
-`SessionPool::connect()` calls `client.is_authorized()` right after opening the session file and fails the connect (clear error, account not registered in the pool) if the session is stale/logged-out, instead of silently registering a broken client that would make every action fail opaque while `status` still reports `engine_ready: true`.
+`SessionPool::connect()` calls `client.is_authorized()` right after opening the session file and fails the connect (clear error, account not registered in the pool) if the session is stale/logged-out, instead of silently registering a broken client that would make every action fail opaque while `telegram_status` still reports `engine_ready: true`.
 
 That check is bounded by a 45s timeout. If the account's home DC is unreachable, grammers otherwise reconnects forever and eventually aborts the process with `thread 'tokio-rt-worker' has overflowed its stack`, crash-looping under the supervisor. On timeout the sender runner is aborted and connect fails with `could not reach Telegram within 45s … set TELEGRAM_PLUGIN_PROXY_URL`.
 

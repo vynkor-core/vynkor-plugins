@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use automations_plugin::{request, store, Rpc, RpcCall};
+use automations_plugin::{request, store, template, Rpc, RpcCall};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{
@@ -34,7 +34,10 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "automations";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Cap on a rule's params after templating; the stored template is capped
+/// at 32 KiB, but placeholders can pull in arbitrarily large event values.
+const MAX_RENDERED_PARAMS_BYTES: usize = 64 * 1024;
 const ACTIONS: [&str; 4] = ["rule_set", "rule_get", "rule_list", "rule_delete"];
 const DISPATCH_TIMEOUT_MS: u32 = 30_000;
 const DB_TIMEOUT_MS: u32 = 5_000;
@@ -164,8 +167,18 @@ async fn on_event(
                 .await;
             continue;
         }
-        match rpc.call_action(&rule.action.target_action, rule.action.params_json.clone(), DISPATCH_TIMEOUT_MS).await {
-            Ok(_) => rule.last_error.clear(),
+        let params = if template::has_placeholders(&rule.action.params_json) {
+            template::render(&rule.action.params_json, &payload)
+        } else {
+            rule.action.params_json.clone()
+        };
+        let dispatched = if serde_json::to_vec(&params).map(|v| v.len()).unwrap_or(0) > MAX_RENDERED_PARAMS_BYTES {
+            Err(format!("rendered params exceed {} KiB", MAX_RENDERED_PARAMS_BYTES / 1024))
+        } else {
+            rpc.call_action(&rule.action.target_action, params, DISPATCH_TIMEOUT_MS).await.map(|_| ())
+        };
+        match dispatched {
+            Ok(()) => rule.last_error.clear(),
             Err(e) => {
                 rule.last_error = e;
                 eprintln!(

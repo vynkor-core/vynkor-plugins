@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub mod request;
 pub mod store;
+pub mod template;
 
 /// One pending kernel-routed call handed from a task to the serve loop,
 /// which sends it and correlates the `ActionResponse` by `action_id`.

@@ -18,6 +18,13 @@ event deliveries; actions are kernel-routed action calls.
   `AUTOMATIONS_PLUGIN_EVENT_TYPES` (default-deny).
 - **Conditions** — up to 8 JSON-pointer equality checks against the event
   payload (AND); empty = always fire.
+- **Templating** — string values in `action.params_json` may hold
+  `{{/json/pointer}}` placeholders resolved against the triggering event's
+  payload. A string that is exactly one placeholder takes the pointed value
+  with its JSON type (`null` on a miss); inside longer text placeholders are
+  interpolated (strings verbatim, other values as JSON, a miss as `""`).
+  Keys are never rewritten and nothing is evaluated. Rendered params are
+  capped at 64 KiB (over-cap → `last_error`, no dispatch).
 - **Cooldown** — `last_fired_ms` is marked BEFORE dispatch: at-most-once per
   window across restarts (calendar semantics).
 
@@ -42,11 +49,23 @@ Best-effort after every fire: `plugin.automations.triggered`
  "action": {"target_action": "goal_start", "params_json": {"goal": "brief me"}}}
 ```
 
+## Example: alert that names the failing URL
+
+```json
+{"trigger": {"event_type": "plugin.uptime.check_failed"},
+ "action": {"target_action": "notify_send",
+            "params_json": {"title": "Site down",
+                            "message": "{{/url}} failed {{/failures}} checks: {{/error}}",
+                            "urgency": "critical"}}}
+```
+
 ## Security
 
 - Dispatch runs under **this plugin's** JWT grants — T-19 anti-laundering;
   gated targets need explicit operator grants, failures land in
   `last_error`.
 - Subscription set is operator-declared; unknown event types never match.
-- `params_json` cap 32 KiB; ≤200 rules; conditions are exact-equality only
+- Templated values are event data: a rule inherits the trust of its
+  trigger's source (e.g. a `telegram` message text is attacker-chosen).
+- `params_json` cap 32 KiB (64 KiB after templating); ≤200 rules; conditions are exact-equality only
   (no scripting surface).

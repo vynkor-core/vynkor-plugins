@@ -5,15 +5,13 @@
 Installed and live, replacing the standalone `stt` and `tts` plugins on
 this machine — those two declared the same action names (`stt_transcribe`,
 `tts_speak`, etc.), so keeping all three registered at once would have hit
-a duplicate-action-name situation the kernel's actual behavior for is
-unverified (see `plugins/agent/ROADMAP.md` "Known issues"). `stt`/`tts`
+a duplicate-action-name situation: the kernel refuses to route an action
+declared by more than one plugin (`ACTION_NOT_FOUND`). `stt`/`tts`
 were moved to `~/.config/vyn/plugins.d/{stt,tts}.yaml.disabled` and their
 binaries backed up under `~/.local/lib/vyn/plugins.bak-<ts>/` rather than
-deleted, in case `speech` needs to be rolled back. This does not touch the
-sherpa hang below — `speech` reuses the same engines verbatim, so it has
-the identical failure mode under the supervisor.
+deleted, in case `speech` needs to be rolled back.
 
-## Known issue: sherpa inference never completes under the kernel supervisor
+## Resolved: sherpa inference never completing under the kernel supervisor
 
 **Status: no longer reproduces (verified live, 2026-09-23).** Called the
 deployed `speech` plugin's `tts_synthesize` (`provider: sherpa`, piper model)
@@ -81,5 +79,4 @@ fast and correct.
   piece for an always-on assistant that doesn't need a hotkey.
 - **Partial hypotheses** — streaming zipformer interim text as
   `stt_partial` events for live captions in clients.
-- **STAT-01** — `status` → `speech_status`.
 - Retire the standalone `stt`/`tts` plugins once no install depends on them.
