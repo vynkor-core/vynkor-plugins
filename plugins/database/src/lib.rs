@@ -16,7 +16,7 @@ use vynkor_sdk::ConcurrentHandler;
 
 use handler::{ChangeEvent, Handler};
 
-pub const PLUGIN_VERSION: &str = "0.2.0";
+pub const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 impl ConcurrentHandler for Handler {
     fn id(&self) -> &str {

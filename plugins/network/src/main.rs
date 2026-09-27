@@ -53,7 +53,7 @@ const CLIENT_IDENTITY_PATH_ENV: &str = "NETWORK_PLUGIN_CLIENT_IDENTITY_PATH";
 const MAX_INFLIGHT_PER_CALLER_ENV: &str = "NETWORK_PLUGIN_MAX_INFLIGHT_PER_CALLER";
 const DEFAULT_MAX_INFLIGHT_PER_CALLER: usize = 8;
 
-const PLUGIN_VERSION: &str = "0.4.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Everything operator-configurable that shapes a `reqwest::Client`, read
 /// once at startup so per-cap redirect clients don't re-read env/files.
