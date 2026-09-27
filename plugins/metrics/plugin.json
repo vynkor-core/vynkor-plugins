@@ -107,7 +107,9 @@
     "properties": {
       "METRICS_PLUGIN_INTERVAL_SECS": { "type": "integer", "minimum": 1, "default": 30 },
       "METRICS_PLUGIN_MAX_SAMPLES": { "type": "integer", "minimum": 1, "default": 10000 },
-      "METRICS_PLUGIN_DB_TIMEOUT_MS": { "type": "integer", "minimum": 1, "default": 5000 }
+      "METRICS_PLUGIN_DB_TIMEOUT_MS": { "type": "integer", "minimum": 1, "default": 5000 },
+      "METRICS_PLUGIN_ALERTS": { "type": "string", "default": "", "description": "Comma-separated <metric><op><limit> rules over cpu_load_1, mem_used_percent, disk_used_percent, battery_percent; op is < or >." },
+      "METRICS_PLUGIN_ALERT_HYSTERESIS": { "type": "number", "minimum": 0, "default": 2 }
     },
     "additionalProperties": true
   }

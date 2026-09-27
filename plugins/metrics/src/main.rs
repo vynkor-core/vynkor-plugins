@@ -36,6 +36,10 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     let rpc = Rpc::new(rpc_tx);
     let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value,String>>)> = HashMap::new();
     let mut seq: u64 = 0;
+    let (rules, errors) = metrics_plugin::alerts::parse_rules(&config.alerts);
+    for e in &errors { eprintln!("[{PLUGIN_ID}] METRICS_PLUGIN_ALERTS: skipping {e}"); }
+    if !rules.is_empty() { println!("[{PLUGIN_ID}] {} alert rule(s) active", rules.len()); }
+    let alerts = Arc::new(tokio::sync::Mutex::new(metrics_plugin::alerts::Alerts::new(rules, config.alert_hysteresis)));
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(config.interval_secs.max(1)));
     // first tick immediately is not desired for metrics - skip first immediate tick
     interval.tick().await;
@@ -88,12 +92,18 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                 let rpc = rpc.clone();
                 let out = outbound_tx.clone();
                 let cfg = Arc::clone(&config);
+                let alerts = Arc::clone(&alerts);
                 tokio::spawn(async move {
                     match sample_and_store(rpc, &cfg).await {
-                        Ok(id) => {
+                        Ok(sample) => {
                             // publish sample event best-effort
-                            let payload = serde_json::json!({"id": id});
+                            let payload = serde_json::json!({"id": sample.id});
                             let _ = out.send(event_envelope("sample", &payload)).await;
+                            let mut alerts = alerts.lock().await;
+                            if !alerts.is_empty() {
+                                let sample = serde_json::to_value(&sample).unwrap_or_default();
+                                for (t, p) in alerts.evaluate(&sample) { let _ = out.send(event_envelope(&t, &p)).await; }
+                            }
                         }
                         Err(e) => eprintln!("[metrics] sample failed: {e}"),
                     }
@@ -202,7 +212,7 @@ mod tests {
         }
     }
 
-    fn test_cfg() -> Config { Config { interval_secs: 3600, max_samples: 100, db_timeout_ms: 5000 } }
+    fn test_cfg() -> Config { Config { interval_secs: 3600, max_samples: 100, db_timeout_ms: 5000, ..Config::default() } }
 
     #[tokio::test]
     async fn query_empty() {
