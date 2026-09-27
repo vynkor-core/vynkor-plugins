@@ -3,7 +3,7 @@ pub mod store;
 
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
-use store::{Check, Target};
+use store::{Check, Target, TargetState};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -11,9 +11,11 @@ pub struct Config {
     pub max_checks: usize,
     pub db_timeout_ms: u32,
     pub check_timeout_ms: u32,
+    /// Consecutive failed background checks before `check_failed` fires.
+    pub fail_threshold: u32,
 }
 impl Default for Config {
-    fn default() -> Self { Self { interval_secs: 60, max_checks: 5000, db_timeout_ms: 5000, check_timeout_ms: 5000 } }
+    fn default() -> Self { Self { interval_secs: 60, max_checks: 5000, db_timeout_ms: 5000, check_timeout_ms: 5000, fail_threshold: 2 } }
 }
 impl Config {
     pub fn from_env() -> Self {
@@ -21,7 +23,8 @@ impl Config {
         let max_checks = std::env::var("UPTIME_PLUGIN_MAX_CHECKS").ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
         let db_timeout_ms = std::env::var("UPTIME_PLUGIN_DB_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
         let check_timeout_ms = std::env::var("UPTIME_PLUGIN_CHECK_TIMEOUT_MS").ok().and_then(|s| s.parse().ok()).unwrap_or(5000);
-        Self { interval_secs, max_checks, db_timeout_ms, check_timeout_ms }
+        let fail_threshold = std::env::var("UPTIME_PLUGIN_FAIL_THRESHOLD").ok().and_then(|s| s.parse().ok()).filter(|n: &u32| *n > 0).unwrap_or(2);
+        Self { interval_secs, max_checks, db_timeout_ms, check_timeout_ms, fail_threshold }
     }
 }
 
@@ -64,6 +67,7 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
         }
         request::UptimeRequest::Remove { id } => {
             let removed = db.delete_target(&id).await?;
+            let _ = db.delete_state(&id).await;
             ok(json!({"removed": removed}), removed.then(|| ("target_removed".into(), json!({"id": id}))))
         }
         request::UptimeRequest::List => {
@@ -115,20 +119,56 @@ async fn do_check(rpc: Rpc, url: &str, timeout_ms: u64) -> CheckResult {
     }
 }
 
-/// Outcome of one background scan: how many targets were checked, plus a
-/// `check_failed` event for each failing one (same shape `uptime_check`
-/// publishes) for the serve loop to put on the bus.
-pub struct ScanResult { pub checked: usize, pub failed: Vec<(String, Value)> }
+/// Outcome of one background scan: how many targets were checked, plus the
+/// alert events (`check_failed` / `recovered`) for the serve loop to put on
+/// the bus.
+pub struct ScanResult { pub checked: usize, pub events: Vec<(String, Value)> }
+
+/// Advances a target's outage state by one background check and returns the
+/// event to publish, if any. `check_failed` fires once per outage, when the
+/// streak reaches `threshold` (a single timeout no longer pages anyone);
+/// `recovered` fires on the first OK check after that alert. A streak that
+/// heals before reaching the threshold is silent both ways.
+fn advance(t: &mut TargetState, url: &str, res: &CheckResult, now: i64, threshold: u32) -> Option<(String, Value)> {
+    if res.ok {
+        let event = t.alerting.then(|| {
+            let down_for_ms = t.down_since_ms.map(|s| (now - s).max(0)).unwrap_or(0);
+            ("recovered".to_string(), json!({"url": url, "down_for_ms": down_for_ms, "failures": t.fail_streak}))
+        });
+        t.fail_streak = 0;
+        t.down_since_ms = None;
+        t.alerting = false;
+        return event;
+    }
+    t.fail_streak = t.fail_streak.saturating_add(1);
+    t.down_since_ms.get_or_insert(now);
+    if t.alerting || t.fail_streak < threshold {
+        return None;
+    }
+    t.alerting = true;
+    Some(("check_failed".to_string(), json!({"url": url, "status": res.status, "error": res.error, "failures": t.fail_streak})))
+}
 
 pub async fn scan_all(rpc: Rpc, config: &Config) -> Result<ScanResult, String> {
     let db = store::Db::new(rpc.clone(), config.db_timeout_ms);
     let targets = db.list_targets().await?;
-    let mut scan = ScanResult { checked: 0, failed: Vec::new() };
+    let mut states = db.list_states().await?;
+    let mut scan = ScanResult { checked: 0, events: Vec::new() };
     for t in targets {
         let res = do_check(rpc.clone(), &t.url, config.check_timeout_ms as u64).await;
         let id = db.next_id(store::NEXT_CHECK_ID).await?.to_string();
         let now = store::now_ms();
-        if !res.ok { scan.failed.push(("check_failed".into(), json!({"url": t.url, "status": res.status, "error": res.error}))); }
+        let mut st = states.remove(&t.id).unwrap_or_default();
+        let before = st.clone();
+        let event = advance(&mut st, &t.url, &res, now, config.fail_threshold);
+        // Persist before publishing: if the write fails, the event is dropped
+        // and the next scan re-derives the same transition instead of
+        // alerting twice.
+        let persisted = st == before || match db.put_state(&t.id, &st).await {
+            Ok(()) => true,
+            Err(e) => { eprintln!("[uptime] failed to persist state for {}: {e}", t.url); false }
+        };
+        if persisted { scan.events.extend(event); }
         let check = Check { id, url: t.url.clone(), timestamp_ms: now, ok: res.ok, status: res.status, latency_ms: res.latency_ms, error: res.error };
         let _ = db.put_check(&check).await;
         scan.checked+=1;
@@ -175,17 +215,71 @@ mod tests {
         let (tx, rx) = mpsc::channel(16);
         spawn_fake(rx);
         let rpc = Rpc::new(tx);
-        let cfg = Config::default();
+        let cfg = Config { fail_threshold: 1, ..Config::default() };
         for url in ["https://up.example", "https://down.example"] {
             let req = serde_json::to_vec(&json!({"url": url})).unwrap();
             handle_action(rpc.clone(), &cfg, "uptime_add", &req, std::time::Instant::now()).await.unwrap();
         }
         let scan = scan_all(rpc, &cfg).await.unwrap();
         assert_eq!(scan.checked, 2);
-        assert_eq!(scan.failed.len(), 1, "only the 503 target is reported");
-        let (event_type, payload) = &scan.failed[0];
+        assert_eq!(scan.events.len(), 1, "only the 503 target is reported");
+        let (event_type, payload) = &scan.events[0];
         assert_eq!(event_type, "check_failed");
         assert_eq!(payload["url"], "https://down.example");
         assert_eq!(payload["status"], 503);
+    }
+
+    #[tokio::test]
+    async fn scan_all_alerts_once_after_threshold_and_survives_removal() {
+        let (tx, rx) = mpsc::channel(16);
+        spawn_fake(rx);
+        let rpc = Rpc::new(tx);
+        let cfg = Config::default(); // fail_threshold: 2
+        let req = serde_json::to_vec(&json!({"url": "https://down.example"})).unwrap();
+        handle_action(rpc.clone(), &cfg, "uptime_add", &req, std::time::Instant::now()).await.unwrap();
+
+        let first = scan_all(rpc.clone(), &cfg).await.unwrap();
+        assert!(first.events.is_empty(), "one failure is below the threshold");
+        let second = scan_all(rpc.clone(), &cfg).await.unwrap();
+        assert_eq!(second.events.len(), 1);
+        assert_eq!(second.events[0].0, "check_failed");
+        assert_eq!(second.events[0].1["failures"], 2);
+        let third = scan_all(rpc.clone(), &cfg).await.unwrap();
+        assert!(third.events.is_empty(), "an ongoing outage alerts once");
+
+        let req = serde_json::to_vec(&json!({"id": "1"})).unwrap();
+        handle_action(rpc.clone(), &cfg, "uptime_remove", &req, std::time::Instant::now()).await.unwrap();
+        let db = store::Db::new(rpc.clone(), cfg.db_timeout_ms);
+        assert!(db.list_states().await.unwrap().is_empty(), "remove drops the outage state");
+        let after = scan_all(rpc, &cfg).await.unwrap();
+        assert_eq!(after.checked, 0);
+    }
+
+    fn check(ok: bool) -> CheckResult {
+        CheckResult { ok, status: if ok { 200 } else { 503 }, latency_ms: 1, error: (!ok).then(|| "HTTP 503".into()) }
+    }
+
+    #[test]
+    fn advance_alerts_at_threshold_then_recovers_with_downtime() {
+        let mut st = TargetState::default();
+        assert!(advance(&mut st, "u", &check(false), 1_000, 2).is_none());
+        let (ty, p) = advance(&mut st, "u", &check(false), 2_000, 2).unwrap();
+        assert_eq!(ty, "check_failed");
+        assert_eq!(p["failures"], 2);
+        assert!(advance(&mut st, "u", &check(false), 3_000, 2).is_none(), "no repeat while down");
+        let (ty, p) = advance(&mut st, "u", &check(true), 4_500, 2).unwrap();
+        assert_eq!(ty, "recovered");
+        assert_eq!(p["down_for_ms"], 3_500, "measured from the first failure");
+        assert_eq!(p["failures"], 3);
+        assert_eq!(st, TargetState::default());
+    }
+
+    #[test]
+    fn advance_is_silent_for_a_blip_below_threshold() {
+        let mut st = TargetState::default();
+        assert!(advance(&mut st, "u", &check(false), 1_000, 3).is_none());
+        assert!(advance(&mut st, "u", &check(false), 2_000, 3).is_none());
+        assert!(advance(&mut st, "u", &check(true), 3_000, 3).is_none(), "no recovered without an alert");
+        assert_eq!(st, TargetState::default());
     }
 }

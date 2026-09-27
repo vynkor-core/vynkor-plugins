@@ -47,7 +47,7 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<UptimeRequest, 
             let url = p.url.and_then(|u| { let t=u.trim().to_string(); if t.is_empty() {None} else {Some(t)} });
             Ok(UptimeRequest::History { url, limit, offset: p.offset.unwrap_or(0) })
         }
-        "status" => Ok(UptimeRequest::Status),
+        "uptime_status" => Ok(UptimeRequest::Status),
         other => Err(format!("unknown action: {other}")),
     }
 }
