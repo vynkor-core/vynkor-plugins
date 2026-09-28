@@ -25,11 +25,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use network_plugin::{handler, request};
+use tokio::sync::oneshot;
 use vynkor_sdk::concurrent::{response_envelope, serve_concurrent};
 use vynkor_sdk::proto::{
     envelope, ActionRequest, Envelope, EventPublish, EventPublishStatus, PluginManifest,
+    SessionClose,
 };
-use vynkor_sdk::{ConcurrentHandler, VynkorClient, VynkorError};
+use vynkor_sdk::{ConcurrentHandler, ResponseSink, VynkorClient, VynkorError};
 
 /// Operator-only opt-in proxy for all outbound requests. Deliberately not a
 /// per-request param: a caller-controlled proxy would let any action bypass
@@ -66,51 +68,45 @@ struct ClientConfig {
 impl ClientConfig {
     fn from_env() -> Self {
         let proxy = match std::env::var(PROXY_URL_ENV) {
-            Ok(proxy_url) => {
-                match reqwest::Proxy::all(&proxy_url) {
-                    Ok(p) => Some(p),
-                    Err(e) => {
-                        eprintln!("[network] WARNING: invalid {PROXY_URL_ENV}: {e}, ignoring proxy");
-                        None
-                    }
+            Ok(proxy_url) => match reqwest::Proxy::all(&proxy_url) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("[network] WARNING: invalid {PROXY_URL_ENV}: {e}, ignoring proxy");
+                    None
                 }
-            }
+            },
             Err(_) => None,
         };
         let mut ca_certs = Vec::new();
         if let Ok(ca_path) = std::env::var(CA_BUNDLE_PATH_ENV) {
             match std::fs::read(&ca_path) {
-                Ok(pem) => {
-                    match reqwest::Certificate::from_pem_bundle(&pem) {
-                        Ok(certs) => ca_certs = certs,
-                        Err(e) => {
-                            eprintln!("[network] WARNING: invalid CA bundle at {ca_path}: {e}, ignoring");
-                        }
+                Ok(pem) => match reqwest::Certificate::from_pem_bundle(&pem) {
+                    Ok(certs) => ca_certs = certs,
+                    Err(e) => {
+                        eprintln!(
+                            "[network] WARNING: invalid CA bundle at {ca_path}: {e}, ignoring"
+                        );
                     }
-                }
+                },
                 Err(e) => {
                     eprintln!("[network] WARNING: failed to read {CA_BUNDLE_PATH_ENV} ({ca_path}): {e}, ignoring");
                 }
             }
         }
         let identity = match std::env::var(CLIENT_IDENTITY_PATH_ENV) {
-            Ok(identity_path) => {
-                match std::fs::read(&identity_path) {
-                    Ok(pem) => {
-                        match reqwest::Identity::from_pem(&pem) {
-                            Ok(id) => Some(id),
-                            Err(e) => {
-                                eprintln!("[network] WARNING: invalid client identity at {identity_path}: {e}, ignoring");
-                                None
-                            }
-                        }
-                    }
+            Ok(identity_path) => match std::fs::read(&identity_path) {
+                Ok(pem) => match reqwest::Identity::from_pem(&pem) {
+                    Ok(id) => Some(id),
                     Err(e) => {
-                        eprintln!("[network] WARNING: failed to read {CLIENT_IDENTITY_PATH_ENV} ({identity_path}): {e}, ignoring");
+                        eprintln!("[network] WARNING: invalid client identity at {identity_path}: {e}, ignoring");
                         None
                     }
+                },
+                Err(e) => {
+                    eprintln!("[network] WARNING: failed to read {CLIENT_IDENTITY_PATH_ENV} ({identity_path}): {e}, ignoring");
+                    None
                 }
-            }
+            },
             Err(_) => None,
         };
         Self {
@@ -150,6 +146,9 @@ struct NetworkPlugin {
     jars: Mutex<CookieJar>,
     /// Monotonic start instant for the INF-07 `status` action's `uptime_ms`.
     start: std::time::Instant,
+    /// CD-03: cancel switches for accepted streaming `http_request`s, keyed
+    /// by the kernel-internal action id a caller's `SessionClose` names.
+    streams: Mutex<HashMap<String, oneshot::Sender<()>>>,
 }
 
 /// Aggregated counters for one caller, read by the `network_stats` action.
@@ -197,6 +196,7 @@ impl NetworkPlugin {
             cache: Mutex::new(network_plugin::handler::CacheStore::new()),
             jars: Mutex::new(HashMap::new()),
             start: std::time::Instant::now(),
+            streams: Mutex::new(HashMap::new()),
         }
     }
 
@@ -221,8 +221,7 @@ impl NetworkPlugin {
                 return attempt.stop();
             }
             let host = attempt.url().host_str().unwrap_or_default();
-            match network_plugin::ssrf::check_literal_ip_host(host, &extra_blocklist, &allowlist)
-            {
+            match network_plugin::ssrf::check_literal_ip_host(host, &extra_blocklist, &allowlist) {
                 Ok(()) => attempt.follow(),
                 Err(e) => attempt.error(e),
             }
@@ -336,6 +335,147 @@ impl NetworkPlugin {
         .unwrap_or_default()
     }
 
+    /// Fail-fast SSRF gates for the initial URL.
+    ///
+    /// `SsrfSafeResolver` never runs for a literal-IP host (see its gate in
+    /// `redirect_policy`'s doc comment), so this is the only check for the
+    /// initial URL in that case. Rejecting here also avoids wasting the
+    /// retry/backoff budget on a request that was never going anywhere.
+    /// Hostname hosts get the same fail-fast treatment; the resolver is
+    /// still authoritative at connect time (a name can re-resolve between
+    /// here and there — rebinding TOCTOU), but a host that's blocked today
+    /// fails here deterministically.
+    async fn precheck_host(&self, url: &str) -> Result<(), String> {
+        let Ok(url) = url::Url::parse(url) else {
+            return Ok(()); // parse_request already validated; nothing to gate
+        };
+        let host_str = url.host_str().unwrap_or_default();
+        network_plugin::ssrf::check_literal_ip_host(
+            host_str,
+            &self.extra_blocklist,
+            &self.allowlist,
+        )?;
+        if host_str.parse::<std::net::IpAddr>().is_err() && !host_str.is_empty() {
+            handler::check_host_reachable(host_str, &self.extra_blocklist, &self.allowlist).await?;
+        }
+        Ok(())
+    }
+
+    /// CD-03: `http_request` with `streaming: true`. Accepts the session
+    /// with `{status, headers}` once the response head arrives, then emits
+    /// the raw body as `ActionResponseChunk`s as it is read and ends with
+    /// `SessionClose("done")`. A failure — before or after acceptance —
+    /// is an error `ActionResponse` (the kernel evicts the session either
+    /// way). A caller's `SessionClose` drops the upstream response
+    /// mid-body, so "stop" stops the transfer. No cache, cookie jar or
+    /// retries on this path; `timeout_ms` bounds the head and each gap
+    /// between chunks rather than the whole transfer.
+    async fn stream_http_request(&self, req: ActionRequest, sink: ResponseSink) -> Vec<Envelope> {
+        let _slot = match self.inflight.acquire(&req.caller_plugin_id) {
+            Ok(slot) => slot,
+            Err(error) => return vec![response_envelope(req.action_id, Err(error))],
+        };
+        let started = std::time::Instant::now();
+        let mut status = 0u16;
+        let mut host = String::new();
+        let end = self
+            .run_stream(
+                &req.action_id,
+                &req.params_json,
+                &sink,
+                &mut status,
+                &mut host,
+            )
+            .await;
+        self.streams.lock().unwrap().remove(&req.action_id);
+
+        let outcome = HttpOutcome {
+            response: match &end {
+                Ok(_) => Ok(Vec::new()),
+                Err(e) => Err(e.clone()),
+            },
+            status,
+            host,
+            latency_ms: started.elapsed().as_millis() as u64,
+            retry_count: 0,
+        };
+        self.record_stats(&req.caller_plugin_id, &outcome);
+        let event = event_envelope(&outcome);
+        let terminal = match end {
+            Ok(StreamEnd::Done) => Some(Envelope {
+                payload: Some(envelope::Payload::SessionClose(SessionClose {
+                    action_id: req.action_id,
+                    reason: "done".into(),
+                })),
+                ..Default::default()
+            }),
+            // the kernel already evicted the session when it forwarded the
+            // caller's close — anything more would be a stray frame
+            Ok(StreamEnd::Cancelled) => None,
+            Err(e) => Some(response_envelope(req.action_id, Err(e))),
+        };
+        terminal.into_iter().chain(std::iter::once(event)).collect()
+    }
+
+    async fn run_stream(
+        &self,
+        action_id: &str,
+        params_json: &[u8],
+        sink: &ResponseSink,
+        status: &mut u16,
+        host: &mut String,
+    ) -> Result<StreamEnd, String> {
+        let params = request::parse_request(params_json)?;
+        *host = url::Url::parse(&params.url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_default();
+        self.precheck_host(&params.url).await?;
+        let mut resp = handler::open_stream(self.client_for(&params), &params).await?;
+        *status = resp.status().as_u16();
+        let headers: HashMap<String, String> = resp
+            .headers()
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or_default().to_string()))
+            .collect();
+
+        // register before accepting: a close can only follow acceptance
+        let (cancel_tx, mut cancel_rx) = oneshot::channel();
+        self.streams
+            .lock()
+            .unwrap()
+            .insert(action_id.to_string(), cancel_tx);
+        let head = serde_json::to_vec(&serde_json::json!({"status": *status, "headers": headers}))
+            .map_err(|e| format!("failed to encode response head: {e}"))?;
+        sink.accept(action_id, head)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        let idle = std::time::Duration::from_millis(params.timeout_ms);
+        let mut seq = 0u32;
+        let mut total = 0usize;
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => return Ok(StreamEnd::Cancelled),
+                next = tokio::time::timeout(idle, resp.chunk()) => match next {
+                    Err(_) => return Err(format!("stream idle for {} ms", params.timeout_ms)),
+                    Ok(Err(e)) => return Err(format!("body read error: {e}")),
+                    Ok(Ok(None)) => return Ok(StreamEnd::Done),
+                    Ok(Ok(Some(bytes))) => {
+                        total += bytes.len();
+                        if total > handler::MAX_BODY_BYTES {
+                            return Err("response body exceeds 10 MiB cap".into());
+                        }
+                        sink.chunk(action_id, seq, bytes.to_vec())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        seq += 1;
+                    }
+                },
+            }
+        }
+    }
+
     async fn run_http_request(&self, caller_plugin_id: &str, params_json: &[u8]) -> HttpOutcome {
         let started = std::time::Instant::now();
         let params = match request::parse_request(params_json) {
@@ -397,48 +537,14 @@ impl NetworkPlugin {
             }
         }
 
-        // `SsrfSafeResolver` never runs for a literal-IP host (see its gate
-        // in `redirect_policy`'s doc comment) — this is the only check for
-        // the initial URL in that case. Rejecting here also avoids wasting
-        // `network`'s retry/backoff budget on a request that was never
-        // going anywhere.
-        if let Ok(url) = url::Url::parse(&params.url) {
-            let host_str = url.host_str().unwrap_or_default();
-            if let Err(e) = network_plugin::ssrf::check_literal_ip_host(
-                host_str,
-                &self.extra_blocklist,
-                &self.allowlist,
-            ) {
-                return HttpOutcome {
-                    response: Err(e),
-                    status: 0,
-                    host,
-                    latency_ms: started.elapsed().as_millis() as u64,
-                    retry_count: 0,
-                };
-            }
-            // Hostname hosts: same fail-fast intent as the literal-IP gate.
-            // The resolver is still authoritative at connect time (a name
-            // can re-resolve between here and there — rebinding TOCTOU),
-            // but a host that's blocked today fails here deterministically,
-            // before the retry loop can burn attempts on it.
-            if host_str.parse::<std::net::IpAddr>().is_err() && !host_str.is_empty() {
-                if let Err(e) = handler::check_host_reachable(
-                    host_str,
-                    &self.extra_blocklist,
-                    &self.allowlist,
-                )
-                .await
-                {
-                    return HttpOutcome {
-                        response: Err(e),
-                        status: 0,
-                        host,
-                        latency_ms: started.elapsed().as_millis() as u64,
-                        retry_count: 0,
-                    };
-                }
-            }
+        if let Err(e) = self.precheck_host(&params.url).await {
+            return HttpOutcome {
+                response: Err(e),
+                status: 0,
+                host,
+                latency_ms: started.elapsed().as_millis() as u64,
+                retry_count: 0,
+            };
         }
 
         // Session cookies: a short-lived snapshot of the caller's jar for
@@ -526,6 +632,12 @@ impl NetworkPlugin {
     }
 }
 
+/// How an accepted streaming `http_request` ended without an error.
+enum StreamEnd {
+    Done,
+    Cancelled,
+}
+
 /// Terminal outcome of one `http_request`: the response bytes (or error) the
 /// caller gets in its `ActionResponse`, plus the data the best-effort
 /// `network.request_completed` event carries. `spawn_handler` builds both
@@ -570,7 +682,10 @@ fn response_json(resp: &handler::HttpResponseJson) -> Result<Vec<u8>, String> {
     obj.insert("status".into(), serde_json::json!(resp.status));
     obj.insert("headers".into(), serde_json::json!(resp.headers));
     obj.insert("body".into(), serde_json::json!(resp.body));
-    obj.insert("body_encoding".into(), serde_json::json!(resp.body_encoding));
+    obj.insert(
+        "body_encoding".into(),
+        serde_json::json!(resp.body_encoding),
+    );
     if let Some(cache) = resp.cache {
         obj.insert("cache".into(), serde_json::json!(cache));
     }
@@ -704,9 +819,19 @@ impl ConcurrentHandler for NetworkPlugin {
         self.inflight.check(&req.caller_plugin_id)
     }
 
+    async fn on_action_stream(&self, req: ActionRequest, sink: ResponseSink) -> Vec<Envelope> {
+        if req.streaming && req.action == "http_request" {
+            return self.stream_http_request(req, sink).await;
+        }
+        self.on_action(req).await
+    }
+
     async fn on_action(&self, req: ActionRequest) -> Vec<Envelope> {
         if req.action == "network_stats" {
-            return vec![response_envelope(req.action_id, Ok(self.network_stats_json()))];
+            return vec![response_envelope(
+                req.action_id,
+                Ok(self.network_stats_json()),
+            )];
         }
         if req.action == "network_status" {
             return vec![response_envelope(req.action_id, Ok(self.status_payload()))];
@@ -743,6 +868,12 @@ impl ConcurrentHandler for NetworkPlugin {
             Some(envelope::Payload::EventPublishAck(ack)) => {
                 if ack.status != EventPublishStatus::EventPublishOk as i32 {
                     println!("[network] event publish failed: {:?}", ack.status);
+                }
+            }
+            // CD-03: the caller stopped a streaming request
+            Some(envelope::Payload::SessionClose(close)) => {
+                if let Some(cancel) = self.streams.lock().unwrap().remove(&close.action_id) {
+                    let _ = cancel.send(());
                 }
             }
             other => {
@@ -816,6 +947,7 @@ mod tests {
             cache: Mutex::new(network_plugin::handler::CacheStore::new()),
             jars: Mutex::new(HashMap::new()),
             start: std::time::Instant::now(),
+            streams: Mutex::new(HashMap::new()),
         })
     }
 
@@ -850,11 +982,7 @@ mod tests {
         format!("http://{addr}/")
     }
 
-    fn http_request(
-        action_id: &str,
-        caller: &str,
-        params_json: Vec<u8>,
-    ) -> Envelope {
+    fn http_request(action_id: &str, caller: &str, params_json: Vec<u8>) -> Envelope {
         Envelope {
             payload: Some(envelope::Payload::ActionRequest(ActionRequest {
                 action_id: action_id.to_string(),
@@ -1037,12 +1165,16 @@ mod tests {
                 Some(envelope::Payload::EventPublish(ev)) => {
                     assert_eq!(ev.event_type, "request_completed");
                     events += 1;
-                }                other => panic!("unexpected payload: {other:?}"),
+                }
+                other => panic!("unexpected payload: {other:?}"),
             }
         }
         assert_eq!(ok, 3, "caller_x's 2 + caller_y's 1 should all succeed");
         assert_eq!(rejected, 3, "caller_x's remaining 3 should be rejected");
-        assert_eq!(events, 3, "one event per accepted request, none for over-cap rejections");
+        assert_eq!(
+            events, 3,
+            "one event per accepted request, none for over-cap rejections"
+        );
 
         let shutdown = Envelope {
             payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {
@@ -1065,7 +1197,8 @@ mod tests {
     #[tokio::test]
     async fn redirect_max_caps_hops() {
         let plugin = test_plugin();
-        let final_url = mock_server_responding("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
+        let final_url =
+            mock_server_responding("HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\nok").await;
         let hop_b_url = {
             let location = format!("location: {final_url}\r\n");
             let response = format!("HTTP/1.1 302 Found\r\n{location}content-length: 0\r\n\r\n");
@@ -1084,7 +1217,11 @@ mod tests {
             "max_redirects": 1,
         })
         .to_string();
-        let out = plugin.handle_http_request("caller_a", capped.as_bytes()).await.response.unwrap();
+        let out = plugin
+            .handle_http_request("caller_a", capped.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["status"], 302, "one hop allowed: stops at B's 3xx");
 
@@ -1095,7 +1232,11 @@ mod tests {
             "max_redirects": 2,
         })
         .to_string();
-        let out = plugin.handle_http_request("caller_a", full.as_bytes()).await.response.unwrap();
+        let out = plugin
+            .handle_http_request("caller_a", full.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["status"], 200, "two hops allowed: reaches C");
         assert_eq!(v["body"], "ok");
@@ -1148,7 +1289,10 @@ mod tests {
                 other => panic!("unexpected payload: {other:?}"),
             }
         }
-        assert!(response_seen && event_seen, "expected a response and an event");
+        assert!(
+            response_seen && event_seen,
+            "expected a response and an event"
+        );
 
         let shutdown = Envelope {
             payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {
@@ -1235,7 +1379,10 @@ mod tests {
                 other => panic!("unexpected payload: {other:?}"),
             }
         }
-        assert!(response_seen && event_seen, "expected a response and an event");
+        assert!(
+            response_seen && event_seen,
+            "expected a response and an event"
+        );
 
         let shutdown = Envelope {
             payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {
@@ -1254,7 +1401,9 @@ mod tests {
 
     /// Serves `response` to every connection, counting them. Returns the URL
     /// and the shared connection counter.
-    async fn counting_mock_server(response: &'static str) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    async fn counting_mock_server(
+        response: &'static str,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1270,7 +1419,8 @@ mod tests {
                 tokio::spawn(async move {
                     let mut buf = [0u8; 1024];
                     let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
-                    let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
+                    let _ =
+                        tokio::io::AsyncWriteExt::write_all(&mut socket, response.as_bytes()).await;
                 });
             }
         });
@@ -1300,9 +1450,14 @@ mod tests {
             let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
             let _ = tokio::io::AsyncWriteExt::write_all(&mut socket, &response).await;
         });
-        let params = serde_json::json!({"method": "GET", "url": format!("http://{addr}/")}).to_string();
+        let params =
+            serde_json::json!({"method": "GET", "url": format!("http://{addr}/")}).to_string();
         let plugin = test_plugin();
-        let out = plugin.handle_http_request("caller_a", params.as_bytes()).await.response.unwrap();
+        let out = plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["status"], 200);
         assert_eq!(v["body"], "decompressed hello");
@@ -1312,39 +1467,62 @@ mod tests {
     async fn cache_serves_repeat_request_without_second_server_hit() {
         use std::sync::atomic::Ordering;
         let plugin = test_plugin();
-        let (url, hits) = counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
+        let (url, hits) =
+            counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
         let params = serde_json::json!({
             "method": "GET", "url": url, "cache_ttl_ms": 60_000
         })
         .to_string();
 
-        let first = plugin.handle_http_request("caller_a", params.as_bytes()).await.response.unwrap();
+        let first = plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v1: serde_json::Value = serde_json::from_slice(&first).unwrap();
         assert_eq!(v1["status"], 200);
         assert_eq!(v1["cache"], "miss");
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
-        let second = plugin.handle_http_request("caller_a", params.as_bytes()).await.response.unwrap();
+        let second = plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v2: serde_json::Value = serde_json::from_slice(&second).unwrap();
         assert_eq!(v2["cache"], "hit");
         assert_eq!(v2["body"], "hello");
-        assert_eq!(hits.load(Ordering::SeqCst), 1, "cache hit must not touch the server again");
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            1,
+            "cache hit must not touch the server again"
+        );
     }
 
     #[tokio::test]
     async fn cache_is_per_caller() {
         use std::sync::atomic::Ordering;
         let plugin = test_plugin();
-        let (url, hits) = counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
+        let (url, hits) =
+            counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
         let params = serde_json::json!({
             "method": "GET", "url": url, "cache_ttl_ms": 60_000
         })
         .to_string();
 
-        plugin.handle_http_request("caller_a", params.as_bytes()).await;
-        let out = plugin.handle_http_request("caller_b", params.as_bytes()).await.response.unwrap();
+        plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await;
+        let out = plugin
+            .handle_http_request("caller_b", params.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["cache"], "miss", "caller B must not see caller A's cached data");
+        assert_eq!(
+            v["cache"], "miss",
+            "caller B must not see caller A's cached data"
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
@@ -1352,30 +1530,52 @@ mod tests {
     async fn non_2xx_response_is_not_cached() {
         use std::sync::atomic::Ordering;
         let plugin = test_plugin();
-        let (url, hits) = counting_mock_server("HTTP/1.1 500 Server Error\r\ncontent-length: 0\r\n\r\n").await;
+        let (url, hits) =
+            counting_mock_server("HTTP/1.1 500 Server Error\r\ncontent-length: 0\r\n\r\n").await;
         let params = serde_json::json!({
             "method": "GET", "url": url, "cache_ttl_ms": 60_000
         })
         .to_string();
 
-        plugin.handle_http_request("caller_a", params.as_bytes()).await;
-        let out = plugin.handle_http_request("caller_a", params.as_bytes()).await.response.unwrap();
+        plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await;
+        let out = plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await
+            .response
+            .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["cache"], "miss", "5xx must not be cached — second request is a miss");
-        assert_eq!(hits.load(Ordering::SeqCst), 2, "server hit twice — nothing cached");
+        assert_eq!(
+            v["cache"], "miss",
+            "5xx must not be cached — second request is a miss"
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "server hit twice — nothing cached"
+        );
     }
 
     #[tokio::test]
     async fn stats_track_per_caller_requests_errors_and_latency() {
         let plugin = test_plugin();
-        let (url, _) = counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
+        let (url, _) =
+            counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
         let ok_params = serde_json::json!({"method": "GET", "url": url}).to_string();
-        plugin.handle_http_request("caller_a", ok_params.as_bytes()).await;
-        plugin.handle_http_request("caller_a", ok_params.as_bytes()).await;
+        plugin
+            .handle_http_request("caller_a", ok_params.as_bytes())
+            .await;
+        plugin
+            .handle_http_request("caller_a", ok_params.as_bytes())
+            .await;
 
-        let (err_url, _) = counting_mock_server("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n").await;
+        let (err_url, _) =
+            counting_mock_server("HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n").await;
         let err_params = serde_json::json!({"method": "GET", "url": err_url}).to_string();
-        plugin.handle_http_request("caller_a", err_params.as_bytes()).await;
+        plugin
+            .handle_http_request("caller_a", err_params.as_bytes())
+            .await;
 
         let stats = plugin.stats.lock().unwrap();
         let a = &stats["caller_a"];
@@ -1386,10 +1586,15 @@ mod tests {
     #[tokio::test]
     async fn network_stats_aggregates_totals_and_per_caller() {
         let plugin = test_plugin();
-        let (url, _) = counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
+        let (url, _) =
+            counting_mock_server("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello").await;
         let params = serde_json::json!({"method": "GET", "url": url}).to_string();
-        plugin.handle_http_request("caller_a", params.as_bytes()).await;
-        plugin.handle_http_request("caller_b", params.as_bytes()).await;
+        plugin
+            .handle_http_request("caller_a", params.as_bytes())
+            .await;
+        plugin
+            .handle_http_request("caller_b", params.as_bytes())
+            .await;
 
         let data = plugin.network_stats_json();
         let v: serde_json::Value = serde_json::from_slice(&data).unwrap();
@@ -1437,9 +1642,244 @@ mod tests {
 
         let second_request = seen.lock().unwrap().clone();
         assert!(
-            second_request.to_lowercase().contains("cookie: session=abc123"),
+            second_request
+                .to_lowercase()
+                .contains("cookie: session=abc123"),
             "second request carries the jar cookie: {second_request}"
         );
+    }
+    // ── CD-03: streaming http_request ────────────────────────────────
+
+    /// Chunked-transfer server: sends the head, then each piece as its own
+    /// chunk with a pause, then the terminator — unless `hang_after` is
+    /// set, in which case it stops after that many pieces and holds the
+    /// socket open. Returns the URL and a flag set once a write fails
+    /// (i.e. the client dropped the connection).
+    async fn chunked_server(
+        pieces: &'static [&'static str],
+        hang_after: Option<usize>,
+    ) -> (String, Arc<std::sync::atomic::AtomicBool>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = dropped.clone();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = socket.read(&mut buf).await;
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n";
+            let _ = socket.write_all(head.as_bytes()).await;
+            for (i, p) in pieces.iter().enumerate() {
+                if hang_after == Some(i) {
+                    // keep writing slowly until the client goes away
+                    loop {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if socket.write_all(b"1\r\nx\r\n").await.is_err()
+                            || socket.flush().await.is_err()
+                        {
+                            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                            return;
+                        }
+                    }
+                }
+                let chunk = format!("{:x}\r\n{p}\r\n", p.len());
+                let _ = socket.write_all(chunk.as_bytes()).await;
+                let _ = socket.flush().await;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+        });
+        (format!("http://{addr}/"), dropped)
+    }
+
+    fn streaming_request(action_id: &str, params: serde_json::Value) -> Envelope {
+        Envelope {
+            payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                action_id: action_id.to_string(),
+                action: "http_request".into(),
+                params_json: params.to_string().into_bytes(),
+                timeout_ms: 0,
+                streaming: true,
+                caller_plugin_id: "ai".into(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    async fn next_payload(kernel: &mut VynkorClient) -> envelope::Payload {
+        tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+            .await
+            .expect("stream stalled")
+            .unwrap()
+            .payload
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn streaming_request_emits_head_chunks_then_close() {
+        const PIECES: &[&str] = &["data: a\n\n", "data: b\n\n", "data: c\n\n"];
+        let (url, _) = chunked_server(PIECES, None).await;
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        let loop_task = tokio::spawn(run_concurrent_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            test_plugin(),
+        ));
+
+        kernel
+            .send(
+                "network",
+                streaming_request("s-1", serde_json::json!({"method": "GET", "url": url})),
+            )
+            .await
+            .unwrap();
+
+        match next_payload(&mut kernel).await {
+            envelope::Payload::ActionResponse(r) => {
+                assert_eq!(r.status, ActionStatus::ActionOk as i32, "{}", r.error);
+                let head: serde_json::Value = serde_json::from_slice(&r.data_json).unwrap();
+                assert_eq!(head["status"], 200);
+                assert_eq!(head["headers"]["content-type"], "text/event-stream");
+            }
+            other => panic!("expected accept, got {other:?}"),
+        }
+        let mut body = Vec::new();
+        let mut expected_seq = 0;
+        loop {
+            match next_payload(&mut kernel).await {
+                envelope::Payload::ActionResponseChunk(c) => {
+                    assert_eq!(c.action_id, "s-1");
+                    assert_eq!(c.seq, expected_seq);
+                    expected_seq += 1;
+                    body.extend_from_slice(&c.chunk);
+                }
+                envelope::Payload::SessionClose(c) => {
+                    assert_eq!(c.action_id, "s-1");
+                    assert_eq!(c.reason, "done");
+                    break;
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(String::from_utf8(body).unwrap(), PIECES.concat());
+        assert!(expected_seq >= 1);
+        match next_payload(&mut kernel).await {
+            envelope::Payload::EventPublish(ev) => assert_eq!(ev.event_type, "request_completed"),
+            other => panic!("expected event, got {other:?}"),
+        }
+        loop_task.abort();
+    }
+
+    #[tokio::test]
+    async fn caller_session_close_drops_the_upstream_stream() {
+        const PIECES: &[&str] = &["data: first\n\n", "never"];
+        let (url, dropped) = chunked_server(PIECES, Some(1)).await;
+        let plugin = test_plugin();
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        let loop_task = tokio::spawn(run_concurrent_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            plugin.clone(),
+        ));
+
+        kernel
+            .send(
+                "network",
+                streaming_request("s-2", serde_json::json!({"method": "GET", "url": url})),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_payload(&mut kernel).await,
+            envelope::Payload::ActionResponse(_)
+        ));
+        assert!(matches!(
+            next_payload(&mut kernel).await,
+            envelope::Payload::ActionResponseChunk(_)
+        ));
+
+        // what the kernel forwards when the requester presses "stop"
+        let close = Envelope {
+            payload: Some(envelope::Payload::SessionClose(SessionClose {
+                action_id: "s-2".into(),
+                reason: "client closed".into(),
+            })),
+            ..Default::default()
+        };
+        kernel.send("network", close).await.unwrap();
+
+        // late filler chunks may already be queued; after them only the
+        // event — no SessionClose/ActionResponse for an evicted session.
+        // bounded as a whole: an uncancelled stream keeps sending filler
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                match next_payload(&mut kernel).await {
+                    envelope::Payload::ActionResponseChunk(_) => continue,
+                    envelope::Payload::EventPublish(ev) => {
+                        assert_eq!(ev.event_type, "request_completed");
+                        break;
+                    }
+                    other => panic!("nothing but the event after a cancel, got {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("stream kept running after the caller's SessionClose");
+        assert!(plugin.streams.lock().unwrap().is_empty());
+        // the upstream connection really went away
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while !dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("upstream socket still open after cancel");
+        loop_task.abort();
+    }
+
+    #[tokio::test]
+    async fn stalled_stream_fails_after_idle_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+                .await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        let loop_task = tokio::spawn(run_concurrent_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            test_plugin(),
+        ));
+        kernel
+            .send(
+                "network",
+                streaming_request(
+                    "s-3",
+                    serde_json::json!({"method": "GET", "url": url, "timeout_ms": 300}),
+                ),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            next_payload(&mut kernel).await,
+            envelope::Payload::ActionResponse(_)
+        ));
+        match next_payload(&mut kernel).await {
+            envelope::Payload::ActionResponse(r) => {
+                assert_eq!(r.status, ActionStatus::ActionError as i32);
+                assert!(r.error.contains("idle"), "{}", r.error);
+            }
+            other => panic!("expected idle error, got {other:?}"),
+        }
+        loop_task.abort();
     }
 }
 
@@ -1465,14 +1905,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

@@ -33,6 +33,44 @@ pub struct OutboundCall {
     pub reply: oneshot::Sender<Result<ActionResponse, VynkorError>>,
 }
 
+/// What a handler task can ask the loop task to do on the shared client.
+pub enum Outbound {
+    Call(OutboundCall),
+    /// CD-03: an `ActionRequest{streaming: true}`; the loop routes the
+    /// session's frames into `events` and reports the minted id on `opened`.
+    OpenStream {
+        action: String,
+        params_json: Vec<u8>,
+        timeout_ms: u32,
+        events: mpsc::UnboundedSender<UpstreamEvent>,
+        opened: oneshot::Sender<Result<String, VynkorError>>,
+    },
+    /// Stop an accepted upstream session (`SessionClose`).
+    CloseStream {
+        action_id: String,
+    },
+}
+
+/// One frame of an outbound streaming session, as routed by the loop.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UpstreamEvent {
+    /// The provider's accepting `ActionResponse{OK}` (`data_json`).
+    Accepted(Vec<u8>),
+    Chunk(Vec<u8>),
+    /// The provider's `SessionClose` — normal end.
+    Done,
+    /// Error `ActionResponse` or kernel `ActionStreamAbort`.
+    Failed(String),
+}
+
+/// Handler-side end of an outbound streaming session. Unbounded on
+/// purpose: the loop must never block on a slow handler (the handler may
+/// itself be waiting on the loop to forward its own output).
+pub struct UpstreamStream {
+    pub action_id: String,
+    pub events: mpsc::UnboundedReceiver<UpstreamEvent>,
+}
+
 /// Abstraction over "make an outbound action call and await the response."
 /// [`VynkorClient`] implements it directly (startup, before the concurrent
 /// loop begins); [`OutboundHandle`] implements it for handler tasks that
@@ -61,12 +99,48 @@ impl ActionCaller for VynkorClient {
 /// Cheaply-cloneable handle spawned handler tasks use in place of a client.
 #[derive(Clone)]
 pub struct OutboundHandle {
-    tx: mpsc::Sender<OutboundCall>,
+    tx: mpsc::Sender<Outbound>,
 }
 
 impl OutboundHandle {
-    pub fn new(tx: mpsc::Sender<OutboundCall>) -> Self {
+    pub fn new(tx: mpsc::Sender<Outbound>) -> Self {
         Self { tx }
+    }
+
+    /// Open a streaming call (CD-03). Returns once the request is on the
+    /// wire; the provider's acceptance arrives as the first event.
+    pub async fn open_stream(
+        &self,
+        action: &str,
+        params_json: Vec<u8>,
+        timeout_ms: u32,
+    ) -> Result<UpstreamStream, VynkorError> {
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (opened, rx) = oneshot::channel();
+        self.tx
+            .send(Outbound::OpenStream {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                events: events_tx,
+                opened,
+            })
+            .await
+            .map_err(|_| VynkorError::Internal("ai: outbound loop closed".into()))?;
+        let action_id = rx
+            .await
+            .map_err(|_| VynkorError::Internal("ai: outbound call dropped".into()))??;
+        Ok(UpstreamStream { action_id, events })
+    }
+
+    /// Best effort: a loop that is gone has no session left to close.
+    pub async fn close_stream(&self, action_id: &str) {
+        let _ = self
+            .tx
+            .send(Outbound::CloseStream {
+                action_id: action_id.to_string(),
+            })
+            .await;
     }
 }
 
@@ -82,10 +156,16 @@ impl ActionCaller for OutboundHandle {
         let params_json = params_json.to_vec();
         async move {
             let (reply, rx) = oneshot::channel();
-            tx.send(OutboundCall { action, params_json, timeout_ms, reply })
-                .await
-                .map_err(|_| VynkorError::Internal("ai: outbound loop closed".into()))?;
-            rx.await.map_err(|_| VynkorError::Internal("ai: outbound call dropped".into()))?
+            tx.send(Outbound::Call(OutboundCall {
+                action,
+                params_json,
+                timeout_ms,
+                reply,
+            }))
+            .await
+            .map_err(|_| VynkorError::Internal("ai: outbound loop closed".into()))?;
+            rx.await
+                .map_err(|_| VynkorError::Internal("ai: outbound call dropped".into()))?
         }
     }
 }

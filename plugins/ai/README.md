@@ -110,6 +110,28 @@ malformed provider JSON, non-2xx HTTP status from the provider, or any
 error `network`'s `http_request` itself returns (SSRF block, timeout, DNS
 failure, connection refused).
 
+### Streaming (CD-03)
+
+Same `params_json`, with `streaming: true` on the `ActionRequest`. `ai`
+asks the provider for an SSE stream (via `network`'s streaming
+`http_request`) and forwards it as a kernel streaming session:
+
+1. `ActionResponse{ACTION_OK}`, `data_json` = `{"model": "..."}`, once the
+   provider answered 2xx. Anything failing earlier (bad params, key, HTTP
+   4xx/5xx with its body) is a plain `ACTION_ERROR` reply instead;
+2. `ActionResponseChunk`s, each `{"type": "delta", "text": "..."}` — append
+   them; they add up to the final `content`;
+3. one chunk `{"type": "done", "result": {...}}` — the same object the
+   buffered call returns (`content`, `tool_calls`, `stop_reason`, `usage`);
+4. `SessionClose{reason: "done"}`.
+
+An error mid-stream arrives as an `ACTION_ERROR` `ActionResponse`. Send
+`SessionClose` to stop: `ai` closes its upstream session and `network`
+drops the provider connection, so generation (and billing) stops. Usage is
+recorded for completed streams only. Streaming never retries; the
+`max_retries` param is ignored on this path. Only `chat_completion`
+streams: a streaming request for any other action is rejected.
+
 ## Action: `embedding` (for vector-db)
 
 Request:

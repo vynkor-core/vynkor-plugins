@@ -101,6 +101,24 @@ Publishing is best-effort and fire-and-forget: the `ActionResponse` is
 always sent first, and a dropped event (loop shutting down, channel full)
 never delays or fails the caller's reply. Requires `PERMISSION_EVENT_PUBLISH`.
 
+## Streaming responses (CD-03)
+
+Send the `ActionRequest` with `streaming: true` (same `params_json`) to get
+the body as it arrives instead of one buffered reply — what `ai` uses for
+token streaming:
+
+1. `ActionResponse{ACTION_OK}` once the response head is in; `data_json` is
+   `{"status": <u16>, "headers": {...}}` (any HTTP status, errors included);
+2. `ActionResponseChunk`s with the raw body bytes, `seq` from 0;
+3. `SessionClose{reason: "done"}` at end of body.
+
+A failure at any point is an `ACTION_ERROR` `ActionResponse`. Send
+`SessionClose` to stop: `network` drops the upstream connection, so the
+remote stops sending (and billing). `timeout_ms` bounds the wait for the
+head and each gap between chunks, not the whole transfer. No retries, cache
+or cookie jar on this path; the 10 MiB body cap and the per-caller in-flight
+cap still apply.
+
 ## Response body encoding
 
 `body` is the response text as-is when it's valid UTF-8. When it isn't

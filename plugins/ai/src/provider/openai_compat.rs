@@ -4,7 +4,10 @@
 
 use std::collections::HashMap;
 
-use super::{ChatResult, EmbeddingResult, EmbeddingProvider, HttpRequestJson, Provider, Usage};
+use super::{
+    ChatResult, EmbeddingProvider, EmbeddingResult, HttpRequestJson, Provider, StreamDelta,
+    StreamParser, ToolCall, Usage,
+};
 use crate::request::{ChatCompletionParams, EmbeddingParams};
 
 pub struct OpenAiCompatProvider;
@@ -79,6 +82,15 @@ impl Provider for OpenAiCompatProvider {
             max_retries: params.max_retries,
             retry_backoff_ms: params.retry_backoff_ms,
         }
+    }
+
+    /// Without `include_usage` the stream carries no token counts at all.
+    fn stream_body_fields(&self) -> Vec<(&'static str, serde_json::Value)> {
+        vec![("stream_options", serde_json::json!({"include_usage": true}))]
+    }
+
+    fn stream_parser(&self) -> Box<dyn StreamParser> {
+        Box::<OpenAiStream>::default()
     }
 
     fn parse_response(&self, body: &[u8]) -> Result<ChatResult, String> {
@@ -167,11 +179,7 @@ impl Provider for OpenAiCompatProvider {
 }
 
 impl EmbeddingProvider for OpenAiCompatProvider {
-    fn build_embedding_request(
-        &self,
-        params: &EmbeddingParams,
-        api_key: &str,
-    ) -> HttpRequestJson {
+    fn build_embedding_request(&self, params: &EmbeddingParams, api_key: &str) -> HttpRequestJson {
         let url = format!("{}/embeddings", params.base_url.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": params.model,
@@ -231,6 +239,100 @@ impl EmbeddingProvider for OpenAiCompatProvider {
                 input_tokens: resp.usage.prompt_tokens,
                 output_tokens: 0,
             },
+        })
+    }
+}
+
+/// `chat.completion.chunk` stream: `choices[0].delta.{content,tool_calls}`
+/// increments, `finish_reason` on the last choice chunk, usage in a final
+/// chunk with empty `choices` (when `include_usage` is honored), then
+/// `data: [DONE]`. Tool calls arrive keyed by `index`, split across chunks.
+#[derive(Default)]
+struct OpenAiStream {
+    content: String,
+    tools: Vec<(String, String, String)>, // id, name, arguments — by index
+    started: bool,
+    stop_reason: String,
+    usage: Usage,
+}
+
+impl StreamParser for OpenAiStream {
+    fn feed(&mut self, data: &str) -> Result<Vec<StreamDelta>, String> {
+        if data.trim() == "[DONE]" {
+            return Ok(Vec::new());
+        }
+        let v: serde_json::Value = serde_json::from_str(data)
+            .map_err(|e| format!("malformed openai-compatible stream chunk: {e}"))?;
+        if let Some(err) = v.get("error") {
+            let msg = err
+                .get("message")
+                .and_then(|m| m.as_str())
+                .unwrap_or("unknown error");
+            return Err(format!("provider stream error: {msg}"));
+        }
+        self.started = true;
+        if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
+            self.usage = Usage {
+                input_tokens: u["prompt_tokens"].as_u64().unwrap_or(0),
+                output_tokens: u["completion_tokens"].as_u64().unwrap_or(0),
+            };
+        }
+        let mut out = Vec::new();
+        let Some(choice) = v.pointer("/choices/0") else {
+            return Ok(out);
+        };
+        if let Some(r) = choice.get("finish_reason").and_then(|r| r.as_str()) {
+            self.stop_reason = r.to_string();
+        }
+        let delta = &choice["delta"];
+        if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
+            if !text.is_empty() {
+                self.content.push_str(text);
+                out.push(StreamDelta::Text(text.to_string()));
+            }
+        }
+        for tc in delta
+            .get("tool_calls")
+            .and_then(|t| t.as_array())
+            .into_iter()
+            .flatten()
+        {
+            let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+            if self.tools.len() <= idx {
+                self.tools.resize(idx + 1, Default::default());
+            }
+            let slot = &mut self.tools[idx];
+            if let Some(id) = tc.get("id").and_then(|i| i.as_str()) {
+                slot.0 = id.to_string();
+            }
+            if let Some(name) = tc.pointer("/function/name").and_then(|n| n.as_str()) {
+                slot.1.push_str(name);
+            }
+            if let Some(args) = tc.pointer("/function/arguments").and_then(|a| a.as_str()) {
+                slot.2.push_str(args);
+            }
+        }
+        Ok(out)
+    }
+
+    fn finish(self: Box<Self>) -> Result<ChatResult, String> {
+        if !self.started {
+            return Err("openai-compatible stream ended without any chunk".into());
+        }
+        Ok(ChatResult {
+            content: self.content,
+            tool_calls: self
+                .tools
+                .into_iter()
+                .filter(|(_, name, _)| !name.is_empty())
+                .map(|(id, name, arguments_json)| ToolCall {
+                    id,
+                    name,
+                    arguments_json,
+                })
+                .collect(),
+            stop_reason: self.stop_reason,
+            usage: self.usage,
         })
     }
 }
@@ -372,7 +474,10 @@ mod tests {
         assert_eq!(result.tool_calls.len(), 1);
         assert_eq!(result.tool_calls[0].id, "call_1");
         assert_eq!(result.tool_calls[0].name, "launch");
-        assert_eq!(result.tool_calls[0].arguments_json, "{\"app_id\":\"firefox\"}");
+        assert_eq!(
+            result.tool_calls[0].arguments_json,
+            "{\"app_id\":\"firefox\"}"
+        );
     }
 
     #[test]
@@ -414,5 +519,60 @@ mod tests {
             .parse_response(b"not json")
             .unwrap_err();
         assert!(err.contains("malformed"), "error was: {err}");
+    }
+
+    #[test]
+    fn stream_parser_rebuilds_text_tools_and_usage() {
+        let mut p = OpenAiCompatProvider.stream_parser();
+        let mut streamed = String::new();
+        for e in [
+            r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"content":"При"}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"content":"вет"}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lights","arguments":""}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"on\":"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"true}"}}]}}]}"#,
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":null}"#,
+            r#"{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":5}}"#,
+            "[DONE]",
+        ] {
+            for d in p.feed(e).unwrap() {
+                let StreamDelta::Text(t) = d;
+                streamed.push_str(&t);
+            }
+        }
+        let r = p.finish().unwrap();
+        assert_eq!(r.content, "Привет");
+        assert_eq!(streamed, r.content);
+        assert_eq!(
+            r.tool_calls,
+            vec![ToolCall {
+                id: "call_1".into(),
+                name: "lights".into(),
+                arguments_json: r#"{"on":true}"#.into(),
+            }]
+        );
+        assert_eq!(r.stop_reason, "tool_calls");
+        assert_eq!(
+            r.usage,
+            Usage {
+                input_tokens: 7,
+                output_tokens: 5
+            }
+        );
+    }
+
+    #[test]
+    fn stream_error_chunk_fails_and_request_asks_for_usage() {
+        let mut p = OpenAiCompatProvider.stream_parser();
+        assert!(p
+            .feed(r#"{"error":{"message":"rate limited"}}"#)
+            .unwrap_err()
+            .contains("rate limited"));
+        let req =
+            OpenAiCompatProvider.build_stream_request(&params("https://api.openai.com/v1"), "k");
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["stream_options"]["include_usage"], true);
     }
 }
