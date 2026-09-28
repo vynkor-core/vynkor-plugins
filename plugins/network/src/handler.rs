@@ -138,7 +138,9 @@ pub async fn check_host_reachable(
         .map_err(|e| format!("failed to resolve host {host}: {e}"))?;
     let allowed = filter_allowed_addrs(host, resolved, extra_blocklist, allowlist);
     if allowed.is_empty() {
-        return Err(format!("all resolved IPs for {host} are blocked by SSRF policy"));
+        return Err(format!(
+            "all resolved IPs for {host} are blocked by SSRF policy"
+        ));
     }
     Ok(())
 }
@@ -158,7 +160,9 @@ impl Resolve for SsrfSafeResolver {
 
             let allowed = filter_allowed_addrs(&host, resolved, &extra_blocklist, &allowlist);
             if allowed.is_empty() {
-                return Err(format!("all resolved IPs for {host} are blocked by SSRF policy").into());
+                return Err(
+                    format!("all resolved IPs for {host} are blocked by SSRF policy").into(),
+                );
             }
             Ok(Box::new(allowed.into_iter()) as Addrs)
         })
@@ -277,18 +281,19 @@ pub async fn fetch_with_stats(
     }
 }
 
-async fn fetch_once(
+/// Method, URL, headers, body/multipart and (opt-in) cookies — everything
+/// about the outgoing request except its timeout, which the buffered and
+/// streaming paths apply differently.
+fn build_request(
     client: &reqwest::Client,
     params: &HttpRequestParams,
     attach_cookies: Option<&[(String, String)]>,
     use_cookies: bool,
-) -> Result<(HttpResponseJson, Vec<(String, String)>), FetchError> {
+) -> Result<reqwest::RequestBuilder, FetchError> {
     let method = reqwest::Method::from_bytes(params.method.as_bytes())
         .map_err(|e| FetchError::deterministic(format!("invalid method: {e}")))?;
 
-    let mut req = client
-        .request(method, &params.url)
-        .timeout(Duration::from_millis(params.timeout_ms));
+    let mut req = client.request(method, &params.url);
 
     // Multipart bodies override the caller's Content-Type, so build the
     // body first and skip the caller's content-type header below.
@@ -300,8 +305,7 @@ async fn fetch_once(
                 ));
             }
             let boundary = multipart_boundary();
-            let body =
-                build_multipart_body(parts, &boundary).map_err(FetchError::deterministic)?;
+            let body = build_multipart_body(parts, &boundary).map_err(FetchError::deterministic)?;
             Some((boundary, body))
         }
         None => None,
@@ -345,7 +349,10 @@ async fn fetch_once(
     // Session cookies (opt-in): the caller's own `Cookie` header wins over
     // the jar; a jar snapshot is attached only when the caller sent none.
     let attach = if use_cookies
-        && params.headers.keys().all(|k| !k.eq_ignore_ascii_case("cookie"))
+        && params
+            .headers
+            .keys()
+            .all(|k| !k.eq_ignore_ascii_case("cookie"))
     {
         attach_cookies.and_then(cookie_header)
     } else {
@@ -354,6 +361,17 @@ async fn fetch_once(
     if let Some(cookie) = attach {
         req = req.header(reqwest::header::COOKIE, cookie);
     }
+    Ok(req)
+}
+
+async fn fetch_once(
+    client: &reqwest::Client,
+    params: &HttpRequestParams,
+    attach_cookies: Option<&[(String, String)]>,
+    use_cookies: bool,
+) -> Result<(HttpResponseJson, Vec<(String, String)>), FetchError> {
+    let req = build_request(client, params, attach_cookies, use_cookies)?
+        .timeout(Duration::from_millis(params.timeout_ms));
 
     let mut resp = req.send().await.map_err(|e| {
         if e.is_redirect() {
@@ -424,6 +442,24 @@ async fn fetch_once(
 /// Generate a `multipart/form-data` boundary: a fixed dash prefix plus hex
 /// from the current timestamp and process id. Uniqueness across requests is
 /// all that matters here, not unpredictability.
+/// CD-03: send the request and hand back the live response for the caller
+/// to drain chunk by chunk. `params.timeout_ms` bounds the wait for the
+/// response head here; the body side re-applies it per chunk (an idle
+/// bound), since a token stream legitimately outlives any whole-request
+/// cap. No retries, cache or cookie jar: a partially consumed stream can't
+/// be replayed.
+pub async fn open_stream(
+    client: &reqwest::Client,
+    params: &HttpRequestParams,
+) -> Result<reqwest::Response, String> {
+    let req = build_request(client, params, None, false).map_err(|e| e.message)?;
+    match tokio::time::timeout(Duration::from_millis(params.timeout_ms), req.send()).await {
+        Err(_) => Err(format!("no response within {} ms", params.timeout_ms)),
+        Ok(Err(e)) => Err(format!("request failed: {e}")),
+        Ok(Ok(resp)) => Ok(resp),
+    }
+}
+
 pub fn multipart_boundary() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -552,9 +588,7 @@ impl CacheStore {
 
     /// The cached entry for `key` when present and not yet expired.
     pub fn get(&self, key: &str, now_ms: u64) -> Option<&CacheEntry> {
-        self.entries
-            .get(key)
-            .filter(|e| now_ms <= e.expires_at_ms)
+        self.entries.get(key).filter(|e| now_ms <= e.expires_at_ms)
     }
 
     /// Insert or replace `key`, then evict the oldest entries until the
@@ -627,9 +661,10 @@ pub fn request_body_hash(params: &HttpRequestParams) -> u64 {
 /// `Cache-Control: no-store`.
 pub fn is_cacheable(status: u16, headers: &HashMap<String, String>) -> bool {
     (200..300).contains(&status)
-        && headers
-            .iter()
-            .all(|(k, v)| !(k.eq_ignore_ascii_case("cache-control") && v.to_ascii_lowercase().contains("no-store")))
+        && headers.iter().all(|(k, v)| {
+            !(k.eq_ignore_ascii_case("cache-control")
+                && v.to_ascii_lowercase().contains("no-store"))
+        })
 }
 
 #[cfg(test)]
@@ -703,7 +738,9 @@ mod tests {
             let _ = socket.write_all(&response).await;
         });
         let client = reqwest::Client::new();
-        let resp = fetch(&client, &params(format!("http://{addr}/"))).await.unwrap();
+        let resp = fetch(&client, &params(format!("http://{addr}/")))
+            .await
+            .unwrap();
         assert_eq!(resp.body_encoding, "base64");
         use base64::Engine;
         let decoded = base64::engine::general_purpose::STANDARD
@@ -754,10 +791,7 @@ mod tests {
                 buf.extend_from_slice(&tmp[..n]);
             }
             let body = &buf[header_end..header_end + content_length];
-            let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n",
-                body.len()
-            );
+            let response = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
             let mut out = response.into_bytes();
             out.extend_from_slice(body);
             let _ = socket.write_all(&out).await;
@@ -951,10 +985,7 @@ mod tests {
         let mut p = params(url);
         p.max_retries = 3;
         let err = fetch(&client, &p).await.unwrap_err();
-        assert!(
-            err.contains("error following redirect"),
-            "error was: {err}"
-        );
+        assert!(err.contains("error following redirect"), "error was: {err}");
         assert_eq!(
             connections.load(Ordering::SeqCst),
             1,
@@ -1050,7 +1081,10 @@ mod tests {
         let boundary = "----testboundary";
         let body = build_multipart_body(&parts, boundary).unwrap();
         let text = String::from_utf8(body).unwrap();
-        assert!(text.starts_with("------testboundary\r\n"), "wire body opens with --{boundary}: {text}");
+        assert!(
+            text.starts_with("------testboundary\r\n"),
+            "wire body opens with --{boundary}: {text}"
+        );
         assert!(text.contains("Content-Disposition: form-data; name=\"note\""));
         assert!(text.contains("Content-Type: text/plain; charset=utf-8\r\n\r\nhello\r\n"));
         assert!(text.contains("; filename=\"blob.bin\""));
@@ -1071,8 +1105,14 @@ mod tests {
         let body = build_multipart_body(&parts, "----b").unwrap();
         let text = String::from_utf8(body).unwrap();
         // CR/LF are stripped, `"` -> `'`: `a"b\r\nc` -> `a'bc`, `f"n\r\n` -> `f'n`.
-        assert!(text.contains("name=\"a'bc\""), "quote escaped, CR/LF stripped: {text}");
-        assert!(text.contains("filename=\"f'n\""), "quote escaped, CR/LF stripped: {text}");
+        assert!(
+            text.contains("name=\"a'bc\""),
+            "quote escaped, CR/LF stripped: {text}"
+        );
+        assert!(
+            text.contains("filename=\"f'n\""),
+            "quote escaped, CR/LF stripped: {text}"
+        );
         assert!(!text.contains("a\"b"), "raw quote gone");
         assert!(!text.contains("f\"n"), "raw quote gone");
     }
@@ -1091,7 +1131,10 @@ mod tests {
         store.put("a|GET|u|0".to_string(), entry);
         assert_eq!(store.len(), 1);
         assert!(store.get("a|GET|u|0", 99).is_some(), "fresh");
-        assert!(store.get("a|GET|u|0", 100).is_some(), "expiry is <= (inclusive)");
+        assert!(
+            store.get("a|GET|u|0", 100).is_some(),
+            "expiry is <= (inclusive)"
+        );
         assert!(store.get("a|GET|u|0", 101).is_none(), "expired");
         assert!(store.get("b|GET|u|0", 0).is_none(), "different key");
     }
@@ -1114,7 +1157,12 @@ mod tests {
         }
         assert_eq!(store.len(), CACHE_MAX_ENTRIES);
         assert!(store.get("k0", 0).is_none(), "oldest evicted");
-        assert!(store.get(&format!("k{}", CACHE_MAX_ENTRIES + 4), 0).is_some(), "newest kept");
+        assert!(
+            store
+                .get(&format!("k{}", CACHE_MAX_ENTRIES + 4), 0)
+                .is_some(),
+            "newest kept"
+        );
     }
 
     #[test]
@@ -1163,7 +1211,11 @@ mod tests {
         m1.multipart = Some(vec![part.clone()]);
         let mut m2 = params("https://x/".into());
         m2.multipart = Some(vec![part.clone()]);
-        assert_eq!(request_body_hash(&m1), request_body_hash(&m2), "same content, same hash");
+        assert_eq!(
+            request_body_hash(&m1),
+            request_body_hash(&m2),
+            "same content, same hash"
+        );
         let mut m3 = params("https://x/".into());
         m3.body = Some("not multipart".into());
         assert_ne!(request_body_hash(&m1), request_body_hash(&m3));

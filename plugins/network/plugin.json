@@ -18,7 +18,7 @@
   "actions": [
     {
       "name": "http_request",
-      "description": "Make an arbitrary outbound HTTP request (method, headers, text/base64/multipart body, redirects, retries, per-caller cookie jar and response cache). SSRF-guarded against loopback, RFC1918 and link-local targets, but any reachable public host is fair game — this is the general egress path off this machine, and anything in the request body leaves with it.",
+      "description": "Make an arbitrary outbound HTTP request (method, headers, text/base64/multipart body, redirects, retries, per-caller cookie jar and response cache). With `streaming: true` on the ActionRequest the body arrives as ActionResponseChunks as it is read (CD-03). SSRF-guarded against loopback, RFC1918 and link-local targets, but any reachable public host is fair game — this is the general egress path off this machine, and anything in the request body leaves with it.",
       "risk": "high",
       "requires_confirmation": true,
       "permission": "network",

@@ -51,10 +51,26 @@ pub struct ChatResult {
     pub usage: Usage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+}
+
+/// One increment of a streamed completion, forwarded to the caller as it
+/// arrives (CD-03). Tool calls and usage only exist once the stream ends —
+/// they come with the final [`ChatResult`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamDelta {
+    Text(String),
+}
+
+/// Incremental parser for one provider's streamed response: fed each SSE
+/// `data` payload in order, it yields text deltas and accumulates the same
+/// [`ChatResult`] the buffered path would have produced.
+pub trait StreamParser: Send {
+    fn feed(&mut self, data: &str) -> Result<Vec<StreamDelta>, String>;
+    fn finish(self: Box<Self>) -> Result<ChatResult, String>;
 }
 
 /// `Send + Sync` so `&dyn Provider` can be held across an `.await` inside a
@@ -65,6 +81,34 @@ pub trait Provider: Send + Sync {
     /// `api_key` is the resolved secret value (never logged, never echoed
     /// back in any error).
     fn build_http_request(&self, params: &ChatCompletionParams, api_key: &str) -> HttpRequestJson;
+
+    /// Same request with the provider's streaming switch on. `network`'s
+    /// streaming path never retries (a half-read stream can't be
+    /// replayed), so retries are zeroed rather than silently ignored.
+    fn build_stream_request(
+        &self,
+        params: &ChatCompletionParams,
+        api_key: &str,
+    ) -> HttpRequestJson {
+        let mut req = self.build_http_request(params, api_key);
+        if let Ok(mut body) = serde_json::from_str::<serde_json::Value>(&req.body) {
+            body["stream"] = true.into();
+            for (k, v) in self.stream_body_fields() {
+                body[k] = v;
+            }
+            req.body = body.to_string();
+        }
+        req.max_retries = 0;
+        req.retry_backoff_ms = 0;
+        req
+    }
+
+    /// Extra body fields a provider needs when streaming, beyond `stream`.
+    fn stream_body_fields(&self) -> Vec<(&'static str, serde_json::Value)> {
+        Vec::new()
+    }
+
+    fn stream_parser(&self) -> Box<dyn StreamParser>;
 
     /// Parse the provider's raw HTTP response body into the normalized
     /// result. Called only on a 2xx status — non-2xx is handled by

@@ -32,10 +32,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ai_plugin::outbound::{ActionCaller, OutboundCall, OutboundHandle};
+use ai_plugin::outbound::{ActionCaller, Outbound, OutboundHandle, UpstreamEvent};
 use ai_plugin::{config, db, discovery, handler};
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{
@@ -220,13 +220,26 @@ async fn run_loop(
     // Outbound calls a handler task wants made on its behalf (see
     // `outbound.rs`) — `OutboundHandle` is the `ActionCaller` handler tasks
     // actually hold.
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<OutboundCall>(CHANNEL_CAPACITY);
+    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Outbound>(CHANNEL_CAPACITY);
     // In-flight outbound calls this loop has sent to the kernel on a
     // handler's behalf, keyed by the `action_id` it minted, waiting for the
     // matching `ActionResponse` to route back through the oneshot.
-    let mut pending: HashMap<String, (oneshot::Sender<Result<ActionResponse, VynkorError>>, Instant)> =
-        HashMap::new();
+    let mut pending: HashMap<
+        String,
+        (
+            oneshot::Sender<Result<ActionResponse, VynkorError>>,
+            Instant,
+        ),
+    > = HashMap::new();
     let mut sweep = tokio::time::interval(PENDING_SWEEP_INTERVAL);
+    // CD-03: outbound streaming sessions (ours → network), keyed by the id
+    // we minted — the kernel addresses their frames back by that id.
+    let mut up_streams: HashMap<String, mpsc::UnboundedSender<UpstreamEvent>> = HashMap::new();
+    // CD-03: inbound streaming chat_completions (caller → us), keyed by the
+    // kernel-internal id the caller's SessionClose will name. Shared with
+    // the stream tasks so they can drop their own entry on exit.
+    let inbound_streams: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     loop {
         tokio::select! {
@@ -257,6 +270,56 @@ async fn run_loop(
                         // delivered.
                         let _ = client.ack_event(&event.event_id).await;
                     }
+                    Some(envelope::Payload::ActionRequest(req)) if req.streaming => {
+                        if req.action != "chat_completion" {
+                            // accepting would open a kernel session this
+                            // action never feeds or closes
+                            let reply = Envelope {
+                                payload: Some(envelope::Payload::ActionResponse(ActionResponse {
+                                    action_id: req.action_id,
+                                    status: ActionStatus::ActionError as i32,
+                                    data_json: Vec::new(),
+                                    error: format!("{} does not support streaming", req.action),
+                                })),
+                                ..Default::default()
+                            };
+                            let _ = client.send("kernel", reply).await;
+                            continue;
+                        }
+                        let (cancel_tx, cancel_rx) = oneshot::channel();
+                        inbound_streams
+                            .lock()
+                            .unwrap()
+                            .insert(req.action_id.clone(), cancel_tx);
+                        let db = db.clone();
+                        let resp_tx = resp_tx.clone();
+                        let streams = inbound_streams.clone();
+                        let mut caller = OutboundHandle::new(outbound_tx.clone());
+                        tokio::spawn(async move {
+                            let outcome = handler::handle_chat_completion_stream(
+                                &mut caller,
+                                &req.action_id,
+                                &req.params_json,
+                                &db,
+                                &resp_tx,
+                                cancel_rx,
+                            )
+                            .await;
+                            streams.lock().unwrap().remove(&req.action_id);
+                            if let Err(error) = outcome {
+                                let reply = Envelope {
+                                    payload: Some(envelope::Payload::ActionResponse(ActionResponse {
+                                        action_id: req.action_id,
+                                        status: ActionStatus::ActionError as i32,
+                                        data_json: Vec::new(),
+                                        error,
+                                    })),
+                                    ..Default::default()
+                                };
+                                let _ = resp_tx.send(reply).await;
+                            }
+                        });
+                    }
                     Some(envelope::Payload::ActionRequest(req)) => {
                         // Someone (agent, tts, ...) is calling *us* — spawn a
                         // task so it runs concurrently with everything else.
@@ -275,11 +338,43 @@ async fn run_loop(
                         // ...) — route it back to whichever task is waiting.
                         if let Some((reply, _)) = pending.remove(&resp.action_id) {
                             let _ = reply.send(Ok(resp));
+                        } else if resp.status == ActionStatus::ActionOk as i32
+                            && up_streams.contains_key(&resp.action_id)
+                        {
+                            // acceptance: the session stays open
+                            let _ = up_streams[&resp.action_id]
+                                .send(UpstreamEvent::Accepted(resp.data_json));
+                        } else if let Some(events) = up_streams.remove(&resp.action_id) {
+                            let _ = events.send(UpstreamEvent::Failed(resp.error));
                         } else {
                             eprintln!(
                                 "[{PLUGIN_ID}] stray ActionResponse for unknown action_id {}",
                                 resp.action_id
                             );
+                        }
+                    }
+                    Some(envelope::Payload::ActionResponseChunk(chunk)) => {
+                        if let Some(events) = up_streams.get(&chunk.action_id) {
+                            let _ = events.send(UpstreamEvent::Chunk(chunk.chunk));
+                        }
+                    }
+                    Some(envelope::Payload::SessionClose(close)) => {
+                        // ours ending normally, or a caller stopping theirs
+                        if let Some(events) = up_streams.remove(&close.action_id) {
+                            let _ = events.send(UpstreamEvent::Done);
+                        } else if let Some(cancel) =
+                            inbound_streams.lock().unwrap().remove(&close.action_id)
+                        {
+                            let _ = cancel.send(());
+                        }
+                    }
+                    Some(envelope::Payload::ActionStreamAbort(abort)) => {
+                        if let Some(events) = up_streams.remove(&abort.action_id) {
+                            let _ = events.send(UpstreamEvent::Failed(abort.reason));
+                        } else if let Some(cancel) =
+                            inbound_streams.lock().unwrap().remove(&abort.action_id)
+                        {
+                            let _ = cancel.send(());
                         }
                     }
                     other => {
@@ -290,33 +385,64 @@ async fn run_loop(
             Some(resp) = resp_rx.recv() => {
                 let _ = client.send("kernel", resp).await;
             }
-            Some(call) = outbound_rx.recv() => {
-                let action_id = uuid::Uuid::new_v4().to_string();
-                let timeout = if call.timeout_ms == 0 {
-                    DEFAULT_OUTBOUND_TIMEOUT
-                } else {
-                    Duration::from_millis(call.timeout_ms as u64)
-                };
-                let env = Envelope {
-                    payload: Some(envelope::Payload::ActionRequest(ActionRequest {
-                        action_id: action_id.clone(),
-                        action: call.action,
-                        params_json: call.params_json,
-                        timeout_ms: call.timeout_ms,
-                        streaming: false,
+            Some(msg) = outbound_rx.recv() => match msg {
+                Outbound::Call(call) => {
+                    let action_id = uuid::Uuid::new_v4().to_string();
+                    let timeout = if call.timeout_ms == 0 {
+                        DEFAULT_OUTBOUND_TIMEOUT
+                    } else {
+                        Duration::from_millis(call.timeout_ms as u64)
+                    };
+                    let env = Envelope {
+                        payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                            action_id: action_id.clone(),
+                            action: call.action,
+                            params_json: call.params_json,
+                            timeout_ms: call.timeout_ms,
+                            streaming: false,
+                            ..Default::default()
+                        })),
                         ..Default::default()
-                    })),
-                    ..Default::default()
-                };
-                match client.send("kernel", env).await {
-                    Ok(()) => {
-                        pending.insert(action_id, (call.reply, Instant::now() + timeout));
-                    }
-                    Err(e) => {
-                        let _ = call.reply.send(Err(e));
+                    };
+                    match client.send("kernel", env).await {
+                        Ok(()) => {
+                            pending.insert(action_id, (call.reply, Instant::now() + timeout));
+                        }
+                        Err(e) => {
+                            let _ = call.reply.send(Err(e));
+                        }
                     }
                 }
-            }
+                Outbound::OpenStream { action, params_json, timeout_ms, events, opened } => {
+                    let action_id = uuid::Uuid::new_v4().to_string();
+                    let env = Envelope {
+                        payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                            action_id: action_id.clone(),
+                            action,
+                            params_json,
+                            timeout_ms,
+                            streaming: true,
+                            ..Default::default()
+                        })),
+                        ..Default::default()
+                    };
+                    up_streams.insert(action_id.clone(), events);
+                    match client.send("kernel", env).await {
+                        Ok(()) => {
+                            let _ = opened.send(Ok(action_id));
+                        }
+                        Err(e) => {
+                            up_streams.remove(&action_id);
+                            let _ = opened.send(Err(e));
+                        }
+                    }
+                }
+                Outbound::CloseStream { action_id } => {
+                    if up_streams.remove(&action_id).is_some() {
+                        let _ = client.close_session(&action_id, "caller closed").await;
+                    }
+                }
+            },
             _ = sweep.tick() => {
                 let now = Instant::now();
                 let expired: Vec<String> = pending
@@ -528,10 +654,269 @@ mod tests {
         let mut got = HashSet::new();
         for _ in 0..2 {
             let resp = recv_action_response(&mut kernel).await;
-            assert_eq!(resp.status, ActionStatus::ActionOk as i32, "error: {}", resp.error);
+            assert_eq!(
+                resp.status,
+                ActionStatus::ActionOk as i32,
+                "error: {}",
+                resp.error
+            );
             got.insert(resp.action_id);
         }
-        assert_eq!(got, ["req1".to_string(), "req2".to_string()].into_iter().collect());
+        assert_eq!(
+            got,
+            ["req1".to_string(), "req2".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+    // ── CD-03: streamed chat_completion ──────────────────────────────
+
+    fn envelope_of(payload: envelope::Payload) -> Envelope {
+        Envelope {
+            payload: Some(payload),
+            ..Default::default()
+        }
+    }
+
+    fn sse(v: serde_json::Value) -> String {
+        format!("data: {v}\n\n")
+    }
+
+    /// Next frame for inbound session `id` (acceptance, chunk, close or
+    /// error), skipping Pongs and other traffic.
+    async fn next_session_frame(kernel: &mut VynkorClient, id: &str) -> envelope::Payload {
+        loop {
+            let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+                .await
+                .expect("timed out waiting for a session frame")
+                .unwrap();
+            match env.payload {
+                Some(envelope::Payload::ActionResponse(r)) if r.action_id == id => {
+                    return envelope::Payload::ActionResponse(r)
+                }
+                Some(envelope::Payload::ActionResponseChunk(c)) if c.action_id == id => {
+                    return envelope::Payload::ActionResponseChunk(c)
+                }
+                Some(envelope::Payload::SessionClose(c)) if c.action_id == id => {
+                    return envelope::Payload::SessionClose(c)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    async fn start_streaming_chat(kernel: &mut VynkorClient, id: &str) -> ActionRequest {
+        std::env::set_var(ai_plugin::request::ALLOWED_KEY_ENVS_ENV, "TEST_KEY");
+        std::env::set_var("TEST_KEY", "test-key-value");
+        let env = envelope_of(envelope::Payload::ActionRequest(ActionRequest {
+            action_id: id.to_string(),
+            action: "chat_completion".to_string(),
+            params_json: chat_params("stream me"),
+            timeout_ms: 5000,
+            streaming: true,
+            ..Default::default()
+        }));
+        kernel.send("client", env).await.unwrap();
+        let up = collect_http_requests(kernel, 1).await.remove(0);
+        assert!(
+            up.streaming,
+            "ai must ask network for a streaming http_request"
+        );
+        let params: serde_json::Value = serde_json::from_slice(&up.params_json).unwrap();
+        let body: serde_json::Value =
+            serde_json::from_str(params["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["stream"], true);
+        // network accepts with the response head
+        let head = serde_json::json!({"status": 200, "headers": {}});
+        kernel
+            .send(
+                "client",
+                envelope_of(envelope::Payload::ActionResponse(ActionResponse {
+                    action_id: up.action_id.clone(),
+                    status: ActionStatus::ActionOk as i32,
+                    data_json: serde_json::to_vec(&head).unwrap(),
+                    error: String::new(),
+                })),
+            )
+            .await
+            .unwrap();
+        up
+    }
+
+    async fn upstream_chunk(kernel: &mut VynkorClient, up: &ActionRequest, seq: u32, bytes: &str) {
+        kernel
+            .send(
+                "client",
+                envelope_of(envelope::Payload::ActionResponseChunk(
+                    vynkor_sdk::proto::ActionResponseChunk {
+                        action_id: up.action_id.clone(),
+                        seq,
+                        chunk: bytes.as_bytes().to_vec(),
+                    },
+                )),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn delta_text(p: envelope::Payload) -> serde_json::Value {
+        match p {
+            envelope::Payload::ActionResponseChunk(c) => serde_json::from_slice(&c.chunk).unwrap(),
+            other => panic!("expected a chunk, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_chat_completion_forwards_deltas_then_result_then_close() {
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        let db = Arc::new(db::AiDb::open(None).unwrap());
+        tokio::spawn(run_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            db,
+            Arc::new(config::AiConfig::default()),
+        ));
+
+        let up = start_streaming_chat(&mut kernel, "s1").await;
+        match next_session_frame(&mut kernel, "s1").await {
+            envelope::Payload::ActionResponse(r) => {
+                assert_eq!(r.status, ActionStatus::ActionOk as i32, "{}", r.error);
+            }
+            other => panic!("expected acceptance, got {other:?}"),
+        }
+
+        // one SSE event split across two network chunks
+        let first =
+            sse(serde_json::json!({"choices": [{"index": 0, "delta": {"content": "Hel"}}]}));
+        let (a, b) = first.split_at(20);
+        upstream_chunk(&mut kernel, &up, 0, a).await;
+        upstream_chunk(&mut kernel, &up, 1, b).await;
+        let rest = sse(
+            serde_json::json!({"choices": [{"index": 0, "delta": {"content": "lo"}, "finish_reason": "stop"}]}),
+        ) + &sse(
+            serde_json::json!({"choices": [], "usage": {"prompt_tokens": 3, "completion_tokens": 2}}),
+        ) + "data: [DONE]\n\n";
+        upstream_chunk(&mut kernel, &up, 2, &rest).await;
+        kernel
+            .send(
+                "client",
+                envelope_of(envelope::Payload::SessionClose(
+                    vynkor_sdk::proto::SessionClose {
+                        action_id: up.action_id.clone(),
+                        reason: "done".into(),
+                    },
+                )),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            delta_text(next_session_frame(&mut kernel, "s1").await)["text"],
+            "Hel"
+        );
+        assert_eq!(
+            delta_text(next_session_frame(&mut kernel, "s1").await)["text"],
+            "lo"
+        );
+        let done = delta_text(next_session_frame(&mut kernel, "s1").await);
+        assert_eq!(done["type"], "done");
+        assert_eq!(done["result"]["content"], "Hello");
+        assert_eq!(done["result"]["stop_reason"], "stop");
+        assert_eq!(done["result"]["usage"]["output_tokens"], 2);
+        match next_session_frame(&mut kernel, "s1").await {
+            envelope::Payload::SessionClose(c) => assert_eq!(c.reason, "done"),
+            other => panic!("expected SessionClose, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_cancel_closes_the_upstream_session() {
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        tokio::spawn(run_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            Arc::new(db::AiDb::open(None).unwrap()),
+            Arc::new(config::AiConfig::default()),
+        ));
+
+        let up = start_streaming_chat(&mut kernel, "s2").await;
+        assert!(matches!(
+            next_session_frame(&mut kernel, "s2").await,
+            envelope::Payload::ActionResponse(_)
+        ));
+        upstream_chunk(
+            &mut kernel,
+            &up,
+            0,
+            &sse(serde_json::json!({"choices": [{"index": 0, "delta": {"content": "a"}}]})),
+        )
+        .await;
+        assert_eq!(
+            delta_text(next_session_frame(&mut kernel, "s2").await)["text"],
+            "a"
+        );
+
+        // the user pressed stop: the kernel forwards the caller's close
+        kernel
+            .send(
+                "client",
+                envelope_of(envelope::Payload::SessionClose(
+                    vynkor_sdk::proto::SessionClose {
+                        action_id: "s2".into(),
+                        reason: "client closed".into(),
+                    },
+                )),
+            )
+            .await
+            .unwrap();
+
+        // ai must close its own upstream session so network stops the transfer
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match kernel.recv().await.unwrap().payload {
+                    Some(envelope::Payload::SessionClose(c)) if c.action_id == up.action_id => {
+                        return c
+                    }
+                    Some(envelope::Payload::ActionResponseChunk(c)) if c.action_id == "s2" => {
+                        panic!("chunk sent on a cancelled session")
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("upstream session was not closed after the caller cancelled");
+        assert_eq!(closed.action_id, up.action_id);
+    }
+
+    #[tokio::test]
+    async fn streaming_request_for_a_non_streaming_action_is_rejected() {
+        let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
+        let mut kernel = VynkorClient::from_stream(kernel_side, None);
+        tokio::spawn(run_loop(
+            VynkorClient::from_stream(plugin_side, None),
+            Arc::new(db::AiDb::open(None).unwrap()),
+            Arc::new(config::AiConfig::default()),
+        ));
+        kernel
+            .send(
+                "client",
+                envelope_of(envelope::Payload::ActionRequest(ActionRequest {
+                    action_id: "s3".into(),
+                    action: "list_models".into(),
+                    streaming: true,
+                    ..Default::default()
+                })),
+            )
+            .await
+            .unwrap();
+        match next_session_frame(&mut kernel, "s3").await {
+            envelope::Payload::ActionResponse(r) => {
+                assert_eq!(r.status, ActionStatus::ActionError as i32);
+                assert!(r.error.contains("does not support streaming"));
+            }
+            other => panic!("expected rejection, got {other:?}"),
+        }
     }
 }
 
@@ -557,14 +942,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

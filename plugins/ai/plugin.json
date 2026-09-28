@@ -18,7 +18,7 @@
   "actions": [
     {
       "name": "chat_completion",
-      "description": "Run one chat completion against a configured provider: messages plus either an agent_id profile or explicit provider/base_url/model/api_key_env, with optional native tool definitions, max_tokens and retry policy. Sends the conversation to the provider's servers and spends tokens against that account.",
+      "description": "Run one chat completion against a configured provider: messages plus either an agent_id profile or explicit provider/base_url/model/api_key_env, with optional native tool definitions, max_tokens and retry policy. Sends the conversation to the provider's servers and spends tokens against that account. Send the ActionRequest with streaming: true to get text deltas as ActionResponseChunks while the answer is generated (CD-03).",
       "risk": "medium",
       "input": {
         "type": "object",
@@ -326,7 +326,7 @@
     },
     {
       "name": "list_models",
-      "description": "List the models known to the ai plugin — stored plus previously discovered — with their provider and capabilities. Read-only.",
+      "description": "List the models known to the ai plugin \u2014 stored plus previously discovered \u2014 with their provider and capabilities. Read-only.",
       "risk": "low",
       "input": {
         "type": "object",

@@ -6,3 +6,4 @@ pub mod key_resolve;
 pub mod outbound;
 pub mod provider;
 pub mod request;
+pub mod sse;
