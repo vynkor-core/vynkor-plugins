@@ -277,6 +277,10 @@ pub fn parse_request(params_json: &[u8]) -> Result<ChatCompletionParams, String>
     let raw: Raw = serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
 
     let agent_id = raw.agent_id.filter(|s| !s.is_empty());
+    // no provider: the endpoint comes from the host's model table (an
+    // agent_id's model, or a model id from list_models) — resolve_params
+    // fills it in or rejects an id the host does not know
+    let from_db = agent_id.is_some() || raw.provider.is_none();
 
     let provider = match raw.provider {
         Some(p) => match p.as_str() {
@@ -284,15 +288,13 @@ pub fn parse_request(params_json: &[u8]) -> Result<ChatCompletionParams, String>
             "openai" => Provider::OpenAi,
             other => return Err(format!("unsupported provider: {other}")),
         },
-        // Resolved from the database when an agent_id names the model.
-        None if agent_id.is_some() => Provider::OpenAi,
-        None => return Err("missing required field: provider".to_string()),
+        None => Provider::OpenAi,
     };
 
     let base_url = match (raw.base_url, provider) {
         (Some(u), _) if !u.is_empty() => u,
+        (_, Provider::OpenAi) if from_db => String::new(),
         (_, Provider::Anthropic) => DEFAULT_ANTHROPIC_BASE_URL.to_string(),
-        (_, Provider::OpenAi) if agent_id.is_some() => String::new(),
         (_, Provider::OpenAi) => return Err("missing required field: base_url".to_string()),
     };
 
@@ -302,7 +304,7 @@ pub fn parse_request(params_json: &[u8]) -> Result<ChatCompletionParams, String>
     }
 
     let api_key_env = raw.api_key_env.unwrap_or_default();
-    if api_key_env.is_empty() && agent_id.is_none() {
+    if api_key_env.is_empty() && !from_db {
         return Err("missing required field: api_key_env".to_string());
     }
 
@@ -466,11 +468,22 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_provider() {
+    fn missing_provider_defers_endpoint_to_the_host() {
         let mut body = valid_anthropic_json();
         body.as_object_mut().unwrap().remove("provider");
+        body.as_object_mut().unwrap().remove("api_key_env");
+        let params = parse_request(body.to_string().as_bytes()).unwrap();
+        assert!(!params.model.is_empty());
+        assert!(params.base_url.is_empty());
+        assert!(params.api_key_env.is_empty());
+    }
+
+    #[test]
+    fn explicit_provider_still_requires_api_key_env() {
+        let mut body = valid_anthropic_json();
+        body.as_object_mut().unwrap().remove("api_key_env");
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();
-        assert!(err.contains("provider"), "error was: {err}");
+        assert!(err.contains("api_key_env"), "error was: {err}");
     }
 
     #[test]

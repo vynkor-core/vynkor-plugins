@@ -478,6 +478,14 @@ fn resolve_params(params: &mut ChatCompletionParams, db: &AiDb) -> Result<(), St
             if params.model.is_empty() {
                 return Err("missing required field: model".to_string());
             }
+            // parse_request only leaves both empty when the caller named a
+            // model id alone, expecting the host to know it
+            if params.base_url.is_empty() && params.api_key_env.is_empty() {
+                return Err(format!(
+                    "unknown model '{model_id}': not in list_models; \
+                     pass provider, base_url and api_key_env to use it ad hoc"
+                ));
+            }
             if params.base_url.is_empty() && params.provider == RequestProvider::OpenAi {
                 return Err("missing required field: base_url".to_string());
             }
@@ -653,6 +661,28 @@ mod tests {
         let mut p = params(None, "my-custom", "openai", "", "OPENAI_API_KEY");
         let err = resolve_params(&mut p, &db).unwrap_err();
         assert!(err.contains("base_url"), "error was: {err}");
+    }
+
+    // the phone names a list_models entry by id alone (CD-03 smoke test
+    // found parse_request rejecting it before the db lookup ran)
+    #[test]
+    fn model_id_alone_resolves_through_parse_and_db() {
+        let db = db_with_fixtures();
+        let body = br#"{"model":"llama3.2","messages":[{"role":"user","content":"hi"}]}"#;
+        let mut p = request::parse_request(body).unwrap();
+        resolve_params(&mut p, &db).unwrap();
+        assert_eq!(p.provider, RequestProvider::OpenAi);
+        assert_eq!(p.base_url, "http://localhost:11434/v1");
+        assert_eq!(p.api_key_env, "OLLAMA_API_KEY");
+    }
+
+    #[test]
+    fn unknown_model_id_alone_is_a_clear_error() {
+        let db = db_with_fixtures();
+        let body = br#"{"model":"nope","messages":[{"role":"user","content":"hi"}]}"#;
+        let mut p = request::parse_request(body).unwrap();
+        let err = resolve_params(&mut p, &db).unwrap_err();
+        assert!(err.contains("unknown model 'nope'"), "error was: {err}");
     }
 
     #[test]
