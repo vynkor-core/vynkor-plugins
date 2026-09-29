@@ -54,7 +54,11 @@ Request (`ActionRequest.params_json`):
 }
 ```
 
-- `provider` — `"anthropic"` or `"openai"`. Required.
+- `provider` — `"anthropic"` or `"openai"`. Omit it (with `base_url` and
+  `api_key_env`) to name a model the host already knows — an entry from
+  `list_models`, e.g. `{"model":"llama3.2:3b","messages":[...]}` — and the
+  endpoint and key come from the model table; an id the host does not know
+  is an `unknown model` error. Required for an ad-hoc model.
 - `base_url` — required for `openai` (no safe default across
   OpenAI/OpenRouter/Ollama/self-hosted). Optional for `anthropic`, defaults
   to `https://api.anthropic.com`.
