@@ -34,4 +34,6 @@ plugins:
       # - PHONE_PLUGIN_DIR=/var/lib/vyn/phone
     grace_seconds: 10
     max_procs: 64
-    max_vmem_mb: 512
+    # With transport=local the helper (python3 + cv2 + numpy) inherits this address-space
+    # limit and segfaults under ~1 GiB. Keep it >= 2048 when the kernel runs on the phone.
+    max_vmem_mb: 2048

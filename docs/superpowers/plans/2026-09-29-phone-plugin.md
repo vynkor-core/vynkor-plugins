@@ -185,6 +185,13 @@ pub fn classify(code: i32, stderr: &str) -> PhoneError {
     if code == 255 {
         return PhoneError::Unreachable(t);
     }
+    if code == -1 {
+        // no exit code = the process died from a signal. On the phone the usual cause is
+        // RLIMIT_AS inherited from the plugin's max_vmem_mb (cv2+numpy segfault under ~1 GiB).
+        return PhoneError::Backend(format!(
+            "helper was killed by a signal (SIGSEGV/OOM); when the kernel runs on the phone, raise this plugin's max_vmem_mb to at least 1024 {t}"
+        ));
+    }
     if stderr.contains("No such file or directory") && stderr.contains("hybcam") {
         return PhoneError::HelperMissing(t);
     }
@@ -226,6 +233,13 @@ mod tests {
     fn anything_else_is_backend_with_code() {
         let e = classify(1, "boom");
         assert_eq!(e, PhoneError::Backend("exit 1: boom".into()));
+    }
+
+    #[test]
+    fn death_by_signal_points_at_the_vmem_limit() {
+        let e = classify(-1, "");
+        assert!(matches!(e, PhoneError::Backend(_)));
+        assert!(e.to_string().contains("max_vmem_mb"), "{e}");
     }
 
     #[test]
@@ -2214,7 +2228,7 @@ impl StreamRegistry {
         let last = a.stats.last_frame_ms.load(Ordering::SeqCst);
         let elapsed = a.started.elapsed().as_millis() as u64;
         let fps = if last > 0 { frames as f64 / (last as f64 / 1000.0) } else { 0.0 };
-        let out = json!({
+        let mut out = json!({
             "active": !finished,
             "stream_id": a.id,
             "camera": a.camera.as_str(),
@@ -2225,6 +2239,12 @@ impl StreamRegistry {
             "last_frame_age_ms": if last > 0 { Some(elapsed.saturating_sub(last)) } else { None },
             "latest_path": a.latest_path,
         });
+        if finished && frames == 0 {
+            // The helper ended without ever producing a frame: say why.
+            let mut c = a.control.lock().await;
+            let code = c.wait().await.unwrap_or(-1);
+            out["error"] = json!(classify(code, &c.stderr_tail()).to_string());
+        }
         if finished {
             Self::reap(&mut slot).await;
         }
@@ -2347,6 +2367,26 @@ mod tests {
         let t2 = FakeTransport::new().with_stream(encode_frame(&jpeg(9)), true);
         reg.start(&t2, &cfg(dir.path()), &params()).await.unwrap();
         reg.stop(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_dies_before_any_frame_reports_why_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = FakeTransport::new().with_stream(Vec::new(), false); // EOF immediately, no frame
+        let reg = StreamRegistry::new();
+        reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
+        let mut st = json!({});
+        for _ in 0..100 {
+            st = reg.status().await;
+            if st["active"] == json!(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(st["active"], json!(false));
+        assert_eq!(st["frames"], json!(0));
+        assert!(st["error"].as_str().unwrap().starts_with("ERR_PHONE_"), "{st}");
+        assert_eq!(reg.status().await, json!({"active": false}), "reaped after the reason was reported");
     }
 
     #[tokio::test]
@@ -3200,6 +3240,9 @@ HAL waits for a window and sends nothing.
 - Back camera has autofocus; front is fixed-focus.
 - If another app holds the camera (`lomiri-camera-app`), actions fail with
   `ERR_PHONE_CAMERA`.
+- Kernel on the phone (`transport=local`): the helper inherits the plugin's
+  `max_vmem_mb` address-space limit and segfaults under ~1 GiB (measured: 512 MB →
+  SIGSEGV, 1024 MB → fine). Set `max_vmem_mb: 2048`, and `sandbox: false` (no Landlock).
 
 ## Errors
 
@@ -3288,7 +3331,9 @@ plugins:
       # - PHONE_PLUGIN_DIR=/var/lib/vyn/phone
     grace_seconds: 10
     max_procs: 64
-    max_vmem_mb: 512
+    # With transport=local the helper (python3 + cv2 + numpy) inherits this address-space
+    # limit and segfaults under ~1 GiB. Keep it >= 2048 when the kernel runs on the phone.
+    max_vmem_mb: 2048
 ```
 
 ```rust file=plugins/phone/tests/live.rs

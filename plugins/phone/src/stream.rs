@@ -226,7 +226,7 @@ impl StreamRegistry {
         let last = a.stats.last_frame_ms.load(Ordering::SeqCst);
         let elapsed = a.started.elapsed().as_millis() as u64;
         let fps = if last > 0 { frames as f64 / (last as f64 / 1000.0) } else { 0.0 };
-        let out = json!({
+        let mut out = json!({
             "active": !finished,
             "stream_id": a.id,
             "camera": a.camera.as_str(),
@@ -237,6 +237,12 @@ impl StreamRegistry {
             "last_frame_age_ms": if last > 0 { Some(elapsed.saturating_sub(last)) } else { None },
             "latest_path": a.latest_path,
         });
+        if finished && frames == 0 {
+            // The helper ended without ever producing a frame: say why.
+            let mut c = a.control.lock().await;
+            let code = c.wait().await.unwrap_or(-1);
+            out["error"] = json!(classify(code, &c.stderr_tail()).to_string());
+        }
         if finished {
             Self::reap(&mut slot).await;
         }
@@ -359,6 +365,26 @@ mod tests {
         let t2 = FakeTransport::new().with_stream(encode_frame(&jpeg(9)), true);
         reg.start(&t2, &cfg(dir.path()), &params()).await.unwrap();
         reg.stop(None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_dies_before_any_frame_reports_why_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let t = FakeTransport::new().with_stream(Vec::new(), false); // EOF immediately, no frame
+        let reg = StreamRegistry::new();
+        reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
+        let mut st = json!({});
+        for _ in 0..100 {
+            st = reg.status().await;
+            if st["active"] == json!(false) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(st["active"], json!(false));
+        assert_eq!(st["frames"], json!(0));
+        assert!(st["error"].as_str().unwrap().starts_with("ERR_PHONE_"), "{st}");
+        assert_eq!(reg.status().await, json!({"active": false}), "reaped after the reason was reported");
     }
 
     #[tokio::test]

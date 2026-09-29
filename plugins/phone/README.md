@@ -42,6 +42,9 @@ HAL waits for a window and sends nothing.
 - Back camera has autofocus; front is fixed-focus.
 - If another app holds the camera (`lomiri-camera-app`), actions fail with
   `ERR_PHONE_CAMERA`.
+- Kernel on the phone (`transport=local`): the helper inherits the plugin's
+  `max_vmem_mb` address-space limit and segfaults under ~1 GiB (measured: 512 MB →
+  SIGSEGV, 1024 MB → fine). Set `max_vmem_mb: 2048`, and `sandbox: false` (no Landlock).
 
 ## Errors
 

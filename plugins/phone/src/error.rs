@@ -36,6 +36,13 @@ pub fn classify(code: i32, stderr: &str) -> PhoneError {
     if code == 255 {
         return PhoneError::Unreachable(t);
     }
+    if code == -1 {
+        // no exit code = the process died from a signal. On the phone the usual cause is
+        // RLIMIT_AS inherited from the plugin's max_vmem_mb (cv2+numpy segfault under ~1 GiB).
+        return PhoneError::Backend(format!(
+            "helper was killed by a signal (SIGSEGV/OOM); when the kernel runs on the phone, raise this plugin's max_vmem_mb to at least 1024 {t}"
+        ));
+    }
     if stderr.contains("No such file or directory") && stderr.contains("hybcam") {
         return PhoneError::HelperMissing(t);
     }
@@ -77,6 +84,13 @@ mod tests {
     fn anything_else_is_backend_with_code() {
         let e = classify(1, "boom");
         assert_eq!(e, PhoneError::Backend("exit 1: boom".into()));
+    }
+
+    #[test]
+    fn death_by_signal_points_at_the_vmem_limit() {
+        let e = classify(-1, "");
+        assert!(matches!(e, PhoneError::Backend(_)));
+        assert!(e.to_string().contains("max_vmem_mb"), "{e}");
     }
 
     #[test]
