@@ -1,7 +1,7 @@
 {
   "meta": {
     "apiVersion": 2,
-    "lastUpdated": "2026-09-27"
+    "lastUpdated": "2026-09-29"
   },
   "revoked": [],
   "agent": {
@@ -71,6 +71,13 @@
         "archive_url": "dist/ai/versions/0.1.1/ai-0.1.1.zip",
         "sha256": "0b55c91d32f5b025106acb37affcd246d4725540042924a48455d273dc3ffd10",
         "signature": "f0bf80daa2c526ad9853e7a12f0f577af1e5cca8bc86c64757c568f4ef0508c198c170d3e3308c7bbd246802651fb95cd2fe3cdf973720b898b9c50c7faa0e03",
+        "min_kernel_version": "0.1.0",
+        "max_kernel_version": "*"
+      },
+      "0.1.2": {
+        "archive_url": "dist/ai/versions/0.1.2/ai-0.1.2.zip",
+        "sha256": "c2524abfd53b0820cafb789b8cf831cf9b3b4a5656f870e86cb8aa0b42ac8dea",
+        "signature": "2e82f8e57df9a5045146fd358e66941f9753150a1f362f21bfc93ab36ac457ee640a42af4ced71720c61bb8bd8b08e781388807f489a0059c587b7a4db59c90a",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -371,6 +378,13 @@
         "archive_url": "dist/network/versions/0.1.0/network-0.1.0.zip",
         "sha256": "80a2a4cc8ad03e4fcc8220a802f7c4e1154a269e9f7071d0479385aa4daf84c0",
         "signature": "ca0414bca26390d4f07ccaa2905fc819e71f679e7cb323e7ca5db55c53f5aa4f9eff9c8e0968ea6dc0a03834637ca798e4a84b7c146424b50108accbdcb4c001",
+        "min_kernel_version": "0.1.0",
+        "max_kernel_version": "*"
+      },
+      "0.1.1": {
+        "archive_url": "dist/network/versions/0.1.1/network-0.1.1.zip",
+        "sha256": "3b3745f520aec97993d93eafa4b1fbe61558c4b030688d1726e8f506b4c33285",
+        "signature": "c0000dab1d5cfc7434868944a86b013f385f45f42e6e8007fb9cd464880f226a06eb3dba8e585ad2fe6c78551692a2d9a994a0241d5d77ec903ee3de1917dc0c",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }

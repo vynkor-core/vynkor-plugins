@@ -1,0 +1,320 @@
+{
+  "plugin_id": "network",
+  "version": "0.1.1",
+  "permissions": [
+    "network",
+    "event_publish"
+  ],
+  "kernel_compatibility_range": {
+    "min": "0.1.0",
+    "max": "*"
+  },
+  "binary": "network",
+  "events": [],
+  "files": [
+    "network",
+    "plugin.json"
+  ],
+  "actions": [
+    {
+      "name": "http_request",
+      "description": "Make an arbitrary outbound HTTP request (method, headers, text/base64/multipart body, redirects, retries, per-caller cookie jar and response cache). With `streaming: true` on the ActionRequest the body arrives as ActionResponseChunks as it is read (CD-03). SSRF-guarded against loopback, RFC1918 and link-local targets, but any reachable public host is fair game — this is the general egress path off this machine, and anything in the request body leaves with it.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Target URL (http/https). SSRF-guarded: loopback, RFC1918, link-local, multicast, broadcast, and cloud metadata 169.254.169.254 are blocked by default."
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "DELETE",
+              "PATCH",
+              "HEAD",
+              "OPTIONS"
+            ],
+            "default": "GET"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Request headers, e.g. {\"Content-Type\": \"application/json\"}."
+          },
+          "body": {
+            "type": "string",
+            "description": "UTF-8 request body. Mutually exclusive with body_base64 and multipart."
+          },
+          "body_base64": {
+            "type": "string",
+            "description": "Base64-encoded binary request body. Mutually exclusive with body and multipart. Decoded size capped at 25 MiB."
+          },
+          "multipart": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Part field name, max 256 bytes."
+                },
+                "value": {
+                  "type": "string",
+                  "description": "Text part value. Mutually exclusive with file_base64."
+                },
+                "file_base64": {
+                  "type": "string",
+                  "description": "Base64-encoded binary part content. Mutually exclusive with value."
+                },
+                "filename": {
+                  "type": "string",
+                  "description": "filename in Content-Disposition (file uploads), max 1024 bytes."
+                },
+                "content_type": {
+                  "type": "string",
+                  "description": "Part Content-Type. Default text/plain; charset=utf-8 for value parts, application/octet-stream for file parts."
+                }
+              },
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false
+            },
+            "description": "multipart/form-data body parts. Mutually exclusive with body and body_base64. The plugin builds the boundary and overrides the Content-Type header. Total decoded body capped at 25 MiB."
+          },
+          "cache_ttl_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Serve repeat requests from the per-caller in-memory cache for this many ms. Only 2xx responses are cached; Cache-Control: no-store responses are never cached; cleared on plugin restart."
+          },
+          "use_cookies": {
+            "type": "boolean",
+            "default": false,
+            "description": "Keep a per-caller in-memory session cookie jar for this request: Set-Cookie headers update it, matching cookies attach to later requests to the same host. Caller's own Cookie header wins. Host-scoped, no expiry/domain/path matching, cleared on restart."
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Per-request timeout in milliseconds."
+          },
+          "max_retries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 0,
+            "description": "Retries on 429/5xx and transport failures; deterministic failures (SSRF block, oversize response) are never retried."
+          },
+          "retry_backoff_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 5000,
+            "default": 200,
+            "description": "Initial backoff, doubled each retry."
+          },
+          "follow_redirects": {
+            "type": "boolean",
+            "default": false,
+            "description": "Follow redirects when true; otherwise the 3xx status is returned as-is."
+          },
+          "max_redirects": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "default": 10,
+            "description": "Redirect cap when follow_redirects is true. Every hop still resolves through the SSRF-guarded resolver."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": true
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "integer",
+            "description": "Final HTTP status, or 0 when no response was obtained (SSRF block, transport failure)."
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "body": {
+            "type": "string",
+            "description": "Response text as-is when valid UTF-8, otherwise base64 (see body_encoding)."
+          },
+          "body_encoding": {
+            "type": "string",
+            "enum": [
+              "utf8",
+              "base64"
+            ],
+            "description": "How to interpret body."
+          },
+          "cache": {
+            "type": "string",
+            "enum": [
+              "hit",
+              "miss"
+            ],
+            "description": "Present only when cache_ttl_ms was requested: hit = served from the per-caller cache without touching the network, miss = fetched from the origin."
+          }
+        },
+        "required": [
+          "status",
+          "headers",
+          "body",
+          "body_encoding"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "network_stats",
+      "description": "Report request counts, cache hit rate and error totals for this plugin. Read-only.",
+      "risk": "low",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "totals": {
+            "type": "object",
+            "properties": {
+              "requests": {
+                "type": "integer"
+              },
+              "errors": {
+                "type": "integer"
+              },
+              "avg_latency_ms": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "requests",
+              "errors",
+              "avg_latency_ms"
+            ],
+            "additionalProperties": false
+          },
+          "per_caller": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "requests": {
+                  "type": "integer"
+                },
+                "errors": {
+                  "type": "integer"
+                },
+                "avg_latency_ms": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "requests",
+                "errors",
+                "avg_latency_ms"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "totals",
+          "per_caller"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "network_status",
+      "description": "Plugin status: uptime and configured limits. Read-only.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string"
+          },
+          "uptime_ms": {
+            "type": "integer"
+          },
+          "engine_ready": {
+            "type": "boolean"
+          },
+          "last_error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "counters": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "version",
+          "uptime_ms",
+          "engine_ready"
+        ],
+        "additionalProperties": true
+      }
+    }
+  ],
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "NETWORK_PLUGIN_ALLOWED_HOSTS": {
+        "type": "string",
+        "description": "Allowlist mode (default-deny): comma-separated IPs/hostnames reachable at all. Built-in RFC1918/loopback ranges stop being consulted for listed hosts."
+      },
+      "NETWORK_PLUGIN_EXTRA_BLOCKED_HOSTS": {
+        "type": "string",
+        "description": "Extra SSRF blocklist: comma-separated IPs and/or bare hostnames, matched before DNS resolution. Applied on top of the allowlist."
+      },
+      "NETWORK_PLUGIN_PROXY_URL": {
+        "type": "string",
+        "format": "uri",
+        "description": "Optional HTTP proxy. Once set, the SSRF blocklist no longer covers hosts reached through it — only enable pointed at a trusted proxy."
+      },
+      "NETWORK_PLUGIN_CA_BUNDLE_PATH": {
+        "type": "string",
+        "description": "Path to one or more PEM-encoded CA certificates, trusted in addition to the built-in root store."
+      },
+      "NETWORK_PLUGIN_CLIENT_IDENTITY_PATH": {
+        "type": "string",
+        "description": "Path to a single PEM file with client certificate + private key (concatenated) for mutual TLS."
+      },
+      "NETWORK_PLUGIN_MAX_INFLIGHT_PER_CALLER": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 8,
+        "description": "Per-caller in-flight request cap so one noisy plugin can't monopolize outbound connections. 0 = unlimited."
+      }
+    },
+    "additionalProperties": true
+  }
+}
