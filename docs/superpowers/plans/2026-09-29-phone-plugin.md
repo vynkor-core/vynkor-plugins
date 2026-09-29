@@ -1187,17 +1187,14 @@ pub struct SshTransport {
 pub fn ssh_args(host: &str, mux: bool, control_dir: &Path, remote_shell: &str) -> Vec<String> {
     let mut a: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].iter().map(|s| s.to_string()).collect();
     if mux {
-        a.extend(
-            [
-                "-o".to_string(),
-                "ControlMaster=auto".to_string(),
-                "-o".to_string(),
-                "ControlPersist=60".to_string(),
-                "-o".to_string(),
-                format!("ControlPath={}/cm-%C", control_dir.display()),
-            ]
-            .into_iter(),
-        );
+        a.extend([
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+            "-o".to_string(),
+            "ControlPersist=60".to_string(),
+            "-o".to_string(),
+            format!("ControlPath={}/cm-%C", control_dir.display()),
+        ]);
     }
     a.push(host.to_string());
     a.push("--".to_string());
@@ -2085,27 +2082,21 @@ async fn pump(
         Some(p) => tokio::fs::OpenOptions::new().create(true).append(true).open(p).await.ok(),
         None => None,
     };
-    loop {
-        match read_frame(&mut stdout).await {
-            Ok(Some(frame)) => {
-                if !is_jpeg(&frame) {
-                    continue;
-                }
-                if write_atomic(&dir, "latest.jpg", &frame).await.is_err() {
-                    break;
-                }
-                if let Some(f) = rec.as_mut() {
-                    if f.write_all(&frame).await.is_err() {
-                        rec = None;
-                    }
-                }
-                stats.frames.fetch_add(1, Ordering::SeqCst);
-                stats
-                    .last_frame_ms
-                    .store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
-            }
-            Ok(None) | Err(_) => break,
+    // Ends on clean EOF, a read error, or a bad frame header: all mean the helper is gone.
+    while let Ok(Some(frame)) = read_frame(&mut stdout).await {
+        if !is_jpeg(&frame) {
+            continue;
         }
+        if write_atomic(&dir, "latest.jpg", &frame).await.is_err() {
+            break;
+        }
+        if let Some(f) = rec.as_mut() {
+            if f.write_all(&frame).await.is_err() {
+                rec = None;
+            }
+        }
+        stats.frames.fetch_add(1, Ordering::SeqCst);
+        stats.last_frame_ms.store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
     }
     stats.done.store(true, Ordering::SeqCst);
 }
@@ -2377,11 +2368,12 @@ mod tests {
         let t = FakeTransport::new().with_stream(Vec::new(), true);
         let reg = StreamRegistry::new();
         reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
-        let calls = t.calls.lock().unwrap();
-        assert_eq!(calls[0].program, "python3");
-        assert!(calls[0].args[0].contains("hybcam-"));
-        assert!(calls[0].in_home);
-        drop(calls);
+        {
+            let calls = t.calls.lock().unwrap();
+            assert_eq!(calls[0].program, "python3");
+            assert!(calls[0].args[0].contains("hybcam-"));
+            assert!(calls[0].in_home);
+        }
         reg.stop(None).await.unwrap();
     }
 }
@@ -2646,13 +2638,13 @@ Expected: 7 stream tests + 6 photo tests pass.
 //! `phone_status`: is the phone reachable, is the helper installed, is a
 //! stream running. Never fails: an unreachable phone is a *result*.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::error::PhoneError;
-use crate::helper::{self, HelperState};
+use crate::helper;
 use crate::stream::StreamRegistry;
 use crate::transport::Transport;
 
@@ -2677,8 +2669,6 @@ pub async fn status(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry) -> Va
     if let Some(e) = error {
         v["error"] = json!(e);
     }
-    let _ = Duration::ZERO;
-    let _ = HelperState::Ok;
     v
 }
 
@@ -3153,7 +3143,7 @@ cargo test --manifest-path plugins/phone/Cargo.toml
 cargo clippy --manifest-path plugins/phone/Cargo.toml --all-targets -- -D warnings
 ```
 
-Expected: all unit tests plus the e2e fake-kernel test pass; clippy clean. (`status.rs` contains two throw-away `let _ =` lines; remove them and the unused imports if clippy complains — they exist only to keep imports honest until the final cleanup, delete them in this step.)
+Expected: all unit tests plus the e2e fake-kernel test pass; clippy clean.
 
 - [ ] **Step 3: Commit** — `git add plugins/phone && git commit -m "feat(phone): status action, plugin.json, binary and fake-kernel e2e test"`
 

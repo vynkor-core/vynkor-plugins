@@ -96,17 +96,14 @@ pub struct SshTransport {
 pub fn ssh_args(host: &str, mux: bool, control_dir: &Path, remote_shell: &str) -> Vec<String> {
     let mut a: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].iter().map(|s| s.to_string()).collect();
     if mux {
-        a.extend(
-            [
-                "-o".to_string(),
-                "ControlMaster=auto".to_string(),
-                "-o".to_string(),
-                "ControlPersist=60".to_string(),
-                "-o".to_string(),
-                format!("ControlPath={}/cm-%C", control_dir.display()),
-            ]
-            .into_iter(),
-        );
+        a.extend([
+            "-o".to_string(),
+            "ControlMaster=auto".to_string(),
+            "-o".to_string(),
+            "ControlPersist=60".to_string(),
+            "-o".to_string(),
+            format!("ControlPath={}/cm-%C", control_dir.display()),
+        ]);
     }
     a.push(host.to_string());
     a.push("--".to_string());

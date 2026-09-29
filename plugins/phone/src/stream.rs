@@ -94,27 +94,21 @@ async fn pump(
         Some(p) => tokio::fs::OpenOptions::new().create(true).append(true).open(p).await.ok(),
         None => None,
     };
-    loop {
-        match read_frame(&mut stdout).await {
-            Ok(Some(frame)) => {
-                if !is_jpeg(&frame) {
-                    continue;
-                }
-                if write_atomic(&dir, "latest.jpg", &frame).await.is_err() {
-                    break;
-                }
-                if let Some(f) = rec.as_mut() {
-                    if f.write_all(&frame).await.is_err() {
-                        rec = None;
-                    }
-                }
-                stats.frames.fetch_add(1, Ordering::SeqCst);
-                stats
-                    .last_frame_ms
-                    .store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
-            }
-            Ok(None) | Err(_) => break,
+    // Ends on clean EOF, a read error, or a bad frame header: all mean the helper is gone.
+    while let Ok(Some(frame)) = read_frame(&mut stdout).await {
+        if !is_jpeg(&frame) {
+            continue;
         }
+        if write_atomic(&dir, "latest.jpg", &frame).await.is_err() {
+            break;
+        }
+        if let Some(f) = rec.as_mut() {
+            if f.write_all(&frame).await.is_err() {
+                rec = None;
+            }
+        }
+        stats.frames.fetch_add(1, Ordering::SeqCst);
+        stats.last_frame_ms.store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
     }
     stats.done.store(true, Ordering::SeqCst);
 }
@@ -386,11 +380,12 @@ mod tests {
         let t = FakeTransport::new().with_stream(Vec::new(), true);
         let reg = StreamRegistry::new();
         reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
-        let calls = t.calls.lock().unwrap();
-        assert_eq!(calls[0].program, "python3");
-        assert!(calls[0].args[0].contains("hybcam-"));
-        assert!(calls[0].in_home);
-        drop(calls);
+        {
+            let calls = t.calls.lock().unwrap();
+            assert_eq!(calls[0].program, "python3");
+            assert!(calls[0].args[0].contains("hybcam-"));
+            assert!(calls[0].in_home);
+        }
         reg.stop(None).await.unwrap();
     }
 }
