@@ -92,7 +92,7 @@ git commit -m "docs(phone): design spec and implementation plan"
 
 **Files:**
 - Create: `plugins/phone/Cargo.toml`, `plugins/phone/src/lib.rs`, `plugins/phone/src/error.rs`, `plugins/phone/src/config.rs`, `plugins/phone/src/params.rs`, `plugins/phone/src/storage.rs`
-- Create (stub so the crate builds until later tasks): `plugins/phone/src/main.rs`
+- Create (one-line stub, replaced in Task 6): `plugins/phone/src/main.rs`
 
 **Interfaces:**
 - Produces: `PhoneError` (+ `classify`, `tail`), `Config`/`TransportKind` (`from_env`, `from_lookup`, `ensure_dir`), `Camera`, `Af`, `PhotoParams::parse`, `StreamParams::parse`, `parse_stream_id`, `storage::{unix_millis, write_atomic}`.
@@ -118,7 +118,6 @@ path = "src/main.rs"
 vynkor-sdk = "0.0.3"
 vynkor-plugin-manifest = { path = "../_shared/plugin-manifest" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time", "io-util", "sync", "fs"] }
-serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-trait = "0.1"
 thiserror = "1"
@@ -394,9 +393,11 @@ mod tests {
     #[test]
     fn rejects_bad_transport_host_uid_and_dir() {
         assert!(cfg(&[("PHONE_PLUGIN_TRANSPORT", "telnet")]).is_err());
-        for h in ["-oProxyCommand=x", "a b", "a;b", "a$(x)", "", "h/../x"] {
+        for h in ["-oProxyCommand=x", "a b", "a;b", "a$(x)", "h/../x"] {
             assert!(cfg(&[("PHONE_PLUGIN_SSH_HOST", h)]).is_err(), "host {h:?} must be rejected");
         }
+        // an empty value means "unset" -> the default host, not an error
+        assert_eq!(cfg(&[("PHONE_PLUGIN_SSH_HOST", "  ")]).unwrap().ssh_host, "mi6");
         assert!(cfg(&[("PHONE_PLUGIN_REMOTE_UID", "-1")]).is_err());
         assert!(cfg(&[("PHONE_PLUGIN_REMOTE_UID", "abc")]).is_err());
         for d in ["/abs", "../up", "a/../b", "a//b", "a b", "a;b", "-x", "a/-x", "."] {
@@ -746,16 +747,13 @@ mod tests {
 }
 ```
 
-```rust file=plugins/phone/src/main.rs
-fn main() {}
-```
-
-(`main.rs` is a stub until Task 7; the other modules referenced from `lib.rs` are created in Tasks 2–6, so extract **only Task 1's files** and temporarily comment out the not-yet-existing `pub mod` lines — see Step 2.)
+`main.rs` is a one-line stub until Task 6 (written by the command in Step 2, not extracted, because Task 6 owns the real `main.rs`). The other modules referenced from `lib.rs` are created in Tasks 2–6, so extract **only Task 1's files** and temporarily comment out the not-yet-existing `pub mod` lines — see Step 2.
 
 - [ ] **Step 2: Extract, trim `lib.rs` to the modules that exist, run tests**
 
 ```bash
-python3 $SCRATCH/extract_plan.py docs/superpowers/plans/2026-09-29-phone-plugin.md plugins/phone/Cargo.toml plugins/phone/src/lib.rs plugins/phone/src/error.rs plugins/phone/src/config.rs plugins/phone/src/params.rs plugins/phone/src/storage.rs plugins/phone/src/main.rs
+python3 $SCRATCH/extract_plan.py docs/superpowers/plans/2026-09-29-phone-plugin.md plugins/phone/Cargo.toml plugins/phone/src/lib.rs plugins/phone/src/error.rs plugins/phone/src/config.rs plugins/phone/src/params.rs plugins/phone/src/storage.rs
+echo 'fn main() {}' > plugins/phone/src/main.rs
 # keep only modules that exist so far
 python3 - <<'EOF'
 import re,pathlib
