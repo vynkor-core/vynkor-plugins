@@ -123,3 +123,32 @@ hub/device model supports it (a device registers over WSS as `<device>.<capabili
 `connect_from_env()` (UDS only) and pin SDK 0.0.3 (`connect_ws_device` exists only in 0.0.5). Proposed:
 a small bridge plugin `link` on the PC that registers with the phone hub as device `pc` and forwards an
 allow-listed set of actions to the PC kernel. Needs its own spec.
+
+## Update 2026-09-30 (2) — state, telegram, email, github, mqtt moved to the phone
+
+Decision (user): move the laptop's data, configs and sessions to the phone hub.
+
+- **Order matters for Telegram.** One MTProto auth key must not be used from two places at once
+  (`AUTH_KEY_DUPLICATED` can revoke it). The laptop's `telegram`, `scheduler` and `automations` were
+  stopped and disabled first (`vynm disable` → `plugins.d/<id>.yaml.disabled`), then the session was copied.
+  `scheduler`/`automations` were disabled too so the same jobs/rules do not fire on both hosts.
+  To roll back: `vynm enable <id>` on the laptop, stop the plugin on the phone, copy the session back.
+- **Build.** `telegram`, `github`, `mqtt` build unchanged. `email` needs openssl (native-tls): it was built in
+  the scratch worktree with `openssl = { version = "0.10", features = ["vendored"] }` added — that change is
+  NOT in the repo (only `email` on aarch64 needs it; a rustls feature would be the proper fix).
+- **Deploy.** `phone-deploy.py telegram email github mqtt --with-secrets` copies secret-named env verbatim
+  (API hash, SMTP password); `phone-deploy.py secrets --keep-master-key` keeps the laptop's master key.
+  JWTs are still re-minted on the phone.
+- **Data.** `scripts/phone-migrate-data.py` (kernel on the phone stopped): consistent SQLite snapshots of
+  database/{agent,automations,calendar,contacts,notes,scheduler,tasks,uptime}.db, vector-db/agent.db,
+  sync.db, `telegram/loner42.session`, secrets vaults. Replaced phone files stay as `*.pre-migrate-<t>`.
+  Not moved: metrics.db, test DBs, events.db, devices.json, data/plugins/ai/ai.db, `loner80.session`
+  (account not in `TELEGRAM_PLUGIN_ACCOUNTS`).
+- **Vaults.** The laptop's `*.vault` files use an old magic (`VEYRONVL…`); current `secrets` code (`VYNKORVLT`)
+  rejects them ("vault file has invalid magic") — on the laptop as well. They are stale, not migrated in effect.
+- **Verified on the phone kernel:** 26 plugins registered; `telegram_status` engine_ready, `tg_list_dialogs`
+  returns the real dialogs (DC5 reachable from the phone's network); `task_list`/`note_list` answer.
+  Note: calling actions needs the caller to hold the plugin's permission (`PERMISSION_STORAGE` for notes/tasks,
+  `PERMISSION_SECRETS` for secrets); a token with too few/odd permissions gets "action not found".
+- **Open:** `vyn-auto-approver.py` (auto-approves `needs_confirmation` telegram sweep goals) still targets the
+  laptop kernel; the goals now run on the phone, so sweeps will wait for confirmation until it is ported.

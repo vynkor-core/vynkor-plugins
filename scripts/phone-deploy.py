@@ -12,9 +12,11 @@ Derivation rules (never prints a secret value):
   * /home/<local user>/ paths   -> /home/phablet/
   * VYN_JWT_TOKEN               -> re-minted on the phone with the local token's permissions
                                    (ipc_targets naming stale dev-test-* devices are dropped)
-  * SECRETS_PLUGIN_MASTER_KEY   -> a NEW random key generated on the phone (never copied)
+  * SECRETS_PLUGIN_MASTER_KEY   -> a NEW random key generated on the phone (copied only with
+                                   --keep-master-key, needed to open a migrated vault)
   * env names ending in _API_KEY / _TOKEN / _SECRET / _PASS / _PASSWORD / _HASH -> NOT copied; listed
                                    as skipped so the operator sets them on the phone deliberately
+                                   (copied verbatim with --with-secrets)
   * every other env entry       -> copied verbatim (after the path rewrite)
 The kernel reads plugins.d only at start: restart vyn.service afterwards.
 """
@@ -81,11 +83,16 @@ def main():
     ap.add_argument("--dist", default=os.path.expanduser("~/.cache/vyn-phone-build/dist"))
     ap.add_argument("--src", default=os.path.expanduser("~/.config/vyn/plugins.d"))
     ap.add_argument("--ttl", type=int, default=31536000)
+    ap.add_argument("--with-secrets", action="store_true", help="copy secret-named env verbatim")
+    ap.add_argument("--keep-master-key", action="store_true", help="copy SECRETS_PLUGIN_MASTER_KEY")
     a = ap.parse_args()
     local_home = os.path.expanduser("~")
 
     for pid in a.plugins:
-        src = yaml.safe_load(open(os.path.join(a.src, f"{pid}.yaml")))
+        path = os.path.join(a.src, f"{pid}.yaml")
+        if not os.path.exists(path):  # plugin disabled on this machine after being moved to the phone
+            path += ".disabled"
+        src = yaml.safe_load(open(path))
         stage = os.path.join(a.dist, pid)
         binary = src["binary"].rsplit("/", 1)[-1]
         libdir = f"{PHONE_HOME}/.local/lib/vyn/plugins/{pid}"
@@ -100,10 +107,12 @@ def main():
                 token_claims = claims_of(v)
             elif k == "VYN_JWT_SECRET":
                 continue  # injected per plugin by the supervisor
+            elif k == "SECRETS_PLUGIN_MASTER_KEY" and a.keep_master_key:
+                env.append(f"{k}={v}")
             elif k == "SECRETS_PLUGIN_MASTER_KEY":
                 key = ssh(a.host, "head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \\n'").decode().strip()
                 env.append(f"{k}={key}")
-            elif SECRETISH.search(k):
+            elif SECRETISH.search(k) and not a.with_secrets:
                 skipped.append(k)
             else:
                 env.append(f"{k}={v.replace(local_home + '/', PHONE_HOME + '/')}")
