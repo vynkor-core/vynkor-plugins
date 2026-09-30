@@ -80,3 +80,46 @@ actions it calls).
 - Kernel logs `no writable cgroup v2 subtree with the pids controller — falling back to RLIMIT_NPROC`
   (harmless). On shutdown the supervisor restarts plugins a few times before exiting (kernel quirk).
 - The old test config is kept as `~/.config/vyn/config.yaml.pre-install-2026-09-29`.
+
+## Update 2026-09-30 — background plugins on the phone hub
+
+Split decided with the user: **phone = hub for background plugins**, **PC keeps desktop-bound ones**
+(launcher, hotkey, clipboard, capture, media, system, notify, sound, mic, daemon, speech/stt/tts).
+The PC kernel is untouched and keeps running standalone. Stateful plugins start **fresh** on the phone
+(nothing migrated). Not deployed: `telegram` (live MTProto session, one owner at a time), `email`,
+`github`, `mqtt` (credentials).
+
+Deployed (21 + `phone`): network, secrets, database, vector-db, ai, agent, scheduler, automations,
+calendar, tasks, notes, contacts, metrics, uptime, rss, weather, search, sync, sync-client, library,
+filesystem. All `registered`; kernel + 22 plugins ≈ 31 MB RSS in total.
+
+Tools (both in `scripts/`, reusable for any plugin):
+- `phone-build.sh <plugin>...` — cross-build to static aarch64-musl (zig cc + rust-lld), stage in
+  `~/.cache/vyn-phone-build/dist`. Needs `pip install ziglang` in `~/.cache/vyn-phone-build/zigenv`.
+- `phone-deploy.py <plugin>...` — copy binary + `plugin.json`, write the drop-in from the PC's own
+  drop-in (sandbox off, paths remapped, secret-named env NOT copied, token re-minted on the phone with
+  the same permissions, fresh `SECRETS_PLUGIN_MASTER_KEY`). Then `systemctl --user restart vyn.service`
+  (the kernel reads `plugins.d` only at start). `ai`/`vector-db` get a placeholder `OLLAMA_API_KEY=ollama`
+  because they require an `api_key_env` even for a local Ollama.
+- `agent-tools.json` and `prompts.d/` were copied to `~/.config/vyn/` on the phone.
+
+LLM backend: the PC's Ollama listens on 127.0.0.1 only, so `phone-ollama-tunnel.service` (systemd user
+unit on the **PC**: `ssh -N -R 127.0.0.1:11434:127.0.0.1:11434 mi6`, Restart=always) exposes it as
+`localhost:11434` on the phone. Model discovery happens at kernel start; if the tunnel was down then, call
+`refresh_models`. With the PC off/asleep the phone's LLM calls fail (embeddings and everything else
+non-LLM keep working).
+
+Verified through the phone kernel: `db_set/get`, `note_*`, `task_*`, `secret_*`, `metrics_latest` (real
+phone battery/disk), `list_models` (5 models), `chat_completion` (llama3.2:1b, 3.8 s), `embedding`
+(768-d), `vec_upsert/vec_query`, agent `tools_list` (204 tools). Test data was deleted afterwards.
+
+Fixes made on the way: `metrics` declared `statvfs(path: *const i8)` — wrong on aarch64 where `c_char`
+is `u8` (commit on this branch). `network` cannot currently be built from the working tree because of
+the uncommitted `plugin-manifest` pin `=0.0.3` (network uses SDK 0.0.5): it was built from a clean
+worktree of HEAD (`~/.cache/vyn-phone-build/src`).
+
+Open design question (not started): letting the phone-hosted agent call PC plugins. The kernel's
+hub/device model supports it (a device registers over WSS as `<device>.<capability>`), but plugins use
+`connect_from_env()` (UDS only) and pin SDK 0.0.3 (`connect_ws_device` exists only in 0.0.5). Proposed:
+a small bridge plugin `link` on the PC that registers with the phone hub as device `pc` and forwards an
+allow-listed set of actions to the PC kernel. Needs its own spec.

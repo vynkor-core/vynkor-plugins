@@ -137,7 +137,14 @@ fi
 echo "==> building release binary for $plugin_dir_name ($slug $version)"
 cargo build --release --manifest-path "$plugin_dir/Cargo.toml"
 
-bin_path="$plugin_dir/target/release/$binary"
+# Workspace members emit into the workspace root target/; excluded plugins
+# (see root Cargo.toml) still emit into their own target/.
+ws_root="$(cd "$REPO" && pwd)"
+if [[ -f "$ws_root/target/release/$binary" && "$plugin_dir" != "$ws_root"*"/target"* ]]; then
+    bin_path="$ws_root/target/release/$binary"
+else
+    bin_path="$plugin_dir/target/release/$binary"
+fi
 if [[ ! -f "$bin_path" ]]; then
     echo "error: built binary not found at $bin_path" >&2
     exit 1
