@@ -10,9 +10,8 @@ name = "vynkor_plugin_manifest"
 path = "src/lib.rs"
 
 [dependencies]
-# Pinned, not a range: a range resolves to the newest SDK here while each
-# plugin pins 0.0.3, landing two SDK/wire copies (and two ActionSpec types)
-# in every plugin. Bump all plugins plus this pin together when migrating.
-vynkor-sdk = "=0.0.3"
+# a range, not a pin: each plugin unifies it with its own vynkor-sdk
+# version, so plugins can move to a newer SDK one at a time
+vynkor-sdk = ">=0.0.3, <0.0.6"
 serde_json = "1"
 tracing = "0.1"
