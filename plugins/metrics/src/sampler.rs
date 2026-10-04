@@ -86,7 +86,7 @@ struct libc_statvfs {
     f_namemax: u64,
     _pad: [u64; 6],
 }
-extern "C" { fn statvfs(path: *const i8, buf: *mut libc_statvfs) -> i32; }
+extern "C" { fn statvfs(path: *const std::os::raw::c_char, buf: *mut libc_statvfs) -> i32; }
 
 fn sample_battery() -> (Option<u8>, Option<bool>) {
     // try /sys/class/power_supply/BAT*/capacity and status

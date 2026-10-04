@@ -4,3 +4,4 @@ models/
 .omo/
 .env
 .worktrees/
+__pycache__/

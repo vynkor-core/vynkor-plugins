@@ -507,7 +507,7 @@ fn fetch_via_imap_sync(
     };
 
     if port == 993 {
-        let tls = native_tls::TlsConnector::new()
+        let tls = rustls_connector::RustlsConnector::new_with_native_certs()
             .map_err(|e| format!("TLS init failed: {e}"))?;
         let tls_stream = tls
             .connect(host, tcp)

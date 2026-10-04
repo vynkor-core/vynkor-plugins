@@ -1,0 +1,39 @@
+# Example kernel config.yaml entry for the `phone` plugin (v0.1.0).
+# Copy this block into the top-level `plugins:` list of the kernel's config.yaml.
+#
+# Permissions: PERMISSION_NETWORK (ssh) + PERMISSION_SCREEN (camera).
+# The plugin spawns `ssh` (transport ssh) or the helper directly (transport
+# local) with argv only — never a local shell.
+#
+# Setup:
+#   1. ~/.ssh/config: a `Host mi6` entry with key auth (BatchMode is used).
+#   2. Run the `phone_setup` action once: it installs the camera helper on the phone.
+#
+# Sandbox:
+#   * Kernel on the laptop: ssh needs ~/.ssh and the network. If the sandbox blocks
+#     that, set `sandbox: false` for this plugin.
+#   * Kernel ON THE PHONE: `sandbox: false` is required — the phone's kernel
+#     (4.4.153-Halium) has no Landlock, and the sandbox fails closed without it.
+
+plugins:
+  - id: phone
+    binary: /opt/plugins/phone
+    restart: on-failure
+    max_restarts: 5
+    sandbox: false
+    env:
+      # ssh (default): the phone is a remote node.  local: the kernel runs on the phone.
+      # - PHONE_PLUGIN_TRANSPORT=ssh
+      # - PHONE_PLUGIN_SSH_HOST=mi6
+      # - PHONE_PLUGIN_SSH_MUX=1
+      # uid of the phone user (selects /run/user/<uid> for the camera):
+      # - PHONE_PLUGIN_REMOTE_UID=32011
+      # Helper directory, relative to the phone user's HOME:
+      # - PHONE_PLUGIN_REMOTE_DIR=.local/share/vyn-phone
+      # Photos, latest.jpg and records (mode 0700):
+      # - PHONE_PLUGIN_DIR=/var/lib/vyn/phone
+    grace_seconds: 10
+    max_procs: 64
+    # With transport=local the helper (python3 + cv2 + numpy) inherits this address-space
+    # limit and segfaults under ~1 GiB. Keep it >= 2048 when the kernel runs on the phone.
+    max_vmem_mb: 2048

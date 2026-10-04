@@ -1,0 +1,170 @@
+{
+  "plugin_id": "phone",
+  "version": "0.1.0",
+  "permissions": ["PERMISSION_NETWORK", "PERMISSION_SCREEN"],
+  "kernel_compatibility_range": { "min": "0.1.0", "max": "*" },
+  "binary": "phone",
+  "events": [],
+  "files": ["phone", "plugin.json"],
+  "actions": [
+    {
+      "name": "phone_status",
+      "description": "Check the phone: is it reachable (ssh or local), is the camera helper installed on it, and is a camera stream running; call this first when a phone_* action fails.",
+      "risk": "low",
+      "permission": "PERMISSION_NETWORK",
+      "input": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output": {
+        "type": "object",
+        "properties": {
+          "transport": { "type": "string", "description": "ssh:<host> or local." },
+          "host": { "type": "string" },
+          "reachable": { "type": "boolean" },
+          "helper": { "type": "string", "enum": ["ok", "stale", "missing", "unknown"] },
+          "stream_active": { "type": "boolean" },
+          "latency_ms": { "type": "integer" },
+          "error": { "type": "string", "description": "Present when the check itself failed." }
+        },
+        "required": ["transport", "reachable", "helper", "stream_active"]
+      }
+    },
+    {
+      "name": "phone_setup",
+      "description": "Install or update the small camera helper script in the phone's home directory (idempotent; changes nothing when it is already current). Run once after installing the plugin or after a plugin upgrade.",
+      "risk": "medium",
+      "permission": "PERMISSION_NETWORK",
+      "input": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output": {
+        "type": "object",
+        "properties": {
+          "installed": { "type": "boolean" },
+          "changed": { "type": "boolean", "description": "False when the helper was already current." },
+          "helper_path": { "type": "string", "description": "Path relative to the phone's HOME." },
+          "sha8": { "type": "string" }
+        },
+        "required": ["installed", "changed", "helper_path", "sha8"]
+      }
+    },
+    {
+      "name": "phone_photo",
+      "description": "Take one photo with the phone's back or front camera (autofocus settles first, no shutter sound, nothing shown on the phone screen) and save it as a JPEG file; returns its path. Captures whatever the camera sees, including people and private spaces. If a stream is running, returns its newest frame instead.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": {
+          "camera": { "type": "string", "enum": ["back", "front"], "default": "back" },
+          "width": { "type": "integer", "enum": [1920, 1280, 800, 640, 320], "description": "Give together with height; supported pairs: 1920x1080, 1280x720 (default), 800x600, 640x480, 320x240." },
+          "height": { "type": "integer", "enum": [1080, 720, 600, 480, 240] },
+          "af": { "type": "string", "enum": ["video", "picture", "auto", "off"], "default": "video", "description": "Autofocus mode; video converges fastest. The front camera is fixed-focus." },
+          "flash": { "type": "boolean", "default": false, "description": "Light the camera torch during capture (brighter, warms the phone)." },
+          "quality": { "type": "integer", "minimum": 30, "maximum": 95, "default": 80, "description": "JPEG quality." }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" },
+          "format": { "type": "string" },
+          "camera": { "type": "string" },
+          "source": { "type": "string", "enum": ["camera", "stream"] },
+          "bytes": { "type": "integer" }
+        },
+        "required": ["path", "format", "camera", "source"]
+      }
+    },
+    {
+      "name": "phone_stream_start",
+      "description": "Start a live camera stream from the phone; the newest frame is always at latest_path (a JPEG that is replaced atomically), so poll that file to see what the camera sees now. Optionally also records every frame to an MJPEG file. Runs until stopped or max_duration_ms. Frame rate is limited by light: about 12 fps in a dim room, 24+ with light. One stream at a time.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": {
+          "camera": { "type": "string", "enum": ["back", "front"], "default": "back" },
+          "width": { "type": "integer", "enum": [1920, 1280, 800, 640, 320] },
+          "height": { "type": "integer", "enum": [1080, 720, 600, 480, 240] },
+          "fps": { "type": "integer", "minimum": 1, "maximum": 30, "default": 15 },
+          "quality": { "type": "integer", "minimum": 30, "maximum": 95, "default": 80 },
+          "af": { "type": "string", "enum": ["video", "picture", "auto", "off"], "default": "video" },
+          "flash": { "type": "boolean", "default": false },
+          "record": { "type": "boolean", "default": false, "description": "Also append every frame to a record-<ms>.mjpg file (about 1.6 MB/s at 720p)." },
+          "max_duration_ms": { "type": "integer", "minimum": 1000, "maximum": 1800000, "default": 300000 }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "stream_id": { "type": "string" },
+          "latest_path": { "type": "string" },
+          "record_path": { "type": ["string", "null"] },
+          "camera": { "type": "string" },
+          "width": { "type": "integer" },
+          "height": { "type": "integer" }
+        },
+        "required": ["stream_id", "latest_path"]
+      }
+    },
+    {
+      "name": "phone_stream_stop",
+      "description": "Stop the running camera stream and release the phone's camera; safe to call when nothing is running.",
+      "risk": "medium",
+      "permission": "PERMISSION_SCREEN",
+      "input": {
+        "type": "object",
+        "properties": { "stream_id": { "type": "string", "description": "Omit to stop the active stream." } },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "stopped": { "type": "boolean" },
+          "frames": { "type": "integer" },
+          "duration_ms": { "type": "integer" },
+          "record_path": { "type": ["string", "null"] },
+          "error": { "type": "string", "description": "Why no frame ever arrived, when frames is 0." }
+        },
+        "required": ["stopped"]
+      }
+    },
+    {
+      "name": "phone_stream_status",
+      "description": "Report the running camera stream: frames so far, measured fps, and how stale the newest frame is; active:false when nothing runs.",
+      "risk": "low",
+      "permission": "PERMISSION_SCREEN",
+      "input": { "type": "object", "properties": {}, "additionalProperties": false },
+      "output": {
+        "type": "object",
+        "properties": {
+          "active": { "type": "boolean" },
+          "stream_id": { "type": "string" },
+          "camera": { "type": "string" },
+          "frames": { "type": "integer" },
+          "fps_measured": { "type": "number" },
+          "last_frame_age_ms": { "type": ["integer", "null"] },
+          "latest_path": { "type": "string" }
+        },
+        "required": ["active"]
+      }
+    }
+  ],
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "PHONE_PLUGIN_TRANSPORT": { "type": "string", "enum": ["ssh", "local"], "default": "ssh", "description": "ssh: the phone is a remote node reached with ssh; local: the kernel runs on the phone itself." },
+      "PHONE_PLUGIN_SSH_HOST": { "type": "string", "default": "mi6", "description": "ssh host alias from the operator's ssh config (key auth only). Characters [A-Za-z0-9._-]." },
+      "PHONE_PLUGIN_SSH_MUX": { "type": "string", "default": "1", "description": "Set to 0 to disable ssh ControlMaster connection sharing." },
+      "PHONE_PLUGIN_REMOTE_UID": { "type": "string", "default": "32011", "description": "uid of the phone user; selects /run/user/<uid> for the camera environment." },
+      "PHONE_PLUGIN_REMOTE_DIR": { "type": "string", "default": ".local/share/vyn-phone", "description": "Directory for the helper script, relative to the phone user's HOME." },
+      "PHONE_PLUGIN_DIR": { "type": "string", "description": "Local data dir for photos, latest.jpg and records (mode 0700). Default ~/.local/share/vyn/phone/." },
+      "PHONE_PLUGIN_LIVE": { "type": "string", "description": "Test-only: set to 1 to enable the ignored live smoke test (tests/live.rs) against a real phone." }
+    },
+    "additionalProperties": true
+  }
+}
