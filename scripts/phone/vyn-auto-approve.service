@@ -1,0 +1,13 @@
+[Unit]
+Description=Vyn auto-approver for telegram sweeps (phone)
+After=vyn.service
+Wants=vyn.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.local/bin/vyn-auto-approver.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
