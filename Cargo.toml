@@ -1,0 +1,69 @@
+# Virtual workspace: all plugins share ONE Cargo.lock and ONE target/.
+#
+# Why: 38 isolated crates x own lock + own target/ = ~10G of duplicated
+# tokio/serde/... builds with 10+ different feature unifications.
+# With this workspace there is a single feature resolution and a single
+# target/ at the repo root, so common deps compile once.
+#
+# Build a single plugin exactly as before:
+#   cargo build --release --manifest-path plugins/ai/Cargo.toml
+# or from the root:
+#   cargo build --release -p ai-plugin
+# NOTE: the binary lands in <root>/target/release/, NOT
+# plugins/<name>/target/release/ — scripts/package.sh knows this.
+#
+# scripts/vyn-act is deliberately NOT a member (standalone dev tool).
+
+[workspace]
+resolver = "2"
+# Constraint: these must stay out of the workspace. Each links its own sqlite
+# copy (ai via rusqlite, database/sync/vector-db via sqlx, telegram via
+# grammers) and cargo rejects two `links = "sqlite3"` packages in one resolve
+# graph. plugins/network is out too: it alone pins vynkor-sdk 0.0.5 /
+# vynkor-wire 0.0.4; plugins/mqtt pins vynkor-wire 0.0.3 while the rest
+# pin 0.0.2 — either would duplicate those crates for everyone.
+# They keep building standalone into their own target/.
+exclude = [
+    "plugins/database",
+    "plugins/sync",
+    "plugins/vector-db",
+    "plugins/telegram",
+    "plugins/network",
+    "plugins/mqtt",
+]
+members = [
+    "plugins/_shared/plugin-manifest",
+    "plugins/agent",
+    "plugins/ai",
+    "plugins/automations",
+    "plugins/calendar",
+    "plugins/capture",
+    "plugins/clipboard",
+    "plugins/contacts",
+    "plugins/daemon",
+    "plugins/email",
+    "plugins/filesystem",
+    "plugins/github",
+    "plugins/hotkey",
+    "plugins/launcher",
+    "plugins/library",
+    "plugins/media",
+    "plugins/metrics",
+    "plugins/mic",
+    "plugins/notes",
+    "plugins/notify",
+    "plugins/phone",
+    "plugins/rss",
+    "plugins/scheduler",
+    "plugins/search",
+    "plugins/secrets",
+    "plugins/sound",
+    "plugins/speech",
+    "plugins/stt",
+    "plugins/sync-client",
+    "plugins/system",
+    "plugins/tasks",
+    "plugins/tts",
+    "plugins/uptime",
+    "plugins/weather",
+]
