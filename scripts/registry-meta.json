@@ -140,5 +140,17 @@
       "forecast"
     ],
     "status": "stable"
+  },
+  "phone": {
+    "name": "Phone",
+    "description": "Window-less camera (photo and live stream) on an Ubuntu Touch phone over ssh or locally, via a libhybris helper.",
+    "category": "hardware",
+    "tags": [
+      "camera",
+      "phone",
+      "ubuntu-touch",
+      "stream"
+    ],
+    "status": "experimental"
   }
 }

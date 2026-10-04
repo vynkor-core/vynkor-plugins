@@ -162,7 +162,8 @@
       "PHONE_PLUGIN_SSH_MUX": { "type": "string", "default": "1", "description": "Set to 0 to disable ssh ControlMaster connection sharing." },
       "PHONE_PLUGIN_REMOTE_UID": { "type": "string", "default": "32011", "description": "uid of the phone user; selects /run/user/<uid> for the camera environment." },
       "PHONE_PLUGIN_REMOTE_DIR": { "type": "string", "default": ".local/share/vyn-phone", "description": "Directory for the helper script, relative to the phone user's HOME." },
-      "PHONE_PLUGIN_DIR": { "type": "string", "description": "Local data dir for photos, latest.jpg and records (mode 0700). Default ~/.local/share/vyn/phone/." }
+      "PHONE_PLUGIN_DIR": { "type": "string", "description": "Local data dir for photos, latest.jpg and records (mode 0700). Default ~/.local/share/vyn/phone/." },
+      "PHONE_PLUGIN_LIVE": { "type": "string", "description": "Test-only: set to 1 to enable the ignored live smoke test (tests/live.rs) against a real phone." }
     },
     "additionalProperties": true
   }
