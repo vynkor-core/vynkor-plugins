@@ -743,8 +743,8 @@ dependencies = [
  "tokio",
  "url",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.4",
 ]
 
 [[package]]
@@ -1619,7 +1619,22 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tracing",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.3",
+]
+
+[[package]]
+name = "vynkor-sdk"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc02f9f9deff67c809fde0847364cd5726b8b7649d91c8bc8aff9f328a3206c4"
+dependencies = [
+ "crc32fast",
+ "futures-util",
+ "prost",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1634,7 +1649,24 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "vynkor-wire",
+ "vynkor-wire 0.0.4",
+]
+
+[[package]]
+name = "vynkor-wire"
+version = "0.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e9f4eb057c7b8710ef73eb259584f741ff6f99dfb8b8f4b2eb1b589c36fe025"
+dependencies = [
+ "crc32fast",
+ "hkdf",
+ "hmac",
+ "nix",
+ "prost",
+ "prost-build",
+ "sha2",
+ "tokio",
+ "zstd",
 ]
 
 [[package]]
