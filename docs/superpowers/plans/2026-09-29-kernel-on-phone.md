@@ -152,3 +152,21 @@ Decision (user): move the laptop's data, configs and sessions to the phone hub.
   `PERMISSION_SECRETS` for secrets); a token with too few/odd permissions gets "action not found".
 - **Open:** `vyn-auto-approver.py` (auto-approves `needs_confirmation` telegram sweep goals) still targets the
   laptop kernel; the goals now run on the phone, so sweeps will wait for confirmation until it is ported.
+
+## Update 2026-10-04 — reboot test, access, approver, email on rustls
+
+- **Reboot survived:** after a reboot `vyn.service` (user unit) came up by itself and re-registered all plugins.
+  What did NOT come back: the system `ssh.service` (enabled but inactive; started by usb-moded only in a dev USB
+  mode) and Wi-Fi addressing changed (192.168.31.120 → .166). `sudo` now needs a password, so a **user-level
+  sshd** was added: `~/.config/systemd/user/sshd-user.service`, port 2222, key auth only, config in
+  `~/.ssh/sshd-user/`, `~/.ssh/environment` sets `XDG_RUNTIME_DIR` so `systemctl --user` works over ssh.
+  Port 2222 is NOT reachable over Wi-Fi (phone firewall); use `adb forward tcp:2222 tcp:2222` and the
+  `mi6` ssh alias (`localhost:2222`). The PC's `phone-ollama-tunnel.service` depends on that alias: if the
+  adb forward is gone, restart it after re-running the forward.
+- **Kernel log:** `vyn.service` now logs to `~/.local/share/vyn/kernel.log` (there is no journal on the phone).
+- **Restart race:** right after `systemctl --user restart vyn.service` some plugins (agent, database, automations,
+  ai) were seen missing/exited once; a clean `stop`, wait, `start` registered all 26. Prefer stop/start.
+- **Auto-approver on the phone:** `scripts/phone/setup-approver.sh` (aarch64 wheels of protobuf 6.x, zstandard,
+  websockets + the python SDK into `~/pylibs`, `vyn-auto-approve.service`). Registers as `ops-cli`.
+- **email** now builds with rustls (no openssl); **mqtt** disabled on the phone (`vynm disable mqtt`);
+  `api.github.com` added to the phone's `NETWORK_PLUGIN_ALLOWED_HOSTS` (github needs it); github still needs a PAT.

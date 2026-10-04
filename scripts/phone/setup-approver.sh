@@ -12,7 +12,8 @@ SDK="${SDK:-$HERE/../../../vynkor-sdk-python/vynkor}"
 
 ssh "$HOST" 'mkdir -p ~/pylibs ~/.local/bin ~/.config/systemd/user'
 for w in "$WHEELS"/*.whl; do
-    ssh "$HOST" 'cd ~/pylibs && python3 -c "import sys,zipfile;zipfile.ZipFile(sys.stdin.buffer).extractall()"' < "$w"
+    scp -q "$w" "$HOST":/tmp/vyn-wheel.whl
+    ssh "$HOST" 'cd ~/pylibs && python3 -c "import zipfile;zipfile.ZipFile(\"/tmp/vyn-wheel.whl\").extractall()" && rm -f /tmp/vyn-wheel.whl'
 done
 tar -C "$(dirname "$SDK")" --exclude=__pycache__ -cf - vynkor | ssh "$HOST" 'tar -C ~/pylibs -xf -'
 scp -q "$HERE/vyn-auto-approver.py" "$HOST":.local/bin/vyn-auto-approver.py
