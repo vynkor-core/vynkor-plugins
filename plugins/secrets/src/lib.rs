@@ -4,6 +4,7 @@
 //! orphan rule: the trait comes from `vynkor-sdk`, the type from this crate.
 
 pub mod handler;
+pub mod provision;
 pub mod request;
 pub mod vault;
 
