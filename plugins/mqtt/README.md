@@ -34,14 +34,25 @@ The MQTT plugin provides a bridge between Vynkor and IoT devices using the [Vynk
 |---|---|
 | `mqtt_device_list` | List discovered devices |
 | `mqtt_device_info` | Get device details |
-| `mqtt_device_command` | Send command to device |
+| `mqtt_device_command` | Send an allowlisted command to device (no confirmation) |
+| `mqtt_device_command_confirmed` | Send any command to device (asks the user first) |
 | `mqtt_device_telemetry` | Get device telemetry |
 | `mqtt_ota_update` | Start OTA update |
 
 ## Configuration
 
-No environment configuration yet — the broker, credentials and TLS files
-are passed per call to `mqtt_connect`:
+Auto-connect at startup (all optional; without `MQTT_PLUGIN_BROKER_HOST`
+the plugin waits for an explicit `mqtt_connect`):
+
+| Env | Meaning |
+|---|---|
+| `MQTT_PLUGIN_BROKER_HOST` | Broker host |
+| `MQTT_PLUGIN_BROKER_PORT` | Broker port (default 1883) |
+| `MQTT_PLUGIN_USERNAME` | Broker username |
+| `MQTT_PLUGIN_PASSWORD` | Broker password — only as a fallback, see below |
+| `MQTT_PLUGIN_COMMAND_ALLOWLIST` | Commands `mqtt_device_command` may run unconfirmed |
+
+`mqtt_connect` takes the same settings per call, plus TLS files:
 
 ```json
 {
@@ -55,13 +66,43 @@ are passed per call to `mqtt_connect`:
 }
 ```
 
-Only `broker_host` is required. The connection lives in the plugin
-process: after a plugin restart, call `mqtt_connect` again.
+Wrong credentials fail the call. An unreachable broker does not: the call
+returns `connected: false` with `last_error`, and the plugin keeps retrying
+(also after a broker restart, re-subscribing on reconnect).
 
-> The password travels as an action parameter, so it is visible to whoever
-> builds the call (e.g. an agent transcript). Env defaults, vault-first
-> credentials via `secrets`, and auto-connect at startup are planned — see
-> `ROADMAP.md`.
+**Password.** Auto-connect resolves it vault-first: `secret_get
+MQTT_PLUGIN_PASSWORD` from the `secrets` plugin (retried for ~5 s in case
+`secrets` registers later), then the env var of the same name. Keep it out
+of `plugins.d/mqtt.yaml`:
+
+```sh
+printf %s "$PW" | secrets-provision mqtt MQTT_PLUGIN_PASSWORD  # see plugins/secrets
+vyn ... plugin restart secrets                                 # drop its cached vault
+```
+
+The `password` parameter of `mqtt_connect` is used as given: whoever builds
+that call sees it, so prefer auto-connect.
+
+### Command allowlist
+
+The agent's confirmation gate is fixed per action, so device control is
+split in two:
+
+- `mqtt_device_command` (risk low, no confirmation) runs only what
+  `MQTT_PLUGIN_COMMAND_ALLOWLIST` admits and refuses the rest with
+  `not allowed`, before anything is published;
+- `mqtt_device_command_confirmed` (risk high) runs anything, after the
+  user confirms. `mqtt_publish` is gated the same way, since it can reach
+  `vynkor/*/command` directly.
+
+Rules are `device:command[:target]`, comma-separated. `*` matches any
+device or command; `target` pins a rule to one pin, matched against
+`params.name` or `params.pin` (a call setting both, or a non-scalar
+value, never matches a target rule). Default: `*:get_state,*:ping` (read-only).
+
+```
+MQTT_PLUGIN_COMMAND_ALLOWLIST=uesp12e-001:set_pin:led_d1,uesp12e-001:toggle_pin:led_d1,*:get_state,*:ping
+```
 
 ## Quick Start
 
@@ -118,7 +159,7 @@ Requires `PERMISSION_NETWORK` (for MQTT connection) and optionally `PERMISSION_S
 ## Status
 
 **Stage:** MVP (Phase 1)  
-**Actions:** 11 registered  
+**Actions:** 12 registered  
 **Streaming:** Supported via R6
 
 ## See Also
