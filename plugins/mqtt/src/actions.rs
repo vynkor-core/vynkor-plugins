@@ -268,6 +268,27 @@ pub async fn handle_device_info(
 /// `enforce_allowlist` is true for `mqtt_device_command`, which runs without
 /// confirmation and so may only send what the allowlist admits; false for
 /// `mqtt_device_command_confirmed`, which the agent gates on the user.
+/// `device_id` for actions that build `vynkor/{device_id}/...` topics.
+///
+/// Only `[A-Za-z0-9_.-]{1,64}`: a `/` would address another device's topic
+/// (the allowlist matched one id, the command lands under another), and
+/// `+`/`#` would turn the response subscription into a wildcard.
+fn topic_device_id(params: &Value) -> Result<&str, MqttError> {
+    let id = params["device_id"]
+        .as_str()
+        .ok_or_else(|| MqttError::InvalidParams("device_id is required".into()))?;
+    let valid = (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'));
+    if !valid {
+        return Err(MqttError::InvalidParams(format!(
+            "device_id {id:?} must be 1-64 chars of A-Z a-z 0-9 _ . -"
+        )));
+    }
+    Ok(id)
+}
+
 pub async fn handle_device_command(
     plugin: &mut MqttPlugin,
     params_json: &[u8],
@@ -276,9 +297,7 @@ pub async fn handle_device_command(
     let params: Value =
         serde_json::from_slice(params_json).map_err(|e| MqttError::InvalidParams(e.to_string()))?;
 
-    let device_id = params["device_id"]
-        .as_str()
-        .ok_or_else(|| MqttError::InvalidParams("device_id is required".into()))?;
+    let device_id = topic_device_id(&params)?;
     let command = params["command"]
         .as_str()
         .ok_or_else(|| MqttError::InvalidParams("command is required".into()))?;
@@ -395,9 +414,7 @@ pub async fn handle_ota_update(
     let params: Value =
         serde_json::from_slice(params_json).map_err(|e| MqttError::InvalidParams(e.to_string()))?;
 
-    let device_id = params["device_id"]
-        .as_str()
-        .ok_or_else(|| MqttError::InvalidParams("device_id is required".into()))?;
+    let device_id = topic_device_id(&params)?;
     let firmware_url = params["firmware_url"]
         .as_str()
         .ok_or_else(|| MqttError::InvalidParams("firmware_url is required".into()))?;
@@ -551,6 +568,25 @@ mod tests {
         match result.unwrap_err() {
             MqttError::NotConnected => {}
             _ => panic!("Expected NotConnected error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn device_ids_that_would_escape_their_topic_are_rejected() {
+        // `*:get_state` is in the default allowlist, so only this check
+        // stands between a crafted id and someone else's command topic.
+        let mut plugin = MqttPlugin::new();
+        for bad in ["a/b", "+", "#", "esp/../x", "", "a\u{0}b", &"x".repeat(65)] {
+            let params = json!({"device_id": bad, "command": "get_state"});
+            let err = handle_device_command(&mut plugin, params.to_string().as_bytes(), true)
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("device_id"), "{bad:?} -> {err}");
+            let params = json!({"device_id": bad, "firmware_url": "http://x/fw.bin"});
+            let err = handle_ota_update(&mut plugin, params.to_string().as_bytes())
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("device_id"), "{bad:?} -> {err}");
         }
     }
 
