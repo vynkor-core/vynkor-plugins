@@ -436,7 +436,7 @@ fn infer_risk(name: &str) -> &'static str {
     //    spuriously starting a push-to-talk recording), so it lands in the
     //    "medium" bucket below with the other recoverable state-mutating
     //    actions, not here.
-    if matches!(name, "launch") {
+    if matches!(name, "launch" | "launch_command") {
         return "critical";
     }
 
@@ -889,7 +889,7 @@ mod tests {
             "email_send", "embedding", "event_create", "event_delete", "event_get", "event_list",
             "event_update", "fs_list", "fs_read", "fs_write", "hotkey_bind", "hotkey_inject",
             "hotkey_list", "hotkey_status", "hotkey_unbind", "http_request", "launch",
-            "launch_list", "launch_providers", "list_agents", "list_models",
+            "launch_command", "launch_list", "launch_providers", "list_agents", "list_models",
             "media_list_players", "media_loop", "media_next", "media_pause", "media_play",
             "media_play_pause", "media_prev", "media_seek", "media_seek_relative",
             "media_shuffle", "media_status", "media_stop", "media_volume", "mic_start",
@@ -912,7 +912,7 @@ mod tests {
             "capture_record_stop", "capture_ocr", "capture_status", "tg_upload_media",
             "tg_get_chat_info", "tg_mark_all_read",
         ];
-        assert_eq!(names.len(), 142, "the live catalog measured 142 tools — keep this list in sync");
+        assert_eq!(names.len(), 143, "the live catalog measured 142 tools, plus launch_command — keep this list in sync");
         let mut cat = catalog_of(names.iter().map(|n| spec(n)).collect());
         infer_missing_risk(&mut cat);
         for name in names {

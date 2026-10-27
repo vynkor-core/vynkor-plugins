@@ -53,14 +53,16 @@ it; the unfiltered `launch_list` is compact (it was 14k chars, cut at 8k,
 and read as "Telegram is not installed"); the truncation marker says the
 rest is hidden.
 
-Open, operator decisions:
-- `launch` is high risk, so every "открой X" halts in `needs_confirmation`,
-  which voice and Telegram users cannot approve. Options: approvals-file
-  override, or split terminal-command launches (tmux/kitty/...) into their
-  own high-risk action and make desktop/Steam launches medium.
-- `prompts.d/audio-voice.md` says "final только после успешного tool_ok от
-  daemon_say": the model speaks "Запускаю Телеграм", then answers "открыл"
-  without calling `launch`.
+Then split (operator's choice): `launch` opens desktop apps and Steam games
+only, medium risk, no confirmation; terminal providers and `args` go to
+`launch_command` (high, confirmed). `prompts.d/audio-voice.md` no longer
+lets a `daemon_say` stand in for the action. Live: "открой телеграм" and
+"запусти дискорд" both launch, in 3-6 steps.
+
+Open:
+- The model's first guess is often `launch` with no `app_id` (or
+  `launch_command {"command": ...}`); it recovers via launch_list, but
+  that is 2-3 wasted steps. A learned routine per app would skip them.
 - Memory stores duplicates ("Бехзод пользуется Телеграмом" ×4).
 
 ### 2. The second step costs as much as the first

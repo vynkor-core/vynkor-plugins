@@ -17,7 +17,83 @@
   "actions": [
     {
       "name": "launch",
-      "description": "Start an installed desktop application, a Steam game, or a command run inside a terminal emulator (tmux/kitty/alacritty/ghostty), by desktop-file id, Steam appid, or unique display name; provider=auto tries desktop then steam. `args` is appended as a plain argv list, never shell-interpreted. Use dry_run:true to preview the resolved command/argv without actually spawning it. This starts arbitrary programs on the machine. Use it for \"открой/запусти <app>\" (open or start an app such as Telegram, Discord, Chrome, Firefox): find the id with launch_list {query} first. Opening an app is this tool, not the app's own plugin (tg_* reads messages, it does not open Telegram).",
+      "description": "Open an installed desktop application or a Steam game by desktop-file id, Steam appid, or unique display name; provider=auto tries desktop then steam. Use it for \"открой/запусти <app>\" (Telegram, Discord, Chrome, Firefox, a game): find the id with launch_list {query} first. Opening an app is this tool, not the app's own plugin (tg_* reads messages, it does not open Telegram). Use dry_run:true to preview without spawning. Terminal commands and extra args are launch_command.",
+      "risk": "medium",
+      "requires_confirmation": false,
+      "permission": "launch",
+      "input": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "App or game id to launch (desktop file id without .desktop, or Steam appid). For desktop, matches file stem; for Steam, numeric appid. Also accepts display name when unique. Resolve the exact id via launch_list first; display-name matching is unique-only and waydroid android-app entries are excluded."
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "desktop",
+              "steam"
+            ],
+            "default": "auto",
+            "description": "Provider to use: auto tries desktop then steam, or force one."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, validate and return what would be launched without spawning."
+          }
+        },
+        "required": [
+          "app_id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "launched": {
+            "type": "boolean"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string",
+            "description": "Provider that handled the launch (desktop/steam)."
+          },
+          "app_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string",
+            "description": "Binary invoked."
+          },
+          "argv": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Full argv that was (or would be) spawned."
+          }
+        },
+        "required": [
+          "launched",
+          "provider",
+          "app_id",
+          "command",
+          "argv"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "launch_command",
+      "description": "Run a command inside a terminal emulator (provider tmux/kitty/alacritty/ghostty: app_id is the command), or launch an app/game with extra `args` (plain argv, never shell-interpreted). This runs arbitrary programs on the machine, so every call needs the operator's approval. To just open an installed app use launch instead.",
       "risk": "high",
       "requires_confirmation": true,
       "permission": "launch",
