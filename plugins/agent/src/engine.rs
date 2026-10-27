@@ -249,6 +249,17 @@ fn suggest_tools<'a>(catalog: &'a Catalog, guess: &str) -> Vec<&'a str> {
     scored.into_iter().take(8).map(|(_, n)| n).collect()
 }
 
+/// Unknown-tool replies in a row before the model loses its tools. Live,
+/// "free disk space?" (no such tool exists) burned six invented names and
+/// ~32k tokens before giving up; after two misses the next turn goes out
+/// without tools so the model has to answer in words.
+const UNKNOWN_TOOL_LIMIT: usize = 2;
+
+/// Trailing run of `unknown_tool` steps: any other step breaks the streak.
+fn unknown_tool_streak(steps: &[StepRec]) -> usize {
+    steps.iter().rev().take_while(|s| s.kind == "unknown_tool").count()
+}
+
 /// The ai plugin rejects more than this many native tools.
 const MAX_NATIVE_TOOLS: usize = 64;
 
@@ -493,7 +504,10 @@ pub async fn run(
             return Ok(());
         }
 
-        let want_native = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+        // Out of guesses: no tools param, so neither a retry nor the text
+        // protocol fallback hands the model another catalog to guess from.
+        let tools_off = unknown_tool_streak(&doc.steps) >= UNKNOWN_TOOL_LIMIT;
+        let want_native = !tools_off && llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
         let tools = if want_native {
             llm::catalog_tools_param(llm_catalog)
         } else {
@@ -548,7 +562,9 @@ pub async fn run(
                 persist(db, doc).await?;
                 // a goal that hit a tool error ends in a failure report, not
                 // knowledge — extracting from it stored "ESP offline" as a fact
-                let failed_tool = doc.steps.iter().any(|s| s.kind == "tool_error");
+                // Same for a goal that found no tool ("no disk tool" is a
+                // gap in the catalog, not a fact about the user).
+                let failed_tool = doc.steps.iter().any(|s| s.kind == "tool_error" || s.kind == "unknown_tool");
                 if memory::enabled() && !failed_tool {
                     // Detached: extraction is one extra LLM round-trip and
                     // must not sit between the finished goal and its caller.
@@ -564,6 +580,17 @@ pub async fn run(
             }
             Reply::ToolCall { name, params } => {
                 let Some(spec) = catalog.get(&name) else {
+                    if tools_off {
+                        // Asked to answer in words and still guessing: stop
+                        // here rather than spend steps up to `max_steps`.
+                        let answer = "Не нашёл подходящего инструмента для этой задачи.".to_string();
+                        next_step(doc, "unknown_tool", json!({"tool": name}));
+                        doc.status = STATUS_COMPLETED.to_string();
+                        doc.final_answer = answer;
+                        next_step(doc, "final", json!({"reason": "unknown_tool_limit"}));
+                        persist(db, doc).await?;
+                        return Ok(());
+                    }
                     let near = suggest_tools(catalog, &name);
                     let msg = if near.is_empty() {
                         format!("unknown tool \"{name}\": not in the operator's tool catalog")
@@ -574,12 +601,20 @@ pub async fn run(
                             near.join(", ")
                         )
                     };
+                    next_step(doc, "unknown_tool", json!({"tool": name}));
+                    let msg = if unknown_tool_streak(&doc.steps) >= UNKNOWN_TOOL_LIMIT {
+                        format!(
+                            "{msg}\nNo tool for this exists. Do not call tools any more: answer \
+                             the user now in plain text with what you can say without one."
+                        )
+                    } else {
+                        msg
+                    };
                     push_turn(
                         doc,
                         "user",
                         format!("[TOOL RESULT name={name} status=error]\n{msg}"),
                     )?;
-                    next_step(doc, "unknown_tool", json!({"tool": name}));
                     persist(db, doc).await?;
                     continue;
                 };
@@ -610,6 +645,26 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn steps(kinds: &[&str]) -> Vec<StepRec> {
+        let mut out = Vec::new();
+        for (i, k) in kinds.iter().enumerate() {
+            out.push(StepRec { n: i as u32 + 1, kind: k.to_string(), detail: json!({}) });
+        }
+        out
+    }
+
+    #[test]
+    fn unknown_tool_streak_counts_only_the_trailing_run() {
+        assert_eq!(unknown_tool_streak(&steps(&[])), 0);
+        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "unknown_tool"])), 2);
+        assert_eq!(
+            unknown_tool_streak(&steps(&["unknown_tool", "tool_ok", "unknown_tool"])),
+            1,
+            "a real call in between resets the guessing"
+        );
+        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "tool_error"])), 0);
+    }
 
     #[test]
     fn unknown_tool_gets_real_names_that_look_alike() {

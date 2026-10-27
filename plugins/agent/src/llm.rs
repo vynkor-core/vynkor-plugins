@@ -421,7 +421,9 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
         // group uncallable in practice, even when explicitly named in the
         // goal text (e.g. tg_get_unread, alphabetically past telegram's
         // first 6, silently invisible to text-protocol models).
-        lines.push(format!("- {} ({} tools): {}", group, count, names.join(", ")));
+        // `[group]` reads as a label, not a name: "- system (5 tools)" got
+        // called as a tool named "system".
+        lines.push(format!("- [{}] {} tools: {}", group, count, names.join(", ")));
     }
     lines.join("\n")
 }
@@ -634,7 +636,7 @@ pub fn opening_messages_with_full(
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
-             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Tool groups overview ([group] labels are not tool names; call the names listed after them):\n{}\n\n\
              Plugin identities (how to behave for relevant groups):\n{}\n\n\
              {}\n\n\
              Reply rules:\n\
@@ -654,7 +656,7 @@ pub fn opening_messages_with_full(
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
-             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Tool groups overview ([group] labels are not tool names; call the names listed after them):\n{}\n\n\
              {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
