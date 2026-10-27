@@ -240,16 +240,24 @@ impl<L: Launcher> LauncherPlugin<L> {
         } else {
             vec![provider.clone()]
         };
+        // The unfiltered list is a catalog to pick from: with exec and path
+        // it was 14k chars live, past the agent's 8k observation cap, and cut
+        // at "LibreOffice" it read as "Telegram is not installed".
+        let detailed = query.is_some();
         let json_apps: Vec<serde_json::Value> = apps
             .into_iter()
             .map(|a| {
-                json!({
-                    "id": a.id,
-                    "name": a.name,
-                    "provider": a.provider,
-                    "exec": a.exec,
-                    "path": a.path.display().to_string(),
-                })
+                if detailed {
+                    json!({
+                        "id": a.id,
+                        "name": a.name,
+                        "provider": a.provider,
+                        "exec": a.exec,
+                        "path": a.path.display().to_string(),
+                    })
+                } else {
+                    json!({"id": a.id, "name": a.name, "provider": a.provider})
+                }
             })
             .collect();
         Ok(json!({ "apps": json_apps, "providers": providers_scanned }))
@@ -523,6 +531,11 @@ mod tests {
             .unwrap();
         assert_eq!(v["apps"].as_array().unwrap().len(), 1);
         assert_eq!(v["apps"][0]["id"], "a");
+        assert_eq!(v["apps"][0]["exec"], "a", "a query lookup keeps the details");
+        let all = plugin.handle_action("launch_list", b"{}").await.unwrap();
+        assert_eq!(all["apps"].as_array().unwrap().len(), 2);
+        assert!(all["apps"][0].get("exec").is_none() && all["apps"][0].get("path").is_none(), "{all}");
+        assert_eq!(all["apps"][1]["name"], "Beta");
     }
 
     #[tokio::test]

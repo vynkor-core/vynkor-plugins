@@ -35,6 +35,34 @@ only on `PluginShutdown`) or in the supervisor (restart a clean exit that
 was not asked for). Either way it is an SDK release or a kernel change, not
 a plugin patch.
 
+Mitigation applied live: `plugins.d/database.yaml` uses `restart: always`
+(`max_restarts: 20`). An explicit `vyn plugin stop` still stops it (the
+supervisor records the stopped epoch and ignores that exit). A third
+silent exit at 11:06 came after the metrics backlog had drained, so the
+trim was not the only trigger. Other plugins on `serve_concurrent` still
+use `on-failure`.
+
+### 1b. "Open an app" (launcher) — findings 2026-10-27
+
+Fixed: the agent JWT lacked PERMISSION_LAUNCH/CLIPBOARD/AUDIO (re-minted);
+tools of disabled plugins (telegram, scheduler, ping-pong: 23) are left out
+of the catalog, so "открой телеграм" no longer goes to `tg_*`; small tool
+families come whole (`launch` with `launch_list`); a call missing required
+params errors back to the model instead of asking the operator to approve
+it; the unfiltered `launch_list` is compact (it was 14k chars, cut at 8k,
+and read as "Telegram is not installed"); the truncation marker says the
+rest is hidden.
+
+Open, operator decisions:
+- `launch` is high risk, so every "открой X" halts in `needs_confirmation`,
+  which voice and Telegram users cannot approve. Options: approvals-file
+  override, or split terminal-command launches (tmux/kitty/...) into their
+  own high-risk action and make desktop/Steam launches medium.
+- `prompts.d/audio-voice.md` says "final только после успешного tool_ok от
+  daemon_say": the model speaks "Запускаю Телеграм", then answers "открыл"
+  without calling `launch`.
+- Memory stores duplicates ("Бехзод пользуется Телеграмом" ×4).
+
 ### 2. The second step costs as much as the first
 
 Step 2 usually only phrases the tool result, but re-sends the full system

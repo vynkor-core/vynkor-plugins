@@ -177,7 +177,7 @@ async fn embedding_filtered_catalog(
     if hits.len() < 3 {
         return None;
     }
-    let hit_set: std::collections::HashSet<String> = hits.into_iter().collect();
+    let hit_set = with_small_families(catalog, hits.into_iter().collect());
     let filtered: Vec<_> = catalog
         .tools
         .iter()
@@ -205,6 +205,48 @@ async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &s
         return emb;
     }
     cap_native_tools(llm::filtered_catalog(catalog, goal, context), goal)
+}
+
+/// Name prefix before the first `_`: `launch`, `launch_list` and
+/// `launch_providers` are one plugin's family.
+fn family(name: &str) -> &str {
+    name.split('_').next().unwrap_or(name)
+}
+
+/// Families this small come whole: the filter picked `launch` without
+/// `launch_list`, and the model called `launch {"providers": []}` (the
+/// list call's params under the launch name) for "what can you launch?".
+const SMALL_FAMILY: usize = 5;
+
+fn with_small_families(
+    catalog: &Catalog,
+    mut hits: std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut sizes: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for t in &catalog.tools {
+        *sizes.entry(family(&t.name)).or_default() += 1;
+    }
+    let picked: std::collections::HashSet<String> = hits.iter().map(|h| family(h).to_string()).collect();
+    for t in &catalog.tools {
+        let f = family(&t.name);
+        if picked.contains(f) && sizes[f] <= SMALL_FAMILY {
+            hits.insert(t.name.clone());
+        }
+    }
+    hits
+}
+
+/// Required params the call left out, per the tool's JSON Schema.
+fn missing_required(spec: &crate::tools::ToolSpec, params: &Value) -> Vec<String> {
+    spec.parameters
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|k| params.get(k).is_none_or(Value::is_null))
+        .map(str::to_string)
+        .collect()
 }
 
 /// Logged loudly and sent as a desktop notification, detached: an alert
@@ -301,8 +343,14 @@ fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
+        // Spelled out: a bare "[truncated]" launch_list cut at "L" made the
+        // model answer "Telegram is not installed".
         let cut: String = s.chars().take(max).collect();
-        format!("{cut}…[truncated]")
+        let total = s.chars().count();
+        format!(
+            "{cut}…[truncated: {max} of {total} chars shown. The rest is NOT shown, so do not \
+             conclude anything is missing; call again with a narrower query or filter]"
+        )
     }
 }
 
@@ -622,6 +670,19 @@ pub async fn run(
                     persist(db, doc).await?;
                     continue;
                 };
+                // Before the confirmation gate: asking the operator to approve
+                // `launch` without an `app_id` only to fail afterwards is noise.
+                let missing = missing_required(spec, &params);
+                if !missing.is_empty() {
+                    let msg = format!(
+                        "{name}: missing required params {}; check the tool's schema or use another tool",
+                        missing.join(", ")
+                    );
+                    push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
+                    next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
+                    persist(db, doc).await?;
+                    continue;
+                }
                 if spec.requires_confirmation {
                     doc.status = STATUS_NEEDS_CONFIRMATION.to_string();
                     doc.pending_tool = name.clone();
@@ -656,6 +717,26 @@ mod tests {
             out.push(StepRec { n: i as u32 + 1, kind: k.to_string(), detail: json!({}) });
         }
         out
+    }
+
+    #[test]
+    fn small_families_come_whole_big_ones_do_not() {
+        let mut tools = vec![spec("launch", ""), spec("launch_list", ""), spec("launch_providers", "")];
+        tools.extend((0..8).map(|i| spec(&format!("tg_action{i}"), "")));
+        let c = cat(tools);
+        let hits = with_small_families(&c, ["launch".to_string(), "tg_action0".to_string()].into());
+        assert!(hits.contains("launch_list") && hits.contains("launch_providers"));
+        assert!(!hits.contains("tg_action1"), "telegram-sized families stay filtered");
+    }
+
+    #[test]
+    fn missing_required_params_are_named() {
+        let mut s = spec("launch", "");
+        s.parameters = json!({"type": "object", "required": ["app_id"], "properties": {"app_id": {"type": "string"}}});
+        assert_eq!(missing_required(&s, &json!({"providers": []})), vec!["app_id"]);
+        assert_eq!(missing_required(&s, &json!({"app_id": null})), vec!["app_id"]);
+        assert!(missing_required(&s, &json!({"app_id": "telegram"})).is_empty());
+        assert!(missing_required(&spec("x", ""), &json!({})).is_empty(), "no schema, no check");
     }
 
     #[test]
@@ -704,7 +785,7 @@ mod tests {
         let long = "ж".repeat(20);
         let cut = truncate_chars(&long, 5);
         assert!(cut.starts_with("жжжжж"));
-        assert!(cut.ends_with("[truncated]"));
+        assert!(cut.contains("[truncated: 5 of 20 chars shown"), "{cut}");
     }
 
     fn spec(name: &str, description: &str) -> crate::tools::ToolSpec {

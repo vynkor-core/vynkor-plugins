@@ -17,7 +17,7 @@
   "actions": [
     {
       "name": "launch",
-      "description": "Start an installed desktop application, a Steam game, or a command run inside a terminal emulator (tmux/kitty/alacritty/ghostty), by desktop-file id, Steam appid, or unique display name; provider=auto tries desktop then steam. `args` is appended as a plain argv list, never shell-interpreted. Use dry_run:true to preview the resolved command/argv without actually spawning it. This starts arbitrary programs on the machine.",
+      "description": "Start an installed desktop application, a Steam game, or a command run inside a terminal emulator (tmux/kitty/alacritty/ghostty), by desktop-file id, Steam appid, or unique display name; provider=auto tries desktop then steam. `args` is appended as a plain argv list, never shell-interpreted. Use dry_run:true to preview the resolved command/argv without actually spawning it. This starts arbitrary programs on the machine. Use it for \"открой/запусти <app>\" (open or start an app such as Telegram, Discord, Chrome, Firefox): find the id with launch_list {query} first. Opening an app is this tool, not the app's own plugin (tg_* reads messages, it does not open Telegram).",
       "risk": "high",
       "requires_confirmation": true,
       "permission": "launch",
@@ -104,7 +104,7 @@
     },
     {
       "name": "launch_list",
-      "description": "List launchable apps/games/terminal targets (id, name, provider, exec/path) discovered by the given provider(s); query filters by substring over id/name, include_hidden also shows NoDisplay/Hidden desktop entries. Use this to find the exact `app_id` before calling launch.",
+      "description": "List launchable apps/games/terminal targets (id, name, provider, exec/path) discovered by the given provider(s); query filters by substring over id/name, include_hidden also shows NoDisplay/Hidden desktop entries. Use this to find the exact `app_id` before calling launch. Without `query` it returns only id/name/provider; pass `query` (e.g. \"telegram\") for exec/path of the matches.",
       "risk": "low",
       "permission": "launch",
       "input": {
@@ -282,7 +282,7 @@
           "xdg-open",
           "exec"
         ],
-        "description": "Desktop launch method (default auto: gtk-launch \u2192 gio \u2192 exec)."
+        "description": "Desktop launch method (default auto: gtk-launch → gio → exec)."
       },
       "LAUNCHER_CACHE_TTL_MS": {
         "type": "integer",

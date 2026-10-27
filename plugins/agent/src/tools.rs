@@ -324,6 +324,7 @@ impl Catalog {
         }
         match crate::discovery::discover(rpc).await {
             Ok(map) => {
+                drop_offline(&mut cat, &map);
                 for tool in cat.tools.iter_mut() {
                     let Some(found) = map.get(&tool.name) else { continue };
                     match tool.source {
@@ -343,6 +344,21 @@ impl Catalog {
         // holes nothing upstream filled.
         infer_missing_risk(&mut cat);
         Ok(cat)
+    }
+}
+
+/// Drops allowlisted tools no running plugin declares. A disabled plugin's
+/// tools stayed in the catalog from the operator file: "открой телеграм"
+/// went to `tg_list_unread` (telegram disabled) and failed with "action not
+/// found" instead of reaching the launcher. Device tools (`<device>.<cap>`)
+/// never appear in plugin manifests and are kept. `discover` fails whole on
+/// any manifest error, so an `Ok` map is the complete live set.
+fn drop_offline(catalog: &mut Catalog, live: &BTreeMap<String, ToolSpec>) {
+    let before = catalog.tools.len();
+    catalog.tools.retain(|t| live.contains_key(&t.name) || t.name.contains('.'));
+    let dropped = before - catalog.tools.len();
+    if dropped > 0 {
+        eprintln!("[agent] catalog: {dropped} tools of plugins not running left out");
     }
 }
 
@@ -713,6 +729,15 @@ mod tests {
     #[test]
     fn get_finds_by_name() {
         let cat = Catalog { tools: vec![spec("x")], allowed_actions: vec!["x".into()], tools_file_set: false };
+        let mut offline = Catalog {
+            tools: vec![spec("tg_send_message"), spec("launch"), spec("pixel-6pro.battery")],
+            allowed_actions: vec![],
+            tools_file_set: true,
+        };
+        let live: BTreeMap<String, ToolSpec> = [("launch".to_string(), spec("launch"))].into();
+        drop_offline(&mut offline, &live);
+        let names: Vec<&str> = offline.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["launch", "pixel-6pro.battery"], "disabled plugin out, device kept");
         assert!(cat.get("x").is_some());
         assert!(cat.get("y").is_none());
     }
