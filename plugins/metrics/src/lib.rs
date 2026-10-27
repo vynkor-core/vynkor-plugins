@@ -75,12 +75,9 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
             }
         }
         request::MetricsRequest::Stats => {
-            let ids = db.ids().await?;
-            let count = ids.len();
-            let ends: Vec<u64> = ids.first().into_iter().chain(ids.last()).copied().collect();
-            let ends = db.get_many(&ends).await?;
-            let oldest_ms = ends.iter().map(|s| s.timestamp_ms).min();
-            let newest_ms = ends.iter().map(|s| s.timestamp_ms).max();
+            let (count, oldest, newest) = db.ends().await?;
+            let oldest_ms = oldest.map(|s| s.timestamp_ms);
+            let newest_ms = newest.map(|s| s.timestamp_ms);
             ok(json!({"count": count, "oldest_ms": oldest_ms, "newest_ms": newest_ms}), None)
         }
         request::MetricsRequest::Status => {

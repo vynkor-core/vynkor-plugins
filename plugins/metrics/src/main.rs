@@ -258,7 +258,7 @@ mod tests {
     #[tokio::test]
     async fn trim_drains_an_oversized_store_by_id() {
         let cfg=Config { interval_secs: 1, max_samples: 100, ..test_cfg() };
-        let shim=start_plugin_with(cfg, FakeDb::with_samples(1_500)).await;
+        let shim=start_plugin_with(cfg, FakeDb::with_samples(250)).await;
         let mut count=0;
         for _ in 0..40 {
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -267,7 +267,7 @@ mod tests {
         }
         assert_eq!(count, 100, "one tick trims down to max_samples");
         let stats=shim.call("metrics_stats", serde_json::json!({})).await.unwrap();
-        assert_eq!(stats["newest_ms"].as_i64().map(|t| t > 1_500_000), Some(true), "the fresh sample survives");
+        assert_eq!(stats["newest_ms"].as_i64().map(|t| t > 250_000), Some(true), "the fresh sample survives");
     }
 
     #[tokio::test]

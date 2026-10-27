@@ -18,11 +18,17 @@ had been failing silently since ~14k samples and the store reached 46k).
 `vynkor-sdk` 0.0.3 `run_concurrent_loop` breaks on any `recv()` error
 (`Err(_) => break, // disconnect / EOF`) and returns `Ok(())`. The plugin
 exits with code 0, and the supervisor treats that as a deliberate stop
-(`success=true will_restart=false`). Live at 09:39:01 the database plugin
-dropped its connection this way; every `db_*` call then failed with
+(`success=true will_restart=false`). Live at 09:39 and 09:49 the database
+plugin dropped its connection this way; every `db_*` call then failed with
 "action not found" (metrics, routines, goals) until a manual
-`vyn plugin start database`. Why the connection closed is unknown (no
-warning in the kernel journal).
+`vyn plugin start database`.
+
+Trigger: the fixed metrics trim draining its 46k backlog at 2000
+`db_delete` a tick. Each delete publishes a change event; deletes timed
+out at 5 s and the connection went down. With 200 a tick it held. Which
+`recv()` error it was is not logged (the SDK drops it); the kernel saw a
+plain EOF, no oversized/timeout frame. A burst of writes from any caller
+can still do this.
 
 Fix belongs in the SDK (return an error on an unexpected disconnect, `Ok`
 only on `PluginShutdown`) or in the supervisor (restart a clean exit that

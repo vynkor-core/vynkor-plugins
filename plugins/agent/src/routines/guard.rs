@@ -169,8 +169,28 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
         .collect();
     let one_phrase = used.is_empty()
         || seen.iter().any(|t| used.iter().all(|w| objects(t).iter().any(|o| same_word(w, o))));
-    !failure && on_topic && one_phrase && call.is_none_or(|p| text_polarity(&text) == Some(p))
+    // With several phrases, only words the user said more than once: a
+    // misheard "светозерк" said once gave "Диод светозерк включен".
+    let in_texts = |w: &str| seen.iter().filter(|t| objects(t).iter().any(|o| same_word(w, o))).count();
+    let repeated = seen.len() < 2
+        || used.iter().all(|w| in_texts(w) >= 2)
+        || !seen.iter().flat_map(|t| objects(t)).any(|o| in_texts(o) >= 2);
+    // A place the user never named is invented: "Светодиод на двери включен".
+    let no_new_place = words
+        .iter()
+        .all(|w| !PREPOSITIONS.contains(w) || seen.iter().any(|t| t.split(' ').any(|s| s == *w)));
+    !failure
+        && words.len() <= MAX_REPLY_WORDS
+        && on_topic
+        && one_phrase
+        && repeated
+        && no_new_place
+        && call.is_none_or(|p| text_polarity(&text) == Some(p))
 }
+
+const PREPOSITIONS: &[&str] = &["в", "во", "на", "у", "под", "над", "возле", "около", "из", "от", "при", "для"];
+/// A spoken confirmation; longer replies were where the details got invented.
+const MAX_REPLY_WORDS: usize = 4;
 
 /// Correct by construction; tops up what the model's replies left.
 pub fn stock_replies(call: Option<Polarity>) -> &'static [&'static str] {
@@ -288,6 +308,23 @@ mod tests {
         let misheard = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string()];
         assert!(!reply_ok("Включил светодиод светозерк.", Some(On), &misheard), "words of two phrases");
         assert!(reply_ok("Включил светодиод.", Some(On), &misheard));
+        // the third live run, once the mixing rule was in
+        let live = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string(), "светодиод включить".to_string()];
+        let kept: Vec<&str> = [
+            "Светодиод в доме включен.",
+            "Диод светозерк включен.",
+            "Диод на светодиоде включен.",
+            "Светодиод на двери включен.",
+            "В доме светодиод включен, свет есть.",
+            "Светодиод дома включен, всё хорошо.",
+            "Светодиод включен.",
+        ]
+        .into_iter()
+        .filter(|r| reply_ok(r, Some(On), &live))
+        .collect();
+        assert_eq!(kept, vec!["Светодиод включен."]);
+        let kitchen = vec!["включи свет на кухне".to_string()];
+        assert!(reply_ok("Свет на кухне включен.", Some(On), &kitchen), "a place the user named");
         assert!(reply_ok("Готово.", None, &[]));
         assert!(!reply_ok("Ошибка устройства", None, &[]));
         assert!(reply_ok("Нормально, яркость 40", None, &["яркость 40".to_string()]), "\"нормально\" is not \"не\"");

@@ -6,7 +6,7 @@ pub const NEXT_ID_KEY: &str = "meta:next_id";
 pub const KEY_PREFIX: &str = "metric:";
 const BATCH_KEYS: usize = 500;
 const LATEST_PROBE: usize = 8;
-const MAX_TRIM_PER_CALL: usize = 2_000;
+const MAX_TRIM_PER_CALL: usize = 200;
 
 pub struct Db {
     rpc: Rpc,
@@ -63,9 +63,22 @@ impl Db {
     /// The newest readable sample, without loading the rest.
     pub async fn latest(&self) -> Result<Option<Sample>, String> {
         let ids = self.ids().await?;
-        for chunk in ids.rchunks(LATEST_PROBE) {
-            if let Some(s) = self.get_many(chunk).await?.into_iter().max_by_key(|s| s.timestamp_ms) {
-                return Ok(Some(s));
+        self.first_readable(ids.rchunks(LATEST_PROBE), true).await
+    }
+    /// Oldest and newest readable samples. Probes a few ids at each end:
+    /// the trim may delete the oldest between listing ids and reading it.
+    pub async fn ends(&self) -> Result<(usize, Option<Sample>, Option<Sample>), String> {
+        let ids = self.ids().await?;
+        let oldest = self.first_readable(ids.chunks(LATEST_PROBE), false).await?;
+        let newest = self.first_readable(ids.rchunks(LATEST_PROBE), true).await?;
+        Ok((ids.len(), oldest, newest))
+    }
+    async fn first_readable<'a>(&self, chunks: impl Iterator<Item = &'a [u64]>, newest: bool) -> Result<Option<Sample>, String> {
+        for chunk in chunks {
+            let got = self.get_many(chunk).await?.into_iter();
+            let pick = if newest { got.max_by_key(|s| s.timestamp_ms) } else { got.min_by_key(|s| s.timestamp_ms) };
+            if pick.is_some() {
+                return Ok(pick);
             }
         }
         Ok(None)
@@ -75,8 +88,10 @@ impl Db {
         v.get("deleted").and_then(Value::as_bool).ok_or_else(|| format!("db_delete bad: {v}"))
     }
     /// Deletes the oldest samples past `max_samples`, at most
-    /// `MAX_TRIM_PER_CALL` per call so a long backlog (46k live after the
-    /// trim had been failing) drains over a few ticks instead of stalling one.
+    /// `MAX_TRIM_PER_CALL` per call. Every `db_delete` publishes a change
+    /// event: 2000 a tick (draining the 46k backlog left by the old failing
+    /// trim) timed deletes out and twice dropped the database plugin's
+    /// kernel connection, so a backlog drains slowly instead.
     pub async fn trim(&self, max_samples: usize) -> Result<usize, String> {
         if max_samples == 0 { return Ok(0); }
         let ids = self.ids().await?;
