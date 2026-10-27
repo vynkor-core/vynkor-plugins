@@ -389,25 +389,7 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for tool in &catalog.tools {
-        let prefix = tool.name.split('_').next().unwrap_or("other").to_string();
-        let key = match prefix.as_str() {
-            "tg" => "telegram".to_string(),
-            "db" => "database".to_string(),
-            "vec" => "vector-db".to_string(),
-            "note" => "notes".to_string(),
-            "contact" => "contacts".to_string(),
-            "email" => "email".to_string(),
-            "event" | "schedule" => "calendar/scheduler".to_string(),
-            "fs" => "filesystem".to_string(),
-            "media" => "media".to_string(),
-            "sys" => "system".to_string(),
-            "web" | "http" => "web/network".to_string(),
-            "secret" => "secrets".to_string(),
-            "notify" => "notifications".to_string(),
-            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice".to_string(),
-            "launch" | "clipboard" | "hotkey" => "desktop".to_string(),
-            other => other.to_string(),
-        };
+        let key = tool_group(&tool.name).to_string();
         groups.entry(key).or_default().push(tool.name.clone());
     }
     let mut lines = Vec::new();
@@ -428,34 +410,54 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
     lines.join("\n")
 }
 
+/// Prompt group of a tool, from its name prefix (`tg_*` → telegram, ...).
+/// One mapping for the overview and for plugin-prompt selection.
+fn tool_group(name: &str) -> &str {
+    let prefix = name.split('_').next().unwrap_or("other");
+    match prefix {
+        "tg" => "telegram",
+        "db" => "database",
+        "vec" => "vector-db",
+        "note" => "notes",
+        "contact" => "contacts",
+        "email" => "email",
+        "event" | "schedule" => "calendar/scheduler",
+        "fs" => "filesystem",
+        "media" => "media",
+        "sys" => "system",
+        "web" | "http" => "web/network",
+        "secret" => "secrets",
+        "notify" => "notifications",
+        "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice",
+        "launch" | "clipboard" | "hotkey" => "desktop",
+        other => other,
+    }
+}
+
+/// A group's prompt only loads when the filtered catalog holds at least this
+/// many of its tools. The embedding filter always fills its top_k, so a goal
+/// about CPU load still pulls a stray `tg_*` or `mqtt_*` tool in; one tool is
+/// noise, and its group prompt (telegram.md alone is ~1.5k tokens) is not.
+const MIN_GROUP_TOOLS_FOR_PROMPT: usize = 2;
+
+fn groups_with_prompts(filtered: &Catalog) -> std::collections::BTreeSet<String> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for tool in &filtered.tools {
+        *counts.entry(tool_group(&tool.name)).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= MIN_GROUP_TOOLS_FOR_PROMPT.min(filtered.tools.len()))
+        .map(|(g, _)| g.to_string())
+        .collect()
+}
+
 fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
     if cfg!(test) {
         return None;
     }
     let env_map = plugin_prompts_map();
-    let mut groups: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for tool in &filtered.tools {
-        let prefix = tool.name.split('_').next().unwrap_or("other");
-        let group = match prefix {
-            "tg" => "telegram",
-            "db" => "database",
-            "vec" => "vector-db",
-            "note" => "notes",
-            "contact" => "contacts",
-            "email" => "email",
-            "event" | "schedule" => "calendar/scheduler",
-            "fs" => "filesystem",
-            "media" => "media",
-            "sys" => "system",
-            "web" | "http" => "web/network",
-            "secret" => "secrets",
-            "notify" => "notifications",
-            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice",
-            "launch" | "clipboard" | "hotkey" => "desktop",
-            other => other,
-        };
-        groups.insert(group.to_string());
-    }
+    let groups = groups_with_prompts(filtered);
     let mut parts = Vec::new();
     for g in groups {
         // Precedence: env JSON (hot-fix, wins) > prompts dir (the normal
@@ -705,6 +707,33 @@ pub fn opening_messages_with_full(
     };
     msgs.push(Turn { role: "user".into(), content: goal_msg });
     msgs
+}
+
+/// One-line size report of a fresh goal's prompt, in chars (tokens are not
+/// known here), so a step's `input_tokens` can be traced back to a part:
+/// the seed's persona, tool-name overview and per-group plugin prompts, the
+/// native `tools` param, and the session-memory/recall text.
+pub fn prompt_breakdown(goal_id: &str, filtered: &Catalog, full: &Catalog, transcript: &[Turn]) -> String {
+    let chars = |s: &str| s.chars().count();
+    let plugin_prompts = plugin_prompt_section(filtered).unwrap_or_default();
+    let groups: Vec<&str> = plugin_prompts
+        .lines()
+        .filter_map(|l| l.strip_prefix("**").and_then(|r| r.split_once("**:")).map(|(g, _)| g))
+        .collect();
+    let tools_param = serde_json::to_string(&catalog_tools_param(filtered)).unwrap_or_default();
+    let turn_chars: Vec<String> = transcript.iter().map(|t| chars(&t.content).to_string()).collect();
+    format!(
+        "[agent] prompt goal={goal_id} persona={} overview={} plugin_prompts={} ({}) \
+         tools_param={} ({} tools: {}) turns=[{}]",
+        chars(&persona_block()),
+        chars(&catalog_groups_overview(full)),
+        chars(&plugin_prompts),
+        groups.join(","),
+        chars(&tools_param),
+        filtered.tools.len(),
+        filtered.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+        turn_chars.join(","),
+    )
 }
 
 /// Seed for the small-talk fast path: the persona and the goal, no tool
@@ -1308,6 +1337,52 @@ mod tests {
         assert_eq!(parse_native_mode("off"), NativeMode::Off);
         assert_eq!(parse_native_mode("0"), NativeMode::Off);
         assert_eq!(parse_native_mode(" False "), NativeMode::Off);
+    }
+
+    #[test]
+    fn a_group_prompt_needs_two_tools_in_the_filtered_catalog() {
+        let mk = |n: &str| crate::tools::ToolSpec {
+            name: n.into(),
+            description: String::new(),
+            parameters: Value::Null,
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: crate::tools::Source::Kernel,
+        };
+        let cat = |names: &[&str]| Catalog {
+            tools: names.iter().map(|n| mk(n)).collect(),
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
+        let groups = groups_with_prompts(&cat(&["sys_info", "sys_procs", "tg_send_message", "mqtt_status"]));
+        assert_eq!(groups.into_iter().collect::<Vec<_>>(), vec!["system".to_string()]);
+        // a catalog of one tool still gets its group's prompt
+        let solo = groups_with_prompts(&cat(&["tg_send_message"]));
+        assert!(solo.contains("telegram"));
+    }
+
+    #[test]
+    fn prompt_breakdown_reports_part_sizes_and_tool_count() {
+        let spec = crate::tools::ToolSpec {
+            name: "launch".into(),
+            description: "Launch an app".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: crate::tools::Source::Kernel,
+        };
+        let cat = Catalog { tools: vec![spec], allowed_actions: vec!["launch".into()], tools_file_set: false };
+        let turns = vec![Turn { role: "user".into(), content: "abcd".into() }];
+        let line = prompt_breakdown("g1", &cat, &cat, &turns);
+        assert!(line.contains("goal=g1"), "{line}");
+        assert!(line.contains("(1 tools: launch)"), "{line}");
+        assert!(line.contains("turns=[4]"), "{line}");
     }
 
     #[test]

@@ -521,6 +521,7 @@ pub async fn run(
             for turn in carried {
                 push_turn(doc, &turn.role, turn.content)?;
             }
+            eprintln!("{}", llm::prompt_breakdown(&doc.id, llm_catalog, dispatch_catalog, &doc.transcript));
             persist(db, doc).await?;
         }
         Entry::ApprovedResume => {
