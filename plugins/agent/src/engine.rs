@@ -199,11 +199,41 @@ async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &s
             "[agent] embedding filter: {} -> {} tools (goal: {})",
             catalog.tools.len(),
             emb.tools.len(),
-            &goal[..goal.len().min(60)]
+            goal.chars().take(60).collect::<String>()
         );
         return emb;
     }
-    llm::filtered_catalog(catalog, goal, context)
+    cap_native_tools(llm::filtered_catalog(catalog, goal, context), goal)
+}
+
+/// The ai plugin rejects more than this many native tools.
+const MAX_NATIVE_TOOLS: usize = 64;
+
+/// Without the embedding filter the keyword filter keeps every tool it does
+/// not recognise (106 live), the provider rejects them all, and the goal
+/// degrades to the text protocol with the full catalog: ~22k prompt tokens
+/// a step instead of ~5k, unnoticed for a month while the filter was broken.
+/// Keep the tools whose name or description shares the most words with the
+/// goal instead.
+fn cap_native_tools(mut catalog: Catalog, goal: &str) -> Catalog {
+    if catalog.tools.len() <= MAX_NATIVE_TOOLS {
+        return catalog;
+    }
+    let stems: Vec<String> = crate::smalltalk::normalize(goal)
+        .split(' ')
+        .filter(|w| w.chars().count() >= 4)
+        .map(|w| w.chars().take(5).collect())
+        .collect();
+    let score = |t: &crate::tools::ToolSpec| {
+        let hay = format!("{} {}", t.name, t.description).to_lowercase().replace('ё', "е");
+        stems.iter().filter(|s| hay.contains(s.as_str())).count()
+    };
+    let before = catalog.tools.len();
+    // stable: equal scores keep catalog order
+    catalog.tools.sort_by_key(|t| std::cmp::Reverse(score(t)));
+    catalog.tools.truncate(MAX_NATIVE_TOOLS);
+    eprintln!("[agent] embedding filter unavailable: capped {before} -> {MAX_NATIVE_TOOLS} tools by keyword");
+    catalog
 }
 
 pub enum Entry {
@@ -524,6 +554,20 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_catalog_is_capped_keeping_goal_matches() {
+        let mut tools: Vec<_> = (0..100).map(|i| spec(&format!("tool_{i}"), "unrelated")).collect();
+        tools.push(spec("phone.battery", "Battery level of the phone (батарея, заряд)"));
+        let catalog = Catalog { tools, allowed_actions: vec![], tools_file_set: false };
+        let capped = cap_native_tools(catalog, "Сколько заряда у батареи?");
+        assert_eq!(capped.tools.len(), MAX_NATIVE_TOOLS);
+        assert_eq!(capped.tools[0].name, "phone.battery");
+        assert_eq!(capped.tools[1].name, "tool_0", "ties keep catalog order");
+
+        let small = Catalog { tools: vec![spec("a", "x")], allowed_actions: vec![], tools_file_set: false };
+        assert_eq!(cap_native_tools(small, "anything").tools.len(), 1);
+    }
 
     #[test]
     fn truncates_on_char_boundaries() {
