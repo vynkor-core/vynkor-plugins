@@ -36,6 +36,11 @@ const DEFAULT_EMBED_TOP_K: u32 = 35;
 /// Cosine floor below which a nearest tool is dropped anyway.
 const EMBED_MIN_SCORE_ENV: &str = "AGENT_PLUGIN_EMBED_MIN_SCORE";
 const DEFAULT_EMBED_MIN_SCORE: f64 = 0.35;
+/// Optional JSON object `{"tool_name": "extra words"}`. The words are added to
+/// the text a tool is embedded from and never sent to the model, so a tool
+/// described in English can still be found by a Russian goal without paying
+/// tokens for the Russian phrases on every step. Re-read on every goal.
+const EMBED_HINTS_FILE_ENV: &str = "AGENT_PLUGIN_EMBED_HINTS_FILE";
 
 /// Below 3 the filter falls back to the keyword catalog anyway.
 fn parse_top_k(raw: Option<&str>) -> u32 {
@@ -71,6 +76,30 @@ fn embedding_filter_enabled() -> bool {
 /// keeps hits present in `catalog.tools`.
 const CATALOG_HASH_ID: &str = "__catalog_hash__";
 
+fn embed_hints() -> std::collections::BTreeMap<String, String> {
+    let Some(path) = std::env::var(EMBED_HINTS_FILE_ENV).ok().filter(|p| !p.trim().is_empty()) else {
+        return Default::default();
+    };
+    match std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|raw| serde_json::from_str(&raw).map_err(|e| e.to_string()))
+    {
+        Ok(map) => map,
+        Err(e) => {
+            eprintln!("[agent] embed hints file {path} unusable: {e}");
+            Default::default()
+        }
+    }
+}
+
+/// What a tool is embedded from: name, description and the operator's hint.
+fn embed_text(tool: &crate::tools::ToolSpec, hints: &std::collections::BTreeMap<String, String>) -> String {
+    match hints.get(&tool.name).filter(|h| !h.trim().is_empty()) {
+        Some(hint) => format!("{} — {} {}", tool.name, tool.description, hint.trim()),
+        None => format!("{} — {}", tool.name, tool.description),
+    }
+}
+
 /// Hash every tool's exact embedded text (name + description), order-
 /// independent, so renaming/adding/removing a tool OR editing an existing
 /// tool's description (without changing the count) both invalidate the
@@ -80,8 +109,8 @@ const CATALOG_HASH_ID: &str = "__catalog_hash__";
 fn catalog_content_hash(catalog: &Catalog) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let mut texts: Vec<String> =
-        catalog.tools.iter().map(|t| format!("{} — {}", t.name, t.description)).collect();
+    let hints = embed_hints();
+    let mut texts: Vec<String> = catalog.tools.iter().map(|t| embed_text(t, &hints)).collect();
     texts.sort_unstable();
     let mut hasher = DefaultHasher::new();
     texts.hash(&mut hasher);
@@ -99,11 +128,12 @@ async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), Stri
     if cached_hash.as_deref() == Some(expected_hash.as_str()) {
         return Ok(());
     }
+    let hints = embed_hints();
     let docs: Vec<Value> = catalog
         .tools
         .iter()
         .map(|t| {
-            let text = format!("{} — {}", t.name, t.description);
+            let text = embed_text(t, &hints);
             json!({"id": t.name, "text": text, "metadata": {"name": t.name}})
         })
         .collect();
@@ -159,6 +189,22 @@ async fn embedding_filtered_catalog(
         }
     };
     let min_score = parse_min_score(std::env::var(EMBED_MIN_SCORE_ENV).ok().as_deref());
+    // Scores are what top_k / min_score / the small-family padding get tuned
+    // against, so they are logged next to the names.
+    let scored: Vec<String> = results
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    let id = o.get("id").and_then(|i| i.as_str())?;
+                    let score = o.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                    Some(format!("{id}:{score:.2}"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    eprintln!("[agent] embedding scores: {}", scored.join(" "));
     let hits: Vec<String> = results
         .get("results")
         .and_then(|r| r.as_array())
@@ -718,6 +764,17 @@ mod tests {
             out.push(StepRec { n: i as u32 + 1, kind: k.to_string(), detail: json!({}) });
         }
         out
+    }
+
+    #[test]
+    fn embed_text_appends_the_hint_and_ignores_blank_ones() {
+        let t = spec("clipboard_read", "read the clipboard");
+        let mut hints = std::collections::BTreeMap::new();
+        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
+        hints.insert("clipboard_read".to_string(), "  буфер обмена  ".to_string());
+        assert!(embed_text(&t, &hints).ends_with(" буфер обмена"));
+        hints.insert("clipboard_read".to_string(), "   ".to_string());
+        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
     }
 
     #[test]
