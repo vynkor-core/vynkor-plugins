@@ -1738,6 +1738,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "opus"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33718946cc77d4032911d4efe03a66dbcbfbd2bb16c3da06aaeadcc637c32216"
+dependencies = [
+ "opusic-sys",
+]
+
+[[package]]
+name = "opusic-sys"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8534a2ed5b65350f90c63b3e160a8edd8b812fcf3182a88fd7fcee3b6fca673a"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2662,7 +2680,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "mp3lame-encoder",
- "opus",
+ "opus 0.3.1",
  "serde",
  "serde_json",
  "sherpa-onnx",
@@ -2999,7 +3017,7 @@ version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "mp3lame-encoder",
- "opus",
+ "opus 0.4.0",
  "serde",
  "serde_json",
  "sherpa-onnx",
