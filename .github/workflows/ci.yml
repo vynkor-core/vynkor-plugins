@@ -39,7 +39,7 @@ jobs:
       # vynkor-wire's build.rs runs protoc; the pipe-masked test loop hid
       # that no plugin had ever compiled in CI without it
       - name: Install system build dependencies
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler pkg-config libssl-dev cmake
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler pkg-config libssl-dev cmake libopus-dev
       - name: Run cargo test for each plugin
         # Without pipefail the `| tail` below owns the pipeline's exit status,
         # so a failing (or non-compiling) test suite was reported as passing.
