@@ -104,6 +104,29 @@ Returns the effective catalog the model sees:
 `{tools: [{name, description, parameters, requires_confirmation,
 timeout_ms}], allowed_actions, tools_file_set}`.
 
+### `routine_list` / `routine_delete` / `routine_mine` (opt-in)
+
+With `AGENT_PLUGIN_ROUTINES=on`, the agent learns repeated device commands
+and serves them without the LLM. Nightly (`AGENT_PLUGIN_ROUTINES_AT`,
+default 03:30 local) it scans recent goals for ones solved by exactly one
+call of an allowlisted tool (`AGENT_PLUGIN_ROUTINE_TOOLS`); a call repeated
+at least twice is shown to a **local** model (`AGENT_PLUGIN_ROUTINES_AGENT_ID`,
+else `AGENT_PLUGIN_MEMORY_AGENT_ID`; mining refuses without one), which
+judges whether the phrase stands on its own and writes paraphrases and 4–6
+in-character replies. A later goal whose normalized text matches a phrase
+dispatches the tool directly and answers with the next reply in rotation.
+
+A routine disables itself when its tool errors, its tool spec changes, or
+the next goal within 120 s is a correction ("не тот", "отмена", …). The set
+lives in the `database` key `routines`. Design:
+`docs/superpowers/specs/2026-10-26-learned-routines-design.md`.
+
+```json
+{}            // routine_list → {"total": n, "routines": [...]}
+{"id": "r…"}  // routine_delete → {"deleted": true}
+{}            // routine_mine → {"candidates": 1, "created": 1, "updated": 0, "dropped": 0, "skipped": 0}
+```
+
 ### `memory_forget` / `memory_clear` / `memory_list` (AGT-01, opt-in)
 
 With `AGENT_PLUGIN_MEMORY=on`, completed goals get an extraction pass (one

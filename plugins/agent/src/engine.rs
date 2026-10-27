@@ -13,6 +13,8 @@ use serde_json::{json, Value};
 
 use crate::llm::{self, Reply};
 use crate::memory;
+use crate::routines;
+use crate::smalltalk;
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
 use crate::tools::Catalog;
@@ -25,6 +27,27 @@ const OBSERVATION_MAX: usize = 8192;
 const TRANSCRIPT_MAX_CHARS: usize = 262_144;
 const TOOLS_COLLECTION: &str = "agent-tools";
 const EMBEDDING_FILTER_ENV: &str = "AGENT_PLUGIN_EMBEDDING_FILTER";
+/// How many nearest tools the embedding filter asks `vector-db` for. The
+/// historical 35 keeps most of a ~40-tool catalog, i.e. barely filters;
+/// operators with a large catalog want ~10-15.
+const EMBED_TOP_K_ENV: &str = "AGENT_PLUGIN_EMBED_TOP_K";
+const DEFAULT_EMBED_TOP_K: u32 = 35;
+/// Cosine floor below which a nearest tool is dropped anyway.
+const EMBED_MIN_SCORE_ENV: &str = "AGENT_PLUGIN_EMBED_MIN_SCORE";
+const DEFAULT_EMBED_MIN_SCORE: f64 = 0.35;
+
+/// Below 3 the filter falls back to the keyword catalog anyway.
+fn parse_top_k(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .map(|k| k.clamp(3, 200))
+        .unwrap_or(DEFAULT_EMBED_TOP_K)
+}
+
+fn parse_min_score(raw: Option<&str>) -> f64 {
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|f| (0.0..=1.0).contains(f))
+        .unwrap_or(DEFAULT_EMBED_MIN_SCORE)
+}
 
 #[allow(clippy::match_like_matches_macro)]
 fn embedding_filter_enabled() -> bool {
@@ -119,7 +142,11 @@ async fn embedding_filtered_catalog(
     let resp = rpc
         .call(
             "vec_query",
-            json!({"collection": TOOLS_COLLECTION, "text": goal, "top_k": 35}),
+            json!({
+                "collection": TOOLS_COLLECTION,
+                "text": goal,
+                "top_k": parse_top_k(std::env::var(EMBED_TOP_K_ENV).ok().as_deref()),
+            }),
             10000,
         )
         .await;
@@ -130,6 +157,7 @@ async fn embedding_filtered_catalog(
             return None;
         }
     };
+    let min_score = parse_min_score(std::env::var(EMBED_MIN_SCORE_ENV).ok().as_deref());
     let hits: Vec<String> = results
         .get("results")
         .and_then(|r| r.as_array())
@@ -137,7 +165,7 @@ async fn embedding_filtered_catalog(
             arr.iter()
                 .filter_map(|o| {
                     let score = o.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-                    if score < 0.35 {
+                    if score < min_score {
                         return None;
                     }
                     o.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())
@@ -211,7 +239,7 @@ pub(crate) async fn persist(db: &Db, doc: &mut GoalDoc) -> Result<(), String> {
     db.put(doc).await
 }
 
-fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
+pub(crate) fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
     let n = doc.steps.iter().map(|s| s.n).max().unwrap_or(0) + 1;
     doc.steps.push(StepRec { n, kind: kind.to_string(), detail });
 }
@@ -228,7 +256,7 @@ fn is_device_target(name: &str) -> bool {
 }
 
 /// Dispatch one tool call and append the observation turn.
-async fn dispatch_and_observe(
+pub(crate) async fn dispatch_and_observe(
     rpc: &Rpc,
     doc: &mut GoalDoc,
     spec_timeout_ms: u32,
@@ -259,7 +287,7 @@ async fn dispatch_and_observe(
     Ok(ok)
 }
 
-fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), String> {
+pub(crate) fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), String> {
     let count = doc.tool_counts.get(&spec.name).copied().unwrap_or(0);
     if spec.max_per_goal > 0 && count >= spec.max_per_goal {
         return Err(format!(
@@ -286,6 +314,36 @@ fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), Strin
 
 /// Run (or continue) one goal to a terminal or halting state. Storage
 /// failures bubble as `Err`; every other outcome is recorded on the doc.
+/// One persona-only chat call for a goal [`smalltalk::is_small_talk`]
+/// matched. `Ok(false)` — the call failed or came back empty — leaves the
+/// doc untouched for the normal loop to take over, so the fast path can
+/// only ever save tokens, never lose a goal.
+async fn run_small_talk(db: &Db, rpc: &Rpc, doc: &mut GoalDoc) -> Result<bool, String> {
+    let mut plan = doc.llm.clone();
+    if let Some(id) = smalltalk::agent_id() {
+        plan = llm::fallback_plan(&plan, &id);
+    }
+    let transcript = llm::small_talk_messages(&doc.goal, &doc.context);
+    let tag = llm::CallTag { purpose: "small_talk", goal_id: &doc.id };
+    let answer = match llm::chat_with_fallback(rpc, &plan, &transcript, &[], &tag).await {
+        Ok(o) => llm::strip_tool_markup(&o.content).trim().to_string(),
+        Err(e) => {
+            eprintln!("[agent] small-talk fast path failed ({e}); running the full loop");
+            return Ok(false);
+        }
+    };
+    if answer.is_empty() {
+        return Ok(false);
+    }
+    doc.transcript = transcript;
+    push_turn(doc, "assistant", answer.clone())?;
+    doc.status = STATUS_COMPLETED.to_string();
+    doc.final_answer = answer;
+    next_step(doc, "final", json!({"fast_path": "small_talk"}));
+    persist(db, doc).await?;
+    Ok(true)
+}
+
 pub async fn run(
     db: &Db,
     rpc: &Rpc,
@@ -293,6 +351,20 @@ pub async fn run(
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
+    if matches!(entry, Entry::Fresh)
+        && routines::enabled()
+        && routines::fire::try_fire(db, rpc, catalog, doc).await?
+    {
+        return Ok(());
+    }
+    if matches!(entry, Entry::Fresh)
+        && doc.transcript.is_empty()
+        && smalltalk::enabled()
+        && smalltalk::is_small_talk(&doc.goal)
+        && run_small_talk(db, rpc, doc).await?
+    {
+        return Ok(());
+    }
     let effective = effective_catalog(rpc, catalog, &doc.goal, &doc.context).await;
     let llm_catalog = &effective;
     let dispatch_catalog = catalog;
@@ -304,12 +376,18 @@ pub async fn run(
             // reach via `want_native_tools` below — the seed and the first
             // `tools` param are always in sync.
             let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+            // A routine that failed its dispatch left [goal, observation]:
+            // keep the observation so the model sees why the shortcut failed.
+            let carried: Vec<Turn> = std::mem::take(&mut doc.transcript).into_iter().skip(1).collect();
             doc.transcript =
                 llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog, native_seed);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;
                 }
+            }
+            for turn in carried {
+                push_turn(doc, &turn.role, turn.content)?;
             }
             persist(db, doc).await?;
         }
@@ -349,7 +427,8 @@ pub async fn run(
             Vec::new()
         };
 
-        let outcome = llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &tools).await;
+        let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+        let outcome = llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &tools, &tag).await;
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) if want_native => {
@@ -363,7 +442,8 @@ pub async fn run(
                 // retry, so the model isn't left with neither channel
                 // informed for the rest of the goal.
                 push_turn(doc, "user", llm::degraded_tool_catalog_block(llm_catalog))?;
-                match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[]).await {
+                let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+                match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[], &tag).await {
                     Ok(o) => o,
                     Err(e2) => {
                         doc.status = STATUS_ERROR.to_string();
@@ -394,7 +474,7 @@ pub async fn run(
                     // Detached: extraction is one extra LLM round-trip and
                     // must not sit between the finished goal and its caller.
                     let rpc = rpc.clone();
-                    let plan = doc.llm.clone();
+                    let plan = memory::extraction_plan(&doc.llm);
                     let goal_id = doc.id.clone();
                     let goal = doc.goal.clone();
                     tokio::spawn(async move {
@@ -493,6 +573,23 @@ mod tests {
         let before = cat(vec![spec("a", "old description")]);
         let after = cat(vec![spec("a", "new description")]);
         assert_ne!(catalog_content_hash(&before), catalog_content_hash(&after));
+    }
+
+    #[test]
+    fn embed_top_k_defaults_and_clamps() {
+        assert_eq!(parse_top_k(None), DEFAULT_EMBED_TOP_K);
+        assert_eq!(parse_top_k(Some("12")), 12);
+        assert_eq!(parse_top_k(Some(" 1 ")), 3);
+        assert_eq!(parse_top_k(Some("9999")), 200);
+        assert_eq!(parse_top_k(Some("junk")), DEFAULT_EMBED_TOP_K);
+    }
+
+    #[test]
+    fn embed_min_score_rejects_out_of_range() {
+        assert_eq!(parse_min_score(None), DEFAULT_EMBED_MIN_SCORE);
+        assert_eq!(parse_min_score(Some("0.45")), 0.45);
+        assert_eq!(parse_min_score(Some("1.5")), DEFAULT_EMBED_MIN_SCORE);
+        assert_eq!(parse_min_score(Some("-0.1")), DEFAULT_EMBED_MIN_SCORE);
     }
 
     #[test]

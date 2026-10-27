@@ -19,7 +19,8 @@ use crate::store::{LlmPlan, Turn};
 use crate::tools::Catalog;
 use crate::Rpc;
 
-/// Hard cap matching `ai`'s own `MAX_TIMEOUT_MS`.
+/// Default per-completion timeout, matching `ai`'s `DEFAULT_TIMEOUT_MS`;
+/// [`chat_timeout_ms`] may raise it up to `ai`'s 300 s cap.
 pub const CHAT_TIMEOUT_MS: u32 = 30_000;
 
 /// Operator env var: per-completion timeout override. Local CPU models
@@ -144,6 +145,15 @@ pub fn fallback_plan(plan: &LlmPlan, fallback_agent_id: &str) -> LlmPlan {
     p
 }
 
+/// Analytics labels `ai` stores next to the call's token usage (see its
+/// `usage_stats`): which goal the call served and why it was made.
+#[derive(Debug, Clone, Copy)]
+pub struct CallTag<'a> {
+    /// `goal_step` | `memory_extract` | `small_talk`
+    pub purpose: &'a str,
+    pub goal_id: &'a str,
+}
+
 /// One chat round-trip with a single operator-configured retry: when
 /// [`FALLBACK_AGENT_ENV`] names a different profile and the primary call
 /// fails, the same transcript is replayed through the fallback profile.
@@ -152,8 +162,9 @@ pub async fn chat_with_fallback(
     plan: &LlmPlan,
     transcript: &[Turn],
     tools: &[Value],
+    tag: &CallTag<'_>,
 ) -> Result<ChatOutcome, String> {
-    match chat(rpc, plan, transcript, tools).await {
+    match chat(rpc, plan, transcript, tools, tag).await {
         Ok(outcome) => Ok(outcome),
         Err(primary_err) => {
             let fb = std::env::var(FALLBACK_AGENT_ENV).ok().filter(|s| !s.is_empty());
@@ -163,7 +174,7 @@ pub async fn chat_with_fallback(
                         "[agent] primary LLM failed ({primary_err}); falling back to agent '{fb}'"
                     );
                     let retry_plan = fallback_plan(plan, &fb);
-                    chat(rpc, &retry_plan, transcript, tools).await.map_err(|e| {
+                    chat(rpc, &retry_plan, transcript, tools, tag).await.map_err(|e| {
                         format!("{primary_err}; fallback '{fb}' also failed: {e}")
                     })
                 }
@@ -460,6 +471,40 @@ fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
     }
 }
 
+/// Who the agent is and how it talks (identity, personality, channel,
+/// discipline, operator facts) — the head of every seed prompt, shared by
+/// the tool loop and the small-talk fast path so both sound the same.
+pub(crate) fn persona_block() -> String {
+    const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
+    const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
+    const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
+    // Was duplicated per `ai_plugin`'s `agent_id` profile system_prompt
+    // (default/ollama-cloud/mimo/flash/local all carried this verbatim or
+    // near-verbatim) before every profile was trimmed to model-specific
+    // format notes only. Universal across every group and every model, so
+    // it belongs here once, not five times upstream.
+    const DISCIPLINE: &str = "Честность: никогда не выдумывай факты, статусы или результаты; если не знаешь или инструмент недоступен — скажи прямо, не изображай, что проверил. Обязательства: если ты уже сообщил, что сейчас что-то сделаешь («секунду», «сейчас будет», «ищу») — это обязывает вызвать нужный инструмент в ЭТОМ ЖЕ цикле, прежде чем отвечать final; текстовое обещание без последующего вызова инструмента — невыполненная цель.";
+    // Appended to the persona rather than threaded through each prompt
+    // builder: the facts are context for every group, not a group of
+    // their own.
+    let facts_section = facts_block()
+        .map(|facts| {
+            format!(
+                "\n\nFacts (authoritative data about the user and environment — \
+                 prefer these over inference, and never contradict them):\n{facts}"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{}\n\n{}\n\n{}\n\n{}{}",
+        core_block("_identity", IDENTITY),
+        core_block("_personality", PERSONALITY),
+        core_block("_channel", CHANNEL),
+        core_block("_discipline", DISCIPLINE),
+        facts_section,
+    )
+}
+
 /// Build the instructions message that carries the tool catalog. `ai`
 /// resolves `system_prompt` only from an `agent_id` profile (never from
 /// callers), so the portable place for operator-free instructions is a
@@ -569,34 +614,7 @@ pub fn opening_messages_with_full(
     }
     let overview = catalog_groups_overview(full);
     let plugin_prompts = plugin_prompt_section(filtered);
-    const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
-    const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
-    const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
-    // Was duplicated per `ai_plugin`'s `agent_id` profile system_prompt
-    // (default/ollama-cloud/mimo/flash/local all carried this verbatim or
-    // near-verbatim) before every profile was trimmed to model-specific
-    // format notes only. Universal across every group and every model, so
-    // it belongs here once, not five times upstream.
-    const DISCIPLINE: &str = "Честность: никогда не выдумывай факты, статусы или результаты; если не знаешь или инструмент недоступен — скажи прямо, не изображай, что проверил. Обязательства: если ты уже сообщил, что сейчас что-то сделаешь («секунду», «сейчас будет», «ищу») — это обязывает вызвать нужный инструмент в ЭТОМ ЖЕ цикле, прежде чем отвечать final; текстовое обещание без последующего вызова инструмента — невыполненная цель.";
-    // Appended to the persona rather than threaded through both format!
-    // arms below: the facts are context for every group, not a group of
-    // their own.
-    let facts_section = facts_block()
-        .map(|facts| {
-            format!(
-                "\n\nFacts (authoritative data about the user and environment — \
-                 prefer these over inference, and never contradict them):\n{facts}"
-            )
-        })
-        .unwrap_or_default();
-    let identity_block = format!(
-        "{}\n\n{}\n\n{}\n\n{}{}",
-        core_block("_identity", IDENTITY),
-        core_block("_personality", PERSONALITY),
-        core_block("_channel", CHANNEL),
-        core_block("_discipline", DISCIPLINE),
-        facts_section,
-    );
+    let identity_block = persona_block();
     let tools_section = if native {
         format!("Detailed tools for this goal: {NATIVE_TOOLS_NOTE}")
     } else {
@@ -681,6 +699,26 @@ pub fn opening_messages_with_full(
     msgs
 }
 
+/// Seed for the small-talk fast path: the persona and the goal, no tool
+/// catalog, overview or reply protocol — a greeting needs none of them,
+/// and they are most of a normal seed's tokens.
+pub fn small_talk_messages(goal: &str, context: &str) -> Vec<Turn> {
+    let instructions = format!(
+        "{}\n\nThe user's message is small talk (a greeting, thanks or goodbye). \
+         Answer briefly in their language, in character, as plain text.",
+        persona_block(),
+    );
+    let goal_msg = if context.is_empty() {
+        goal.to_string()
+    } else {
+        format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
+    };
+    vec![
+        Turn { role: "user".into(), content: instructions },
+        Turn { role: "user".into(), content: goal_msg },
+    ]
+}
+
 /// The text catalog a native seed deliberately left out, for the engine to
 /// inject into the transcript the moment a provider rejects the native
 /// `tools` param — see `engine.rs`'s degrade branch. Carries both the full
@@ -713,6 +751,7 @@ pub async fn chat(
     plan: &LlmPlan,
     transcript: &[Turn],
     tools: &[Value],
+    tag: &CallTag<'_>,
 ) -> Result<ChatOutcome, String> {
     let messages: Vec<Value> = transcript
         .iter()
@@ -745,6 +784,8 @@ pub async fn chat(
     let timeout = chat_timeout_ms();
     params.insert("timeout_ms".into(), json!(timeout));
     params.insert("max_retries".into(), json!(ai_max_retries()));
+    params.insert("purpose".into(), json!(tag.purpose));
+    params.insert("goal_id".into(), json!(tag.goal_id));
 
     let v = rpc.call("chat_completion", Value::Object(params), timeout).await?;
     let content = v
@@ -800,7 +841,7 @@ pub enum Reply {
 }
 
 /// Extract the first balanced `{...}` substring, respecting string literals.
-fn first_balanced_object(text: &str) -> Option<&str> {
+pub(crate) fn first_balanced_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let bytes = text.as_bytes();
     let mut depth = 0usize;

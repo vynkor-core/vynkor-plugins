@@ -388,6 +388,102 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "routine_list",
+      "description": "List learned routines (device commands the agent serves without the LLM): phrases, tool call, replies, status, hit/fail counters. Read-only.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "routines": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "total",
+          "routines"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "routine_delete",
+      "description": "Delete one learned routine by id. It may be learned again from later goals.",
+      "risk": "medium",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "routine_mine",
+      "description": "Run routine mining now (normally nightly): scan recent goal history for repeated single-tool device commands and learn them on the local mining model. Returns counts.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "candidates": {
+            "type": "integer"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "updated": {
+            "type": "integer"
+          },
+          "dropped": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "candidates",
+          "created",
+          "updated",
+          "dropped",
+          "skipped"
+        ],
+        "additionalProperties": false
+      }
     }
   ],
   "config_schema": {
@@ -529,6 +625,46 @@
         "type": "integer",
         "minimum": 1,
         "description": "Max goal docs kept; the oldest by updated_at_ms beyond it are pruned after each new goal. Unset = unlimited."
+      },
+      "AGENT_PLUGIN_ROUTINES": {
+        "type": "string",
+        "description": "on = learn repeated device commands nightly and serve them without the LLM. Default off."
+      },
+      "AGENT_PLUGIN_ROUTINE_TOOLS": {
+        "type": "string",
+        "description": "Comma-separated exact tool names routines may learn. Default: mqtt_device_command,pixel-6pro.flashlight,pixel-6pro.dnd,pixel-6pro.ringer,pixel-6pro.brightness."
+      },
+      "AGENT_PLUGIN_ROUTINES_AGENT_ID": {
+        "type": "string",
+        "description": "ai profile (local model) mining runs on; falls back to AGENT_PLUGIN_MEMORY_AGENT_ID. Neither set = mining refuses."
+      },
+      "AGENT_PLUGIN_ROUTINES_AT": {
+        "type": "string",
+        "description": "Local HH:MM for nightly mining. Default 03:30."
+      },
+      "AGENT_PLUGIN_ROUTINES_LOOKBACK_DAYS": {
+        "type": "string",
+        "description": "Days of goal history mining scans. Default 30."
+      },
+      "AGENT_PLUGIN_SMALL_TALK": {
+        "type": "string",
+        "description": "on = greetings/thanks/goodbyes skip the tool loop (one persona-only call). Default off."
+      },
+      "AGENT_PLUGIN_SMALL_TALK_AGENT_ID": {
+        "type": "string",
+        "description": "Optional ai profile for small-talk replies; default the goal's own."
+      },
+      "AGENT_PLUGIN_MEMORY_AGENT_ID": {
+        "type": "string",
+        "description": "Optional ai profile for memory fact extraction (a small local model is enough); default the goal's own."
+      },
+      "AGENT_PLUGIN_EMBED_TOP_K": {
+        "type": "string",
+        "description": "Nearest tools the embedding filter keeps (3-200). Default 35."
+      },
+      "AGENT_PLUGIN_EMBED_MIN_SCORE": {
+        "type": "string",
+        "description": "Cosine floor for the embedding filter (0-1). Default 0.35."
       }
     },
     "additionalProperties": true

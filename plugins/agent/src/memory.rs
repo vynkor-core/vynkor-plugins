@@ -21,6 +21,10 @@ use crate::Rpc;
 
 pub const MEMORY_ENV: &str = "AGENT_PLUGIN_MEMORY";
 pub const COLLECTION_ENV: &str = "AGENT_PLUGIN_MEMORY_COLLECTION";
+/// Optional `ai` agent profile for fact extraction. The pass is a short,
+/// fixed-format prompt, so a small local model handles it; unset keeps the
+/// goal's own (often a large cloud) model.
+pub const MEMORY_AGENT_ENV: &str = "AGENT_PLUGIN_MEMORY_AGENT_ID";
 pub const DEFAULT_COLLECTION: &str = "agent-memory";
 /// Index of fact ids in our own database namespace (drives clear/forget/list).
 pub const INDEX_KEY: &str = "memory:index";
@@ -34,6 +38,15 @@ pub fn enabled() -> bool {
     std::env::var(MEMORY_ENV)
         .map(|s| s.trim().eq_ignore_ascii_case("on"))
         .unwrap_or(false)
+}
+
+/// The plan fact extraction runs on: the goal's own, or the
+/// [`MEMORY_AGENT_ENV`] profile when the operator named one.
+pub fn extraction_plan(goal_plan: &LlmPlan) -> LlmPlan {
+    match std::env::var(MEMORY_AGENT_ENV).ok().map(|s| s.trim().to_string()) {
+        Some(id) if !id.is_empty() => llm::fallback_plan(goal_plan, &id),
+        _ => goal_plan.clone(),
+    }
 }
 
 fn collection() -> String {
@@ -179,7 +192,8 @@ pub async fn remember(rpc: &Rpc, plan: &LlmPlan, goal_id: &str, goal: &str, fina
         role: "user".to_string(),
         content: extraction_prompt,
     }];
-    let outcome = match llm::chat_with_fallback(rpc, plan, &transcript, &[]).await {
+    let tag = llm::CallTag { purpose: "memory_extract", goal_id };
+    let outcome = match llm::chat_with_fallback(rpc, plan, &transcript, &[], &tag).await {
         Ok(o) => o.content,
         Err(e) => {
             eprintln!("[agent] memory extraction failed for goal {goal_id}: {e}");

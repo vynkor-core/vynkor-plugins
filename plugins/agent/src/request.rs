@@ -40,6 +40,12 @@ pub enum AgentRequest {
     MemoryClear,
     /// `memory_list {}` — index contents, newest first.
     MemoryList,
+    /// `routine_list {}` — every learned routine.
+    RoutineList,
+    /// `routine_delete {"id": "…"}`
+    RoutineDelete { id: String },
+    /// `routine_mine {}` — run mining now.
+    RoutineMine,
 }
 
 fn want_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
@@ -184,6 +190,13 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
         }
         "memory_clear" => Ok(AgentRequest::MemoryClear),
         "memory_list" => Ok(AgentRequest::MemoryList),
+        "routine_list" => Ok(AgentRequest::RoutineList),
+        "routine_delete" => {
+            let id = want_string(&body, "id")?;
+            check_size("id", &id, 200)?;
+            Ok(AgentRequest::RoutineDelete { id })
+        }
+        "routine_mine" => Ok(AgentRequest::RoutineMine),
         other => Err(format!("ERR_AGENT_BAD_PARAMS: unknown action: {other}")),
     }
 }
@@ -291,5 +304,16 @@ mod tests {
     fn unknown_action_is_named_error() {
         let err = parse("frobnicate", json!({})).unwrap_err();
         assert!(err.contains("unknown action"), "{err}");
+    }
+
+    #[test]
+    fn routine_actions_parse() {
+        assert_eq!(parse("routine_list", json!({})).unwrap(), AgentRequest::RoutineList);
+        assert_eq!(parse("routine_mine", json!({})).unwrap(), AgentRequest::RoutineMine);
+        assert_eq!(
+            parse("routine_delete", json!({"id": "r1"})).unwrap(),
+            AgentRequest::RoutineDelete { id: "r1".into() }
+        );
+        assert!(parse("routine_delete", json!({})).is_err());
     }
 }
