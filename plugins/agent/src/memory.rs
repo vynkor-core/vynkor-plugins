@@ -56,6 +56,22 @@ fn collection() -> String {
         .unwrap_or_else(|| DEFAULT_COLLECTION.to_string())
 }
 
+/// Stems of words that describe a passing state, not a durable fact. The
+/// local extractor ignores "no one-off task state" in its prompt: a goal
+/// run while the ESP was offline stored "ESP сейчас оффлайн", and the next
+/// goal answered "unavailable" from memory without calling the tool.
+const TRANSIENT_STEMS: &[&str] = &[
+    "оффлайн", "офлайн", "недоступ", "не доступ", "не ответ", "не отвеча", "тайм-аут",
+    "таймаут", "не удалось", "не смог", "не может", "невозможно", "неизвест", "сейчас", "временно",
+    "offline", "timeout", "timed out", "unavailable", "not available", "failed",
+];
+
+/// A fact about how things are right now goes stale and then misleads.
+pub fn is_transient(fact: &str) -> bool {
+    let f = fact.to_lowercase().replace('ё', "е");
+    TRANSIENT_STEMS.iter().any(|s| f.contains(s))
+}
+
 /// Extract the JSON array of fact strings from a raw model reply — lenient:
 /// fenced blocks and surrounding prose tolerated, non-string entries dropped,
 /// per-fact size caps applied.
@@ -75,7 +91,7 @@ pub fn parse_facts(content: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty())
+        .filter(|f| !f.is_empty() && !is_transient(f))
         .map(|f| f.chars().take(MAX_FACT_CHARS).collect::<String>())
         .take(MAX_FACTS_PER_GOAL)
         .collect()
@@ -318,6 +334,24 @@ pub async fn list(rpc: &Rpc) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the live extractor stored while the ESP and the phone were offline.
+    #[test]
+    fn transient_state_never_becomes_a_fact() {
+        for f in [
+            "ESP offline",
+            "ESP сейчас оффлайн.",
+            "Батарея телефона не доступна для получения процентов зарядки.",
+            "Бехзод не смог узнать заряд батареи на телефоне, так как текущий инструмент недоступен.",
+            "ESP не ответила, поймал тайм-аут",
+        ] {
+            assert!(is_transient(f), "{f}");
+        }
+        for f in ["Бехзод использует фонарик на телефоне", "Светодиод D1 подключён к ESP-12E"] {
+            assert!(!is_transient(f), "{f}");
+        }
+        assert_eq!(parse_facts(r#"["ESP сейчас оффлайн", "У Бехзода Pixel 6 Pro"]"#), vec!["У Бехзода Pixel 6 Pro"]);
+    }
     use crate::ProxyMsg;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

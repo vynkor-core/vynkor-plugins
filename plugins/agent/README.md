@@ -112,8 +112,10 @@ default 03:30 local) it scans recent goals for ones solved by exactly one
 call of an allowlisted tool (`AGENT_PLUGIN_ROUTINE_TOOLS`); a call repeated
 at least twice is shown to a **local** model (`AGENT_PLUGIN_ROUTINES_AGENT_ID`,
 else `AGENT_PLUGIN_MEMORY_AGENT_ID`; mining refuses without one), which
-judges whether the phrase stands on its own and writes paraphrases and 4–6
-in-character replies. A later goal whose normalized text matches a phrase
+judges whether the phrase stands on its own and writes paraphrases and
+in-character replies. `routines/guard.rs` then vetoes anything that would act
+or answer wrongly (opposite on/off, another device, read-only calls,
+failure wording, mixed scripts), topping replies up from a fixed set. A later goal whose normalized text matches a phrase
 dispatches the tool directly and answers with the next reply in rotation.
 
 A routine disables itself when its tool errors, its tool spec changes, or
@@ -126,6 +128,14 @@ lives in the `database` key `routines`. Design:
 {"id": "r…"}  // routine_delete → {"deleted": true}
 {}            // routine_mine → {"candidates": 1, "created": 1, "updated": 0, "dropped": 0, "skipped": 0}
 ```
+
+### Token watchdog
+
+Every goal step's prompt size (ai's `usage.input_tokens`) feeds a rolling
+average over the last 8 steps. Past `AGENT_PLUGIN_TOKEN_ALERT` (default
+12000; normal steps are ~4–5k) the agent logs `TOKEN ALERT` and sends a
+`notify_send`, at most once per 6 h. `off` disables it. It exists because a
+broken embedding filter once ran every step at ~22k unnoticed for a month.
 
 ### `memory_forget` / `memory_clear` / `memory_list` (AGT-01, opt-in)
 

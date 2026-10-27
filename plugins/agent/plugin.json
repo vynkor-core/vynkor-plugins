@@ -638,6 +638,10 @@
         "type": "string",
         "description": "ai profile (local model) mining runs on; falls back to AGENT_PLUGIN_MEMORY_AGENT_ID. Neither set = mining refuses."
       },
+      "AGENT_PLUGIN_TOKEN_ALERT": {
+        "type": "string",
+        "description": "Average prompt tokens per goal step (last 8 steps) above which the agent logs TOKEN ALERT and sends notify_send, at most once per 6 h. Default 12000; off disables."
+      },
       "AGENT_PLUGIN_ROUTINES_AT": {
         "type": "string",
         "description": "Local HH:MM for nightly mining. Default 03:30."

@@ -58,3 +58,4 @@ AGENT_PLUGIN_ROUTINES=off                     # on | off
 # AGENT_PLUGIN_ROUTINES_AGENT_ID=memory       # local ai profile; default MEMORY_AGENT_ID; unset = no mining
 # AGENT_PLUGIN_ROUTINES_AT=03:30              # local time of the nightly pass
 # AGENT_PLUGIN_ROUTINES_LOOKBACK_DAYS=30
+# AGENT_PLUGIN_TOKEN_ALERT=12000               # avg prompt tokens/step over 8 steps that raises an alert; off disables

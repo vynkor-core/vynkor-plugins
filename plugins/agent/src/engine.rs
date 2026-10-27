@@ -18,6 +18,7 @@ use crate::smalltalk;
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
 use crate::tools::Catalog;
+use crate::watchdog;
 use crate::Rpc;
 
 /// Cap on a single tool result fed back into the transcript (chars).
@@ -204,6 +205,48 @@ async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &s
         return emb;
     }
     cap_native_tools(llm::filtered_catalog(catalog, goal, context), goal)
+}
+
+/// Logged loudly and sent as a desktop notification, detached: an alert
+/// must never hold up or fail the goal that tripped it.
+fn raise_token_alert(rpc: &Rpc, alert: String) {
+    eprintln!("[agent] TOKEN ALERT: {alert}");
+    let rpc = rpc.clone();
+    tokio::spawn(async move {
+        let params = json!({"message": alert, "app_name": "vynkor-agent"});
+        if let Err(e) = rpc.call("notify_send", params, 5_000).await {
+            eprintln!("[agent] token alert notify_send failed: {e}");
+        }
+    });
+}
+
+/// Real tool names sharing a name part with a guessed one, best first: the
+/// model invents `system_info` for `sys_info` when the filter missed it.
+/// Parts match when one is a prefix of the other ("sys" ~ "system").
+fn suggest_tools<'a>(catalog: &'a Catalog, guess: &str) -> Vec<&'a str> {
+    fn parts(s: &str) -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|p| p.len() >= 3)
+            .map(str::to_string)
+            .collect()
+    }
+    let wanted = parts(guess);
+    let mut scored: Vec<(usize, &str)> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            let have = parts(&t.name);
+            let hits = wanted
+                .iter()
+                .filter(|w| have.iter().any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str())))
+                .count();
+            (hits, t.name.as_str())
+        })
+        .filter(|(hits, _)| *hits > 0)
+        .collect();
+    scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+    scored.into_iter().take(8).map(|(_, n)| n).collect()
 }
 
 /// The ai plugin rejects more than this many native tools.
@@ -493,6 +536,9 @@ pub async fn run(
             }
         };
         push_turn(doc, "assistant", outcome.content.clone())?;
+        if let Some(alert) = watchdog::observe(outcome.input_tokens, store::now_ms()) {
+            raise_token_alert(rpc, alert);
+        }
 
         match llm::outcome_to_reply(&outcome) {
             Reply::Final(answer) => {
@@ -500,7 +546,10 @@ pub async fn run(
                 doc.final_answer = answer.clone();
                 next_step(doc, "final", json!({}));
                 persist(db, doc).await?;
-                if memory::enabled() {
+                // a goal that hit a tool error ends in a failure report, not
+                // knowledge — extracting from it stored "ESP offline" as a fact
+                let failed_tool = doc.steps.iter().any(|s| s.kind == "tool_error");
+                if memory::enabled() && !failed_tool {
                     // Detached: extraction is one extra LLM round-trip and
                     // must not sit between the finished goal and its caller.
                     let rpc = rpc.clone();
@@ -515,9 +564,16 @@ pub async fn run(
             }
             Reply::ToolCall { name, params } => {
                 let Some(spec) = catalog.get(&name) else {
-                    let msg = format!(
-                        "unknown tool \"{name}\": not in the operator's tool catalog"
-                    );
+                    let near = suggest_tools(catalog, &name);
+                    let msg = if near.is_empty() {
+                        format!("unknown tool \"{name}\": not in the operator's tool catalog")
+                    } else {
+                        format!(
+                            "unknown tool \"{name}\": not in the operator's tool catalog. \
+                             Real tools with similar names: {}",
+                            near.join(", ")
+                        )
+                    };
                     push_turn(
                         doc,
                         "user",
@@ -554,6 +610,20 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unknown_tool_gets_real_names_that_look_alike() {
+        let names = ["sys_info", "sys_battery", "tg_send_message", "fs_read", "uptime_check"];
+        let catalog = Catalog {
+            tools: names.iter().map(|n| spec(n, "d")).collect(),
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
+        let got = suggest_tools(&catalog, "system_info");
+        assert_eq!(got[0], "sys_info", "two matching parts rank first: {got:?}");
+        assert!(got.contains(&"sys_battery") && !got.contains(&"tg_send_message"), "{got:?}");
+        assert!(suggest_tools(&catalog, "zz").is_empty());
+    }
 
     #[test]
     fn oversized_catalog_is_capped_keeping_goal_matches() {

@@ -28,6 +28,7 @@ pub mod memory;
 pub mod request;
 pub mod routines;
 pub mod smalltalk;
+pub mod watchdog;
 pub mod store;
 pub mod tools;
 

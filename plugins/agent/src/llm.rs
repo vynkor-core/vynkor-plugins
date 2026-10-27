@@ -102,6 +102,8 @@ pub fn want_native_tools(catalog: &Catalog, disabled: bool) -> bool {
 pub struct ChatOutcome {
     pub content: String,
     pub tool_calls: Vec<NativeToolCall>,
+    /// Prompt tokens ai reported; 0 when the provider gave none.
+    pub input_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,6 +380,11 @@ fn default_plugin_prompt(group: &str) -> Option<String> {
     }
 }
 
+/// Names every tool, also in native mode: dispatch resolves names against the
+/// full catalog, so this list is how a tool the embedding filter missed
+/// stays reachable. A count-only overview (tried 2026-10-27, ~1.2k tokens a
+/// step saved) made the model invent names from group labels instead
+/// ("system_info", "system.df" for sys_info).
 fn catalog_groups_overview(catalog: &Catalog) -> String {
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -414,8 +421,7 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
         // group uncallable in practice, even when explicitly named in the
         // goal text (e.g. tg_get_unread, alphabetically past telegram's
         // first 6, silently invisible to text-protocol models).
-        let all = names.join(", ");
-        lines.push(format!("- {} ({} tools): {}", group, count, all));
+        lines.push(format!("- {} ({} tools): {}", group, count, names.join(", ")));
     }
     lines.join("\n")
 }
@@ -812,7 +818,8 @@ pub async fn chat(
                 .collect()
         })
         .unwrap_or_default();
-    Ok(ChatOutcome { content, tool_calls })
+    let input_tokens = v.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    Ok(ChatOutcome { content, tool_calls, input_tokens })
 }
 
 /// Interpret a chat outcome: a native tool invocation wins (structured
@@ -1341,6 +1348,7 @@ mod tests {
                 name: "launch".into(),
                 arguments_json: r#"{"app_id": "firefox"}"#.into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1357,6 +1365,7 @@ mod tests {
                 name: "launch".into(),
                 arguments_json: "not json".into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1373,6 +1382,7 @@ mod tests {
                 name: String::new(),
                 arguments_json: "{}".into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1385,6 +1395,7 @@ mod tests {
         let outcome = ChatOutcome {
             content: "All done.".into(),
             tool_calls: Vec::new(),
+            input_tokens: 0,
         };
         assert_eq!(outcome_to_reply(&outcome), Reply::Final("All done.".into()));
 
@@ -1392,6 +1403,7 @@ mod tests {
         let text_proto = ChatOutcome {
             content: "{\"tool\": \"b\", \"params\": {}}".into(),
             tool_calls: Vec::new(),
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&text_proto),
