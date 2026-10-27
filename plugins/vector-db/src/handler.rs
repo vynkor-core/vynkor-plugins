@@ -478,6 +478,18 @@ impl Handler {
         pool: &sqlx::SqlitePool,
         collection: &str,
     ) -> Result<Option<usize>, String> {
+        // An empty collection has no dimension worth keeping: drop its row so
+        // the next write sets it. Otherwise a collection created under one
+        // embedding model (384-d all-minilm) rejects every write after the
+        // model changes (768-d nomic) — forever, since nothing ever lands.
+        sqlx::query(
+            "delete from collections where name = ?1 \
+             and not exists (select 1 from vectors where collection = ?1)",
+        )
+        .bind(collection)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
         let row: Option<(i64,)> =
             sqlx::query_as("select dim from collections where name = ?1")
                 .bind(collection)
@@ -584,6 +596,25 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("dimension mismatch"), "err was: {err}");
+    }
+
+    #[tokio::test]
+    async fn emptied_collection_takes_the_next_dimension() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = make_handler(dir.path());
+        let caller = "agent";
+        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"1","vector":[1,0,0]}"#)
+            .await
+            .unwrap();
+        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#).await.unwrap();
+        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[1,0,0,0,0]}"#)
+            .await
+            .expect("an empty collection must not pin its old dimension");
+        let err = h
+            .handle(caller, "vec_upsert", br#"{"collection":"c","id":"3","vector":[1,0,0]}"#)
+            .await
+            .unwrap_err();
+        assert!(err.contains("dimension mismatch"), "a non-empty one still does: {err}");
     }
 
     #[tokio::test]
