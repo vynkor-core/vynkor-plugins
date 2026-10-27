@@ -93,7 +93,7 @@ fn encrypt(secrets: &HashMap<String, String>, key: &[u8; 32]) -> VaultResult<Vec
         serde_json::to_vec(secrets).map_err(|e| format!("failed to serialize vault: {e}"))?;
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    getrandom::getrandom(&mut nonce_bytes).map_err(|e| format!("failed to generate nonce: {e}"))?;
+    getrandom::fill(&mut nonce_bytes).map_err(|e| format!("failed to generate nonce: {e}"))?;
 
     let cipher = ChaCha20Poly1305::new(Key::from_slice(key));
     let ciphertext = cipher
