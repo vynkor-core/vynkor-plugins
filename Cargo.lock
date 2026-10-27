@@ -27,7 +27,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -51,8 +51,8 @@ dependencies = [
  "tokio",
  "uuid",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -236,8 +236,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -344,8 +344,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -362,7 +362,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
  "zbus",
 ]
 
@@ -479,8 +479,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -509,8 +509,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -602,8 +602,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -737,8 +737,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -848,7 +848,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -1010,8 +1010,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1103,8 +1103,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
  "zbus",
  "zvariant",
 ]
@@ -1357,7 +1357,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -1411,8 +1411,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
  "walkdir",
 ]
 
@@ -1465,7 +1465,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
  "zbus",
  "zvariant",
 ]
@@ -1493,8 +1493,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1506,8 +1506,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1621,8 +1621,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1635,8 +1635,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -1840,7 +1840,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -2181,8 +2181,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2343,8 +2343,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2362,8 +2362,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2378,7 +2378,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
  "zeroize",
 ]
 
@@ -2563,7 +2563,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -2575,8 +2575,8 @@ dependencies = [
  "serde_json",
  "sherpa-onnx",
  "tokio",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.3",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2588,8 +2588,8 @@ dependencies = [
  "speech-synth",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2603,8 +2603,8 @@ dependencies = [
  "serde_json",
  "sherpa-onnx",
  "tokio",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.3",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2647,8 +2647,8 @@ dependencies = [
  "sherpa-onnx",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2687,8 +2687,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2727,7 +2727,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
  "zbus",
 ]
 
@@ -2750,8 +2750,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -2941,8 +2941,8 @@ dependencies = [
  "sherpa-onnx",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -3019,8 +3019,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
@@ -3092,7 +3092,7 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tracing",
- "vynkor-sdk",
+ "vynkor-sdk 0.0.5",
 ]
 
 [[package]]
@@ -3107,7 +3107,22 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "vynkor-wire",
+ "vynkor-wire 0.0.2",
+]
+
+[[package]]
+name = "vynkor-sdk"
+version = "0.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adaff7ac7f21d945d8421a54ab7f31005c8aa1e835a465071989a6aa3e2caffa"
+dependencies = [
+ "crc32fast",
+ "futures-util",
+ "prost",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "vynkor-wire 0.0.4",
 ]
 
 [[package]]
@@ -3115,6 +3130,23 @@ name = "vynkor-wire"
 version = "0.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2e9f4eb057c7b8710ef73eb259584f741ff6f99dfb8b8f4b2eb1b589c36fe025"
+dependencies = [
+ "crc32fast",
+ "hkdf",
+ "hmac",
+ "nix 0.31.3",
+ "prost",
+ "prost-build",
+ "sha2",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
+name = "vynkor-wire"
+version = "0.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cc9b45810e5366bc7c6b5b10d98800a1c58cba4a960d65c208ed8a21819f41b"
 dependencies = [
  "crc32fast",
  "hkdf",
@@ -3197,8 +3229,8 @@ dependencies = [
  "serde_json",
  "tokio",
  "vynkor-plugin-manifest",
- "vynkor-sdk",
- "vynkor-wire",
+ "vynkor-sdk 0.0.5",
+ "vynkor-wire 0.0.2",
 ]
 
 [[package]]
