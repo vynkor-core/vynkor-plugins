@@ -157,9 +157,19 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
     let failure = words.iter().any(|w| {
         mixed_script(w) || FAILURE_STEMS.iter().any(|s| if s.len() <= 3 { w == s } else { w.starts_with(s) })
     });
-    let on_topic = words.len() <= 2
-        || seen.iter().flat_map(|t| objects(t)).any(|o| words.iter().any(|w| same_word(w, o)));
-    !failure && on_topic && call.is_none_or(|p| text_polarity(&text) == Some(p))
+    let named = |t: &String| objects(t).into_iter().any(|o| words.iter().any(|w| same_word(w, o)));
+    let on_topic = words.len() <= 2 || seen.iter().any(named);
+    // The user's words it uses must come from one phrase: across a misheard
+    // "включи диот светозерк" and "включи светодиод" the model wrote
+    // "Включил светодиод светозерк."
+    let used: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|w| seen.iter().flat_map(|t| objects(t)).any(|o| same_word(w, o)))
+        .collect();
+    let one_phrase = used.is_empty()
+        || seen.iter().any(|t| used.iter().all(|w| objects(t).iter().any(|o| same_word(w, o))));
+    !failure && on_topic && one_phrase && call.is_none_or(|p| text_polarity(&text) == Some(p))
 }
 
 /// Correct by construction; tops up what the model's replies left.
@@ -275,6 +285,9 @@ mod tests {
         assert!(!phrase_ok("выключи 光照灯关", Some(Off)));
         assert!(!reply_ok("Светодиод 关 выключен", Some(Off), &seen));
         assert!(reply_ok("Выключил.", Some(Off), &[]));
+        let misheard = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string()];
+        assert!(!reply_ok("Включил светодиод светозерк.", Some(On), &misheard), "words of two phrases");
+        assert!(reply_ok("Включил светодиод.", Some(On), &misheard));
         assert!(reply_ok("Готово.", None, &[]));
         assert!(!reply_ok("Ошибка устройства", None, &[]));
         assert!(reply_ok("Нормально, яркость 40", None, &["яркость 40".to_string()]), "\"нормально\" is not \"не\"");

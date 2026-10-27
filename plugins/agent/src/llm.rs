@@ -642,7 +642,7 @@ pub fn opening_messages_with_full(
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - Call a tool only by an exact name listed above, in the detailed list or in the groups overview (dispatch accepts both); never invent a name.\n\
              - After each call you receive a message starting with \
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
@@ -661,7 +661,7 @@ pub fn opening_messages_with_full(
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - Call a tool only by an exact name listed above, in the detailed list or in the groups overview (dispatch accepts both); never invent a name.\n\
              - After each call you receive a message starting with \
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \

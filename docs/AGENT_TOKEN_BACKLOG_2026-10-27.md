@@ -6,23 +6,28 @@ now 2 steps × ~6k prompt tokens (was 2 × ~22k).
 
 Done in this round: unknown-tool circuit breaker (2 misses → turn without
 tools, a 3rd → canned answer), no memory extraction from goals that hit an
-unknown tool, `[group]` labels in the tool overview.
+unknown tool, `[group]` labels in the tool overview, a steps-per-goal alert,
+the prompt rule that called overview tools invalid, the routine reply guard
+mixing words of two phrases, and the metrics store (chunked reads; the trim
+had been failing silently since ~14k samples and the store reached 46k).
 
 ## Open
 
-### 1. metrics plugin: every action fails past ~4 MB of samples (bug)
+### 1. Plugins that lose the kernel connection exit 0 and stay dead (bug)
 
-`metrics_query` / `metrics_latest` / `metrics_stats` all call `db.list()`,
-which loads every sample through one `db_batch_get`. With the default
-`METRICS_PLUGIN_MAX_SAMPLES=10000` the batch passes the database plugin's
-`max_response_bytes` (4 MiB):
+`vynkor-sdk` 0.0.3 `run_concurrent_loop` breaks on any `recv()` error
+(`Err(_) => break, // disconnect / EOF`) and returns `Ok(())`. The plugin
+exits with code 0, and the supervisor treats that as a deliberate stop
+(`success=true will_restart=false`). Live at 09:39:01 the database plugin
+dropped its connection this way; every `db_*` call then failed with
+"action not found" (metrics, routines, goals) until a manual
+`vyn plugin start database`. Why the connection closed is unknown (no
+warning in the kernel journal).
 
-    metrics_latest failed: db_batch_get failed: batch_get result exceeds max_response_bytes (> 4194304)
-
-Seen live on "Какая температура видеокарты?". Fix options: fetch keys in
-chunks; keep the newest sample under its own key for `metrics_latest`; or at
-least a default `max_samples` that fits (≈ 5000). Workaround now: set
-`METRICS_PLUGIN_MAX_SAMPLES` lower in `plugins.d/metrics.yaml` and restart.
+Fix belongs in the SDK (return an error on an unexpected disconnect, `Ok`
+only on `PluginShutdown`) or in the supervisor (restart a clean exit that
+was not asked for). Either way it is an SDK release or a kernel change, not
+a plugin patch.
 
 ### 2. The second step costs as much as the first
 
@@ -52,13 +57,6 @@ learned routines. Known failure modes (follow-ups like "а теперь выкл
 negation "не включай" embedding next to "включи") are what the routine guard
 already rejects.
 
-### 5. Watchdog: watch goals, not only prompt size
-
-The watchdog averages prompt tokens per step. The guessing loop this round
-fixed had normal-sized steps (~4.5k) but 7 of them, so it never fired. Add
-an alert on steps per goal (e.g. > 4 for several goals) or on the share of
-`unknown_tool` steps.
-
 ### 6. `daemon_ask` inside goals
 
 "Сколько оперативной памяти занято?" went through `daemon_ask` (a nested
@@ -68,7 +66,7 @@ changes; look at it together with them.
 ### 7. Smaller items
 
 - Bake-off of qwen3:8b / gemma2:9b for routine mining (deferred).
-- Routine phrase "включи диот светозерк" (STT garbage) is still stored.
-- The reply rule "Only tool names from the detailed list above are valid"
-  contradicts the overview being callable; harmless now, revisit if models
-  start refusing overview tools.
+- Routine trigger "включи диот светозерк" (STT garbage) stays as a phrase:
+  harmless, STT may mishear the same way again.
+- `metrics_query` still loads every sample (chunked) to filter by time; ids
+  are in write order, so it could walk back from the newest instead.

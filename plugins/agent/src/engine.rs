@@ -556,6 +556,10 @@ pub async fn run(
 
         match llm::outcome_to_reply(&outcome) {
             Reply::Final(answer) => {
+                // LLM calls = steps so far + this final turn
+                if let Some(alert) = watchdog::observe_goal(doc.steps.len() as u64 + 1, store::now_ms()) {
+                    raise_token_alert(rpc, alert);
+                }
                 doc.status = STATUS_COMPLETED.to_string();
                 doc.final_answer = answer.clone();
                 next_step(doc, "final", json!({}));

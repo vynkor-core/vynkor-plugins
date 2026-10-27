@@ -1,9 +1,11 @@
-//! Token watchdog: a rolling average of prompt tokens per goal step, and an
-//! alert when it climbs past a threshold.
+//! Token watchdog: rolling averages of prompt tokens per goal step and of
+//! LLM steps per goal, and an alert when either climbs past a threshold.
 //!
 //! A broken embedding filter once pushed every step from ~5k to ~22k prompt
 //! tokens and nobody noticed for a month. Normal steps sit around 4-5k; a
-//! regression of that kind shows up within a few goals.
+//! regression of that kind shows up within a few goals. A model guessing
+//! tool names keeps its steps normal-sized but takes 5-7 of them where 2-3
+//! do, so step counts are watched too.
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -13,6 +15,8 @@ pub const DEFAULT_THRESHOLD: u64 = 12_000;
 /// Steps averaged; a single huge step (a long tool result) is not a trend.
 pub const WINDOW: usize = 8;
 pub const COOLDOWN_MS: i64 = 6 * 3_600_000;
+/// Average LLM steps per goal over the last `WINDOW` goals; normal is 2-3.
+pub const STEPS_THRESHOLD: u64 = 4;
 
 /// `None` = disabled (`off`/`0`). Garbage falls back to the default rather
 /// than silently disabling the alarm.
@@ -35,15 +39,15 @@ pub struct Watchdog {
 }
 
 impl Watchdog {
-    /// Records one step; returns the alert text when the full window's
-    /// average exceeds `threshold` and the last alert is older than the
-    /// cooldown. The window restarts after an alert so one spike period
-    /// raises one alert.
-    pub fn observe(&mut self, input_tokens: u64, threshold: u64, now_ms: i64) -> Option<String> {
-        if input_tokens == 0 {
-            return None; // provider reported no usage
+    /// Records one value; returns the window's average when the full
+    /// window's average exceeds `threshold` and the last alert is older than
+    /// the cooldown. The window restarts after an alert so one spike period
+    /// raises one alert. Zero is ignored (provider reported no usage).
+    pub fn observe(&mut self, value: u64, threshold: u64, now_ms: i64) -> Option<u64> {
+        if value == 0 {
+            return None;
         }
-        self.recent.push_back(input_tokens);
+        self.recent.push_back(value);
         if self.recent.len() > WINDOW {
             self.recent.pop_front();
         }
@@ -57,20 +61,36 @@ impl Watchdog {
         }
         self.last_alert_ms = Some(now_ms);
         self.recent.clear();
-        Some(format!(
-            "Агент: средний промпт за последние {WINDOW} шагов — {avg} токенов (порог {threshold}). \
-             Обычно ~5k: проверь фильтр инструментов (лог агента: \"embedding filter\")."
-        ))
+        Some(avg)
     }
 }
 
-static GLOBAL: Mutex<Option<Watchdog>> = Mutex::new(None);
+static TOKENS: Mutex<Option<Watchdog>> = Mutex::new(None);
+static STEPS: Mutex<Option<Watchdog>> = Mutex::new(None);
 
-/// Process-wide [`Watchdog::observe`]; `None` while disabled.
+fn observe_in(slot: &Mutex<Option<Watchdog>>, value: u64, threshold: u64, now_ms: i64) -> Option<u64> {
+    let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
+    guard.get_or_insert_with(Watchdog::default).observe(value, threshold, now_ms)
+}
+
+/// One goal step's prompt tokens; the alert text, `None` while disabled.
 pub fn observe(input_tokens: u64, now_ms: i64) -> Option<String> {
     let threshold = threshold()?;
-    let mut guard = GLOBAL.lock().unwrap_or_else(|p| p.into_inner());
-    guard.get_or_insert_with(Watchdog::default).observe(input_tokens, threshold, now_ms)
+    let avg = observe_in(&TOKENS, input_tokens, threshold, now_ms)?;
+    Some(format!(
+        "Агент: средний промпт за последние {WINDOW} шагов — {avg} токенов (порог {threshold}). \
+         Обычно ~5k: проверь фильтр инструментов (лог агента: \"embedding filter\")."
+    ))
+}
+
+/// One finished goal's LLM step count; same switch as the token alert.
+pub fn observe_goal(llm_steps: u64, now_ms: i64) -> Option<String> {
+    threshold()?;
+    let avg = observe_in(&STEPS, llm_steps, STEPS_THRESHOLD, now_ms)?;
+    Some(format!(
+        "Агент: в среднем {avg} шагов LLM на задачу за последние {WINDOW} задач (обычно 2-3). \
+         Похоже, модель перебирает инструменты: проверь шаги unknown_tool в goal_list."
+    ))
 }
 
 #[cfg(test)]
@@ -104,6 +124,16 @@ mod tests {
         }
         assert!(w.observe(60_000, DEFAULT_THRESHOLD, 0).is_none(), "avg 11k stays under 12k");
         assert!(w.observe(0, DEFAULT_THRESHOLD, 0).is_none());
+    }
+
+    #[test]
+    fn step_counts_alert_on_a_guessing_streak() {
+        let mut w = Watchdog::default();
+        for _ in 0..WINDOW {
+            assert!(w.observe(2, STEPS_THRESHOLD, 0).is_none());
+        }
+        let alerts = (0..WINDOW as i64).filter_map(|i| w.observe(7, STEPS_THRESHOLD, i)).count();
+        assert_eq!(alerts, 1);
     }
 
     #[test]

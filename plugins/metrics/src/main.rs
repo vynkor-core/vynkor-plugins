@@ -133,9 +133,21 @@ mod tests {
 
     type Published = Arc<Mutex<Vec<(String, Value)>>>;
 
+    const BATCH_CAP: usize = 600;
+
     #[derive(Default)]
     struct FakeDb { kv: BTreeMap<String, Value> }
     impl FakeDb {
+        /// `n` stored samples, ids 1..=n, one a second.
+        fn with_samples(n: u64) -> Self {
+            let mut db = FakeDb::default();
+            for id in 1..=n {
+                let sample = metrics_plugin::sampler::Sample { id: id.to_string(), timestamp_ms: id as i64 * 1000, cpu_load_1: None, mem_total_kb: None, mem_available_kb: None, mem_used_percent: None, disk_total_bytes: None, disk_available_bytes: None, disk_used_percent: None, battery_percent: None, battery_charging: None };
+                db.kv.insert(format!("metric:{id}"), serde_json::to_value(sample).unwrap());
+            }
+            db.kv.insert("meta:next_id".into(), serde_json::json!(n));
+            db
+        }
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
             fn key(p: &Value) -> String { p.get("key").and_then(Value::as_str).unwrap_or_default().to_string() }
             match action {
@@ -143,6 +155,8 @@ mod tests {
                 "db_set" => { let k=key(&params); self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null)); Ok(serde_json::json!({"ok":true})) }
                 "db_get" => { let k=key(&params); match self.kv.get(&k) { Some(v)=>Ok(serde_json::json!({"found":true,"value":v})), None=>Ok(serde_json::json!({"found":false,"value":null})) } }
                 "db_keys" => { let prefix=params.get("prefix").and_then(Value::as_str).unwrap_or(""); let keys: Vec<&String>=self.kv.keys().filter(|k| k.starts_with(prefix)).collect(); Ok(serde_json::json!({"keys":keys})) }
+                // the live database plugin caps a response at 4 MiB (~14k samples)
+                "db_batch_get" if params.get("keys").and_then(Value::as_array).is_some_and(|k| k.len() > BATCH_CAP) => Err("batch_get result exceeds max_response_bytes".into()),
                 "db_batch_get" => { let mut values=serde_json::Map::new(); if let Some(keys)=params.get("keys").and_then(Value::as_array) { for k in keys { if let Some(k)=k.as_str() { values.insert(k.to_string(), self.kv.get(k).cloned().unwrap_or(Value::Null)); } } } Ok(serde_json::json!({"values":values})) }
                 "db_delete" => { let k=key(&params); Ok(serde_json::json!({"deleted":self.kv.remove(&k).is_some()})) }
                 other => Err(format!("unknown {other}")),
@@ -161,19 +175,20 @@ mod tests {
         async fn published(&self) -> Vec<(String, Value)> { self.published.lock().await.clone() }
     }
 
-    async fn start_plugin(cfg: Config) -> Shim {
+    async fn start_plugin(cfg: Config) -> Shim { start_plugin_with(cfg, FakeDb::default()).await }
+
+    async fn start_plugin_with(cfg: Config, db: FakeDb) -> Shim {
         let (ps, ks)=UnixStream::pair().unwrap();
         let pc=VynkorClient::from_stream(ps, None);
         let kc=VynkorClient::from_stream(ks, None);
         tokio::spawn(async move { let _=serve(pc,cfg).await; });
         let (tx, rx)=mpsc::channel(16);
         let published=Arc::new(Mutex::new(Vec::new()));
-        tokio::spawn(run_shim(kc, rx, published.clone()));
+        tokio::spawn(run_shim(kc, rx, published.clone(), db));
         Shim { tx, published }
     }
 
-    async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>, published: Published) {
-        let mut db=FakeDb::default();
+    async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>, published: Published, mut db: FakeDb) {
         let mut pending: StdHashMap<String, oneshot::Sender<Result<Value,String>>> = StdHashMap::new();
         let mut seq: u64=0;
         loop {
@@ -226,6 +241,33 @@ mod tests {
         let shim=start_plugin(test_cfg()).await;
         let res=shim.call("metrics_stats", serde_json::json!({})).await.unwrap();
         assert_eq!(res["count"], 0);
+    }
+
+    #[tokio::test]
+    async fn reads_more_samples_than_one_batch_holds() {
+        let shim=start_plugin_with(test_cfg(), FakeDb::with_samples(1_500)).await;
+        let latest=shim.call("metrics_latest", serde_json::json!({})).await.unwrap();
+        assert_eq!(latest["sample"]["id"], "1500");
+        let stats=shim.call("metrics_stats", serde_json::json!({})).await.unwrap();
+        assert_eq!((stats["count"].as_u64(), stats["oldest_ms"].as_i64(), stats["newest_ms"].as_i64()), (Some(1_500), Some(1_000), Some(1_500_000)));
+        let page=shim.call("metrics_query", serde_json::json!({"limit": 2})).await.unwrap();
+        assert_eq!(page["total"], 1_500);
+        assert_eq!(page["samples"][0]["id"], "1500", "newest first");
+    }
+
+    #[tokio::test]
+    async fn trim_drains_an_oversized_store_by_id() {
+        let cfg=Config { interval_secs: 1, max_samples: 100, ..test_cfg() };
+        let shim=start_plugin_with(cfg, FakeDb::with_samples(1_500)).await;
+        let mut count=0;
+        for _ in 0..40 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            count=shim.call("metrics_stats", serde_json::json!({})).await.unwrap()["count"].as_u64().unwrap();
+            if count <= 100 { break; }
+        }
+        assert_eq!(count, 100, "one tick trims down to max_samples");
+        let stats=shim.call("metrics_stats", serde_json::json!({})).await.unwrap();
+        assert_eq!(stats["newest_ms"].as_i64().map(|t| t > 1_500_000), Some(true), "the fresh sample survives");
     }
 
     #[tokio::test]
