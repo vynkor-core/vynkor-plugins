@@ -1,8 +1,12 @@
 //! Parse + validate the JSON body of a `chat_completion` `ActionRequest`.
 
+/// `timeout_ms` when the caller names none (the kernel's default action
+/// timeout).
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 /// Hard ceiling on `timeout_ms`; matches `network`'s own cap so a
-/// `chat_completion` call can't outlive the HTTP request it wraps.
-pub const MAX_TIMEOUT_MS: u64 = 30_000;
+/// `chat_completion` call can't outlive the HTTP request it wraps. Minutes,
+/// not seconds: local CPU models are that slow.
+pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
 /// Default `max_tokens` when the caller omits it.
 pub const DEFAULT_MAX_TOKENS: u32 = 1024;
@@ -337,7 +341,7 @@ pub fn parse_request(params_json: &[u8]) -> Result<ChatCompletionParams, String>
         .max_tokens
         .unwrap_or(DEFAULT_MAX_TOKENS)
         .min(MAX_MAX_TOKENS);
-    let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
     let max_retries = raw
         .max_retries
         .unwrap_or(DEFAULT_MAX_RETRIES)
@@ -422,7 +426,7 @@ pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, St
     if input.len() > 10000 {
         return Err("input too long (max 10000)".to_string());
     }
-    let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
     let max_retries = raw
         .max_retries
         .unwrap_or(DEFAULT_MAX_RETRIES)
@@ -442,6 +446,30 @@ pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, St
         retry_backoff_ms,
         agent_id,
     })
+}
+
+/// Longest `purpose`/`goal_id` kept in the usage table; longer values are cut.
+const MAX_USAGE_TAG_CHARS: usize = 64;
+
+/// Optional analytics labels a caller may attach to `chat_completion` /
+/// `embedding`: `purpose` (why) and `goal_id` (which task). Only ever
+/// stored in `usage`, never forwarded to the provider, so they are parsed
+/// leniently — a malformed or missing tag is empty, not an error.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageTags {
+    pub purpose: String,
+    pub goal_id: String,
+}
+
+pub fn parse_usage_tags(params_json: &[u8]) -> UsageTags {
+    let v: serde_json::Value = serde_json::from_slice(params_json).unwrap_or_default();
+    let tag = |k: &str| {
+        v.get(k)
+            .and_then(serde_json::Value::as_str)
+            .map(|s| s.chars().take(MAX_USAGE_TAG_CHARS).collect())
+            .unwrap_or_default()
+    };
+    UsageTags { purpose: tag("purpose"), goal_id: tag("goal_id") }
 }
 
 #[cfg(test)]
@@ -799,5 +827,16 @@ mod tests {
         let params = parse_request(body.to_string().as_bytes()).unwrap();
         assert_eq!(params.max_retries, MAX_RETRIES);
         assert_eq!(params.retry_backoff_ms, MAX_RETRY_BACKOFF_MS);
+    }
+
+    #[test]
+    fn usage_tags_are_optional_and_capped() {
+        assert_eq!(parse_usage_tags(b"{}"), UsageTags::default());
+        assert_eq!(parse_usage_tags(b"not json"), UsageTags::default());
+        let t = parse_usage_tags(br#"{"purpose":"goal_step","goal_id":42}"#);
+        assert_eq!(t.purpose, "goal_step");
+        assert_eq!(t.goal_id, "");
+        let long = format!(r#"{{"goal_id":"{}"}}"#, "g".repeat(200));
+        assert_eq!(parse_usage_tags(long.as_bytes()).goal_id.len(), MAX_USAGE_TAG_CHARS);
     }
 }

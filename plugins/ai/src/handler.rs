@@ -12,8 +12,9 @@ use crate::provider::{
     anthropic::AnthropicProvider, openai_compat::OpenAiCompatProvider, ChatResult,
     EmbeddingProvider, Provider, StreamDelta,
 };
-use crate::request::{self, ChatCompletionParams, EmbeddingParams, Provider as RequestProvider};
+use crate::request::{self, ChatCompletionParams, EmbeddingParams, Provider as RequestProvider, UsageTags};
 use crate::sse::SseDecoder;
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{
     envelope, ActionResponse, ActionResponseChunk, ActionStatus, Envelope, SessionClose,
@@ -75,13 +76,44 @@ async fn prepare_chat(
     })
 }
 
-fn record_chat_usage(db: &AiDb, params: &ChatCompletionParams, result: &ChatResult) {
-    if let Err(e) = db.record_usage(&UsageRow {
-        agent_id: params.agent_id.clone().unwrap_or_default(),
-        model_id: params.model.clone(),
-        input_tokens: result.usage.input_tokens,
-        output_tokens: result.usage.output_tokens,
-    }) {
+/// Who asked and why, captured when a request arrives so the usage row
+/// can attribute it (and time it) once the provider has answered.
+pub struct CallMeta {
+    caller: String,
+    tags: UsageTags,
+    started: Instant,
+}
+
+impl CallMeta {
+    pub fn new(caller_plugin_id: &str, params_json: &[u8]) -> Self {
+        CallMeta {
+            caller: caller_plugin_id.to_string(),
+            tags: request::parse_usage_tags(params_json),
+            started: Instant::now(),
+        }
+    }
+
+    fn usage_row(&self, agent_id: &Option<String>, model_id: &str, input: u64, output: u64) -> UsageRow {
+        UsageRow {
+            agent_id: agent_id.clone().unwrap_or_default(),
+            model_id: model_id.to_string(),
+            input_tokens: input,
+            output_tokens: output,
+            caller: self.caller.clone(),
+            purpose: self.tags.purpose.clone(),
+            goal_id: self.tags.goal_id.clone(),
+            latency_ms: self.started.elapsed().as_millis() as u64,
+        }
+    }
+}
+
+fn record_chat_usage(db: &AiDb, meta: &CallMeta, params: &ChatCompletionParams, result: &ChatResult) {
+    if let Err(e) = db.record_usage(&meta.usage_row(
+        &params.agent_id,
+        &params.model,
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    )) {
         eprintln!("[ai] failed to record usage: {e}");
     }
     let _ = db.touch_model(&params.model);
@@ -89,6 +121,7 @@ fn record_chat_usage(db: &AiDb, params: &ChatCompletionParams, result: &ChatResu
 
 pub async fn handle_chat_completion(
     caller: &mut impl ActionCaller,
+    meta: &CallMeta,
     params_json: &[u8],
     db: &AiDb,
 ) -> Result<Vec<u8>, String> {
@@ -132,7 +165,7 @@ pub async fn handle_chat_completion(
     };
 
     let result = provider.parse_response(&body_bytes)?;
-    record_chat_usage(db, &params, &result);
+    record_chat_usage(db, meta, &params, &result);
 
     serde_json::to_vec(&result).map_err(|e| format!("failed to encode response: {e}"))
 }
@@ -166,6 +199,7 @@ const MAX_STREAM_ERROR_BODY: usize = 64 * 1024;
 /// upstream session is closed too, so the provider stops generating.
 pub async fn handle_chat_completion_stream(
     caller: &mut OutboundHandle,
+    meta: &CallMeta,
     action_id: &str,
     params_json: &[u8],
     db: &AiDb,
@@ -267,7 +301,7 @@ pub async fn handle_chat_completion_stream(
     }
 
     let result = parser.finish()?;
-    record_chat_usage(db, &params, &result);
+    record_chat_usage(db, meta, &params, &result);
     let done = serde_json::to_vec(&serde_json::json!({"type": "done", "result": result}))
         .map_err(|e| format!("failed to encode result: {e}"))?;
     emit(response_chunk(action_id, seq, done)).await?;
@@ -309,6 +343,7 @@ fn response_chunk(action_id: &str, seq: u32, chunk: Vec<u8>) -> Envelope {
 
 pub async fn handle_embedding(
     caller: &mut impl ActionCaller,
+    meta: &CallMeta,
     params_json: &[u8],
     db: &AiDb,
 ) -> Result<Vec<u8>, String> {
@@ -366,12 +401,12 @@ pub async fn handle_embedding(
     let result = provider.parse_embedding_response(&body_bytes)?;
 
     let model_id = params.model.clone();
-    if let Err(e) = db.record_usage(&UsageRow {
-        agent_id: params.agent_id.clone().unwrap_or_default(),
-        model_id: model_id.clone(),
-        input_tokens: result.usage.input_tokens,
-        output_tokens: result.usage.output_tokens,
-    }) {
+    if let Err(e) = db.record_usage(&meta.usage_row(
+        &params.agent_id,
+        &model_id,
+        result.usage.input_tokens,
+        result.usage.output_tokens,
+    )) {
         eprintln!("[ai] failed to record usage: {e}");
     }
     let _ = db.touch_model(&model_id);
@@ -705,6 +740,7 @@ mod tests {
             model_id: "llama3.2".into(),
             input_tokens: 3,
             output_tokens: 1,
+            ..Default::default()
         })
         .unwrap();
         let stats: crate::db::UsageStats =
