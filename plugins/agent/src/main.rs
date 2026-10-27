@@ -1193,7 +1193,12 @@ mod tests {
 
         let before = reqs.len();
         let res = shim.call("goal_start", serde_json::json!({"goal": "свет вкл"})).await.unwrap();
-        assert!(["Свет горит.", "Включил."].contains(&res["final_answer"].as_str().unwrap()), "{res}");
+        // "Свет горит" names no state word the guard knows; stock replies top up
+        // (notify_send carries no on/off, so the neutral ones)
+        let answer = res["final_answer"].as_str().unwrap();
+        let allowed: Vec<&str> =
+            ["Включил."].into_iter().chain(agent_plugin::routines::guard::stock_replies(None).iter().copied()).collect();
+        assert!(allowed.contains(&answer), "{res}");
         assert_eq!(shim.ai_requests().await.len(), before, "learned paraphrase must skip the LLM");
     }
 

@@ -172,9 +172,18 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
     // With several phrases, only words the user said more than once: a
     // misheard "светозерк" said once gave "Диод светозерк включен".
     let in_texts = |w: &str| seen.iter().filter(|t| objects(t).iter().any(|o| same_word(w, o))).count();
-    let repeated = seen.len() < 2
-        || used.iter().all(|w| in_texts(w) >= 2)
-        || !seen.iter().flat_map(|t| objects(t)).any(|o| in_texts(o) >= 2);
+    // Phrases that share no object ("включи диот светозерк", "включи
+    // светодиод") leave no telling which one was misheard: then none.
+    let repeated = seen.len() < 2 || used.iter().all(|w| in_texts(w) >= 2);
+    // Every other word is a state word or an acknowledgement: two-word
+    // "Лампа включена" passed the old topic rule and named another device.
+    let known = words.iter().all(|w| {
+        used.contains(w)
+            || text_polarity(w).is_some()
+            || ACK_WORDS.contains(w)
+            || FILLER_WORDS.contains(w)
+            || PREPOSITIONS.contains(w)
+    });
     // A place the user never named is invented: "Светодиод на двери включен".
     let no_new_place = words
         .iter()
@@ -184,10 +193,16 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
         && on_topic
         && one_phrase
         && repeated
+        && known
         && no_new_place
         && call.is_none_or(|p| text_polarity(&text) == Some(p))
 }
 
+/// Words a confirmation may carry besides the state and the user's own.
+const ACK_WORDS: &[&str] = &[
+    "готово", "сделано", "есть", "ок", "окей", "хорошо", "конечно", "теперь", "уже", "всё", "все", "итак",
+    "да", "нормально", "done", "ok",
+];
 const PREPOSITIONS: &[&str] = &["в", "во", "на", "у", "под", "над", "возле", "около", "из", "от", "при", "для"];
 /// A spoken confirmation; longer replies were where the details got invented.
 const MAX_REPLY_WORDS: usize = 4;
@@ -269,7 +284,7 @@ mod tests {
         .into_iter()
         .filter(|r| reply_ok(r, Some(Off), &["выключи светодиод".to_string()]))
         .collect();
-        assert_eq!(replies, vec!["Выключил", "Заранее выключен", "Конечно, выкл светодиод"]);
+        assert_eq!(replies, vec!["Выключил", "Конечно, выкл светодиод"], "\"заранее\" is no confirmation");
     }
 
     /// The second live run, after the polarity filter.
@@ -307,7 +322,12 @@ mod tests {
         assert!(reply_ok("Выключил.", Some(Off), &[]));
         let misheard = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string()];
         assert!(!reply_ok("Включил светодиод светозерк.", Some(On), &misheard), "words of two phrases");
-        assert!(reply_ok("Включил светодиод.", Some(On), &misheard));
+        assert!(!reply_ok("Включил светодиод.", Some(On), &misheard), "the phrases disagree on the object");
+        assert!(reply_ok("Включил.", Some(On), &misheard));
+        // the fourth live run: two-word replies naming another device
+        for r in ["Светозерк включён.", "Светильник включился.", "Лампа включена.", "Светильник зажёгся.", "Итак, светозерк включён."] {
+            assert!(!reply_ok(r, Some(On), &misheard), "{r}");
+        }
         // the third live run, once the mixing rule was in
         let live = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string(), "светодиод включить".to_string()];
         let kept: Vec<&str> = [
