@@ -316,6 +316,35 @@ pub fn update(conn: &mut Connection, id: &str, title: Option<String>, pinned: Op
     Ok(json!({"rev": rev}))
 }
 
+/// Hide a session everywhere at once: one transaction marks it `deleting`,
+/// drops its turns (and their FTS rows) and records a tombstone. Idempotent.
+/// Removing the session row itself and cascading to other plugins is later work.
+pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
+    let tx = conn.transaction().map_err(db_err)?;
+    let existing: Option<i64> = tx
+        .query_row("SELECT rev FROM tombstones WHERE id = ?", [id], |r| r.get(0))
+        .optional()
+        .map_err(db_err)?;
+    if let Some(rev) = existing {
+        return Ok(json!({"rev": rev}));
+    }
+    let live: bool = tx
+        .query_row("SELECT 1 FROM sessions WHERE id = ? AND state = 'live'", [id], |_| Ok(true))
+        .optional()
+        .map_err(db_err)?
+        .unwrap_or(false);
+    if !live {
+        return Err(format!("unknown session {id}"));
+    }
+    let rev = next_rev(&tx).map_err(db_err)?;
+    tx.execute("UPDATE sessions SET state = 'deleting', rev = ? WHERE id = ?", params![rev, id])
+        .map_err(db_err)?;
+    tx.execute("DELETE FROM turns WHERE session_id = ?", [id]).map_err(db_err)?;
+    tx.execute("INSERT INTO tombstones(id, rev) VALUES (?, ?)", params![id, rev]).map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(json!({"rev": rev}))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -652,5 +681,66 @@ pub(crate) mod tests {
         assert_eq!((got["session"]["title"].as_str(), got["session"]["pinned"].as_bool()), (Some("Weather chat"), Some(false)));
         assert!(update(&mut c, &s, None, None).is_err());
         assert_eq!(update(&mut c, "nope", Some("t".into()), None).unwrap_err(), "unknown session nope");
+    }
+
+    #[test]
+    fn delete_hides_and_tombstones() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
+        let keep = mk(&mut c, &cfg, "phone", "chat", "x", 100);
+        let r = delete(&mut c, &s).unwrap();
+        let rev = r["rev"].as_i64().unwrap();
+        let state: String = c.query_row("SELECT state FROM sessions WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        assert_eq!(state, "deleting");
+        let turns: i64 = c.query_row("SELECT count(*) FROM turns WHERE session_id=?", [&s], |r| r.get(0)).unwrap();
+        assert_eq!(turns, 0);
+        let trev: i64 = c.query_row("SELECT rev FROM tombstones WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        assert_eq!(trev, rev);
+        // other sessions untouched
+        assert_eq!(read(&c, &keep, None).unwrap()["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(delete(&mut c, "nope").unwrap_err(), "unknown session nope");
+    }
+
+    #[test]
+    fn delete_is_idempotent() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
+        let a = delete(&mut c, &s).unwrap();
+        let b = delete(&mut c, &s).unwrap();
+        assert_eq!(a, b);
+        let n: i64 = c.query_row("SELECT count(*) FROM tombstones", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        let rev: i64 = c.query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0)).unwrap();
+        assert_eq!(Some(rev), a["rev"].as_i64(), "second delete must not take a new rev");
+    }
+
+    #[test]
+    fn deleted_session_invisible_everywhere() {
+        use crate::search::{search, SearchParams};
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "voice", None), 100).unwrap());
+        append(&mut c, &cfg, ap(&s, "secret pineapple", "noted"), 101).unwrap();
+        let del = delete(&mut c, &s).unwrap();
+        assert!(list(&c, &ListParams::default()).unwrap()["sessions"].as_array().unwrap().is_empty());
+        assert_eq!(read(&c, &s, None).unwrap_err(), format!("unknown session {s}"));
+        let sp = SearchParams { query: "pineapple".into(), ..Default::default() };
+        assert!(search(&c, &sp).unwrap()["hits"].as_array().unwrap().is_empty());
+        assert_eq!(update(&mut c, &s, Some("x".into()), None).unwrap_err(), format!("unknown session {s}"));
+        assert_eq!(append(&mut c, &cfg, ap(&s, "more", "x"), 102).unwrap_err(), format!("unknown session {s}"));
+        // resolve neither returns nor extends it, even with the explicit id, inside the pause
+        let r = resolve(&mut c, &cfg, &rp("lap", "voice", Some(&s)), 103).unwrap();
+        assert_eq!(r["created"], true);
+        assert_ne!(sid(&r), s);
+        let r2 = resolve(&mut c, &cfg, &rp("lap", "voice", None), 104).unwrap();
+        assert_eq!(sid(&r2), sid(&r));
+        // sync: only the tombstone for the deleted one (plus the new empty session)
+        let ch = crate::sync::sync(&c, 0, 500, 500).unwrap();
+        let ch = ch["changes"].as_array().unwrap();
+        assert!(ch.iter().all(|e| e["op"] != "turn"));
+        assert!(ch.iter().all(|e| e["session"]["id"] != s.as_str()));
+        assert!(ch.iter().any(|e| e["op"] == "delete" && e["id"] == s.as_str() && e["rev"] == del["rev"]));
     }
 }
