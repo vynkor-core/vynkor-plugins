@@ -29,11 +29,18 @@ fn fetch(conn: &Connection, lo: i64, hi: i64, limit: i64) -> Result<Vec<Change>,
         ))
         .map_err(db_err)?;
     let rows = stmt
-        .query_map(params![lo, hi, limit], |r| Ok((r.get::<_, i64>(12)?, session_from_row(r)?)))
+        .query_map(params![lo, hi, limit], |r| {
+            Ok((r.get::<_, i64>(12)?, session_from_row(r)?))
+        })
         .map_err(db_err)?;
     for row in rows {
         let (rev, session) = row.map_err(db_err)?;
-        out.push(Change { rev, op_order: 0, sub: 0, body: json!({"rev": rev, "op": "session", "session": session}) });
+        out.push(Change {
+            rev,
+            op_order: 0,
+            sub: 0,
+            body: json!({"rev": rev, "op": "session", "session": session}),
+        });
     }
 
     let mut stmt = conn
@@ -53,18 +60,32 @@ fn fetch(conn: &Connection, lo: i64, hi: i64, limit: i64) -> Result<Vec<Change>,
         .map_err(db_err)?;
     for row in rows {
         let (rev, seq, turn) = row.map_err(db_err)?;
-        out.push(Change { rev, op_order: 1, sub: seq, body: json!({"rev": rev, "op": "turn", "turn": turn}) });
+        out.push(Change {
+            rev,
+            op_order: 1,
+            sub: seq,
+            body: json!({"rev": rev, "op": "turn", "turn": turn}),
+        });
     }
 
     let mut stmt = conn
-        .prepare_cached("SELECT id, rev FROM tombstones WHERE rev > ?1 AND rev <= ?2 ORDER BY rev, id LIMIT ?3")
+        .prepare_cached(
+            "SELECT id, rev FROM tombstones WHERE rev > ?1 AND rev <= ?2 ORDER BY rev, id LIMIT ?3",
+        )
         .map_err(db_err)?;
     let rows = stmt
-        .query_map(params![lo, hi, limit], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .query_map(params![lo, hi, limit], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
         .map_err(db_err)?;
     for row in rows {
         let (id, rev) = row.map_err(db_err)?;
-        out.push(Change { rev, op_order: 2, sub: 0, body: json!({"rev": rev, "op": "delete", "id": id}) });
+        out.push(Change {
+            rev,
+            op_order: 2,
+            sub: 0,
+            body: json!({"rev": rev, "op": "delete", "id": id}),
+        });
     }
 
     out.sort_by_key(|c| (c.rev, c.op_order, c.sub));
@@ -74,13 +95,20 @@ fn fetch(conn: &Connection, lo: i64, hi: i64, limit: i64) -> Result<Vec<Change>,
 /// Changes with `rev > since_rev`, oldest first. At most `min(limit, sync_max)`
 /// changes are taken, then the page is extended to include every change that
 /// shares the last revision, so a revision group is never split across pages.
-pub fn sync(conn: &Connection, since_rev: i64, limit: usize, sync_max: usize) -> Result<Value, String> {
+pub fn sync(
+    conn: &Connection,
+    since_rev: i64,
+    limit: usize,
+    sync_max: usize,
+) -> Result<Value, String> {
     let limit = limit.min(sync_max).max(1);
     let mut page = fetch(conn, since_rev, i64::MAX, limit as i64)?;
     page.truncate(limit);
     let last_rev = match page.last() {
         None => {
-            return Ok(json!({"changes": [], "rev": since_rev, "more": false, "review_pending": false}));
+            return Ok(
+                json!({"changes": [], "rev": since_rev, "more": false, "review_pending": false}),
+            );
         }
         Some(c) => c.rev,
     };
@@ -97,7 +125,11 @@ mod tests {
     use super::*;
     use crate::config::test_config;
     use crate::schema::open_temp;
-    use crate::store::{append, delete, resolve, update, tests::{ap, rp, sid}};
+    use crate::store::{
+        append, delete, resolve,
+        tests::{ap, rp, sid},
+        update,
+    };
     use serde_json::{json, Value};
     use std::collections::HashSet;
 
@@ -118,9 +150,15 @@ mod tests {
         let r = sync(&c, 0, 500, 500).unwrap();
         let ch = changes(&r);
         let revs: Vec<i64> = ch.iter().map(|e| e["rev"].as_i64().unwrap()).collect();
-        assert!(revs.windows(2).all(|w| w[0] <= w[1]), "not sorted: {revs:?}");
+        assert!(
+            revs.windows(2).all(|w| w[0] <= w[1]),
+            "not sorted: {revs:?}"
+        );
         // live session a (latest rev = title update), its turn, tombstone of b
-        let ops: Vec<(&str, i64)> = ch.iter().map(|e| (e["op"].as_str().unwrap(), e["rev"].as_i64().unwrap())).collect();
+        let ops: Vec<(&str, i64)> = ch
+            .iter()
+            .map(|e| (e["op"].as_str().unwrap(), e["rev"].as_i64().unwrap()))
+            .collect();
         assert_eq!(ops.len(), 3, "{ops:?}");
         assert_eq!(ops[0].0, "turn");
         assert_eq!(ops[1], ("session", ops[1].1));
@@ -180,7 +218,10 @@ mod tests {
         let r = sync(&c, 0, 1, 500).unwrap();
         let ch = changes(&r);
         assert_eq!(ch.len(), 2, "{r}");
-        assert_eq!((ch[0]["op"].as_str(), ch[1]["op"].as_str()), (Some("session"), Some("turn")));
+        assert_eq!(
+            (ch[0]["op"].as_str(), ch[1]["op"].as_str()),
+            (Some("session"), Some("turn"))
+        );
         assert_eq!(r["rev"], t["rev"]);
         assert_eq!(r["more"], false);
         // with an earlier rev present the groups still stay whole
@@ -201,7 +242,10 @@ mod tests {
     #[test]
     fn sync_empty_returns_since_rev() {
         let (_d, c) = open_temp();
-        assert_eq!(sync(&c, 0, 500, 500).unwrap(), json!({"changes": [], "rev": 0, "more": false, "review_pending": false}));
+        assert_eq!(
+            sync(&c, 0, 500, 500).unwrap(),
+            json!({"changes": [], "rev": 0, "more": false, "review_pending": false})
+        );
         assert_eq!(sync(&c, 42, 500, 500).unwrap()["rev"], 42);
     }
 }

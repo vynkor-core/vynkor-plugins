@@ -53,7 +53,11 @@ struct SyncParams {
 }
 
 fn parse<T: DeserializeOwned>(action: &str, raw: &[u8]) -> Result<T, String> {
-    let raw: &[u8] = if raw.iter().all(u8::is_ascii_whitespace) { b"{}" } else { raw };
+    let raw: &[u8] = if raw.iter().all(u8::is_ascii_whitespace) {
+        b"{}"
+    } else {
+        raw
+    };
     serde_json::from_slice(raw).map_err(|e| format!("{action}: invalid params: {e}"))
 }
 

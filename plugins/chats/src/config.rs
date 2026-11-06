@@ -29,7 +29,10 @@ impl Config {
             key: &str,
             default: T,
         ) -> Result<T, String> {
-            match get(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            match get(key)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
                 None => Ok(default),
                 Some(s) => match s.parse::<T>() {
                     Ok(v) if v > T::default() => Ok(v),
@@ -76,7 +79,12 @@ mod tests {
     fn config_defaults_and_overrides() {
         let c = Config::from_lookup(|k| (k == "CHATS_DATA_DIR").then(|| "/x".into())).unwrap();
         assert_eq!(
-            (c.pause_secs, c.trace_max_chars, c.text_max_bytes, c.sync_max),
+            (
+                c.pause_secs,
+                c.trace_max_chars,
+                c.text_max_bytes,
+                c.sync_max
+            ),
             (1800, 200, 65536, 500)
         );
         assert_eq!(c.db_path(), PathBuf::from("/x/chats.db"));

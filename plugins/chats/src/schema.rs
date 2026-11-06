@@ -94,25 +94,38 @@ mod tests {
     #[test]
     fn fts5_available() {
         let c = Connection::open_in_memory().unwrap();
-        c.execute_batch("CREATE VIRTUAL TABLE t USING fts5(a)").unwrap();
+        c.execute_batch("CREATE VIRTUAL TABLE t USING fts5(a)")
+            .unwrap();
     }
 
     #[test]
     fn open_creates_schema_v1() {
         let (_d, c) = open_temp();
-        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        let v: i64 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
         assert_eq!(v, 1);
         for t in ["sessions", "turns", "turns_fts", "tombstones", "meta"] {
             let n: i64 = c
-                .query_row("SELECT count(*) FROM sqlite_master WHERE name=?", [t], |r| r.get(0))
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name=?",
+                    [t],
+                    |r| r.get(0),
+                )
                 .unwrap();
             assert_eq!(n, 1, "missing table {t}");
         }
-        let rev: i64 = c.query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0)).unwrap();
+        let rev: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(rev, 0);
-        let fk: i64 = c.pragma_query_value(None, "foreign_keys", |r| r.get(0)).unwrap();
+        let fk: i64 = c
+            .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+            .unwrap();
         assert_eq!(fk, 1);
-        let jm: String = c.pragma_query_value(None, "journal_mode", |r| r.get(0)).unwrap();
+        let jm: String = c
+            .pragma_query_value(None, "journal_mode", |r| r.get(0))
+            .unwrap();
         assert_eq!(jm, "wal");
     }
 
@@ -121,10 +134,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("chats.db");
         let c = open(&p).unwrap();
-        c.execute("UPDATE meta SET value=7 WHERE key='rev'", []).unwrap();
+        c.execute("UPDATE meta SET value=7 WHERE key='rev'", [])
+            .unwrap();
         drop(c);
         let c = open(&p).unwrap();
-        let rev: i64 = c.query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0)).unwrap();
+        let rev: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(rev, 7);
     }
 }

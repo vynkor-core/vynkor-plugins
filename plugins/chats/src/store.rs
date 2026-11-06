@@ -29,7 +29,11 @@ pub struct AppendParams {
 }
 
 pub fn next_rev(tx: &Transaction) -> rusqlite::Result<i64> {
-    tx.query_row("UPDATE meta SET value = value + 1 WHERE key = 'rev' RETURNING value", [], |r| r.get(0))
+    tx.query_row(
+        "UPDATE meta SET value = value + 1 WHERE key = 'rev' RETURNING value",
+        [],
+        |r| r.get(0),
+    )
 }
 
 pub const KINDS: [&str; 2] = ["chat", "voice"];
@@ -108,7 +112,12 @@ fn new_session(tx: &Transaction, p: &ResolveParams, now: i64) -> Result<String, 
 }
 
 /// Pick the session a new turn belongs to (see overview §2 for the rules).
-pub fn resolve(conn: &mut Connection, cfg: &Config, p: &ResolveParams, now: i64) -> Result<Value, String> {
+pub fn resolve(
+    conn: &mut Connection,
+    cfg: &Config,
+    p: &ResolveParams,
+    now: i64,
+) -> Result<Value, String> {
     if !KINDS.contains(&p.kind.as_str()) {
         return Err(format!("kind must be chat or voice, got {:?}", p.kind));
     }
@@ -158,16 +167,28 @@ pub fn resolve(conn: &mut Connection, cfg: &Config, p: &ResolveParams, now: i64)
 }
 
 /// Add a turn to a live session; one transaction, one revision.
-pub fn append(conn: &mut Connection, cfg: &Config, p: AppendParams, now: i64) -> Result<Value, String> {
+pub fn append(
+    conn: &mut Connection,
+    cfg: &Config,
+    p: AppendParams,
+    now: i64,
+) -> Result<Value, String> {
     if !STATUSES.contains(&p.status.as_str()) {
-        return Err(format!("status must be ok, failed or cancelled, got {:?}", p.status));
+        return Err(format!(
+            "status must be ok, failed or cancelled, got {:?}",
+            p.status
+        ));
     }
     let user_text = truncate_bytes(&p.user_text, cfg.text_max_bytes);
     let answer_text = truncate_bytes(&p.answer_text, cfg.text_max_bytes);
     let trace = normalize_trace(&p.tool_trace, cfg).to_string();
     let tx = conn.transaction().map_err(db_err)?;
     let count: Option<i64> = tx
-        .query_row("SELECT turns FROM sessions WHERE id = ? AND state = 'live'", [&p.session_id], |r| r.get(0))
+        .query_row(
+            "SELECT turns FROM sessions WHERE id = ? AND state = 'live'",
+            [&p.session_id],
+            |r| r.get(0),
+        )
         .optional()
         .map_err(db_err)?;
     let Some(count) = count else {
@@ -258,7 +279,10 @@ pub fn list(conn: &Connection, p: &ListParams) -> Result<Value, String> {
     );
     let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
     let rows = stmt
-        .query_map(params![p.from, p.to, p.kind, p.source, p.before, limit], session_from_row)
+        .query_map(
+            params![p.from, p.to, p.kind, p.source, p.before, limit],
+            session_from_row,
+        )
         .map_err(db_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db_err)?;
@@ -276,12 +300,19 @@ pub fn read(conn: &Connection, id: &str, last: Option<u32>) -> Result<Value, Str
         .map_err(db_err)?
         .ok_or_else(|| format!("unknown session {id}"))?;
     let sql = match last {
-        Some(_) => format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2"),
-        None => format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2"),
+        Some(_) => format!(
+            "SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2"
+        ),
+        None => {
+            format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2")
+        }
     };
     let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
     let mut turns = stmt
-        .query_map(params![id, last.map(i64::from).unwrap_or(-1)], turn_from_row)
+        .query_map(
+            params![id, last.map(i64::from).unwrap_or(-1)],
+            turn_from_row,
+        )
         .map_err(db_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db_err)?;
@@ -292,14 +323,23 @@ pub fn read(conn: &Connection, id: &str, last: Option<u32>) -> Result<Value, Str
 }
 
 /// Rename and/or pin a session. Does not touch `last_at`.
-pub fn update(conn: &mut Connection, id: &str, title: Option<String>, pinned: Option<bool>) -> Result<Value, String> {
+pub fn update(
+    conn: &mut Connection,
+    id: &str,
+    title: Option<String>,
+    pinned: Option<bool>,
+) -> Result<Value, String> {
     if title.is_none() && pinned.is_none() {
         return Err("nothing to update: pass title and/or pinned".into());
     }
     let title = title.map(|t| truncate_chars(t.trim(), 512));
     let tx = conn.transaction().map_err(db_err)?;
     let exists: bool = tx
-        .query_row("SELECT 1 FROM sessions WHERE id = ? AND state = 'live'", [id], |_| Ok(true))
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ? AND state = 'live'",
+            [id],
+            |_| Ok(true),
+        )
         .optional()
         .map_err(db_err)?
         .unwrap_or(false);
@@ -322,14 +362,20 @@ pub fn update(conn: &mut Connection, id: &str, title: Option<String>, pinned: Op
 pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
     let tx = conn.transaction().map_err(db_err)?;
     let existing: Option<i64> = tx
-        .query_row("SELECT rev FROM tombstones WHERE id = ?", [id], |r| r.get(0))
+        .query_row("SELECT rev FROM tombstones WHERE id = ?", [id], |r| {
+            r.get(0)
+        })
         .optional()
         .map_err(db_err)?;
     if let Some(rev) = existing {
         return Ok(json!({"rev": rev}));
     }
     let live: bool = tx
-        .query_row("SELECT 1 FROM sessions WHERE id = ? AND state = 'live'", [id], |_| Ok(true))
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ? AND state = 'live'",
+            [id],
+            |_| Ok(true),
+        )
         .optional()
         .map_err(db_err)?
         .unwrap_or(false);
@@ -337,10 +383,18 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         return Err(format!("unknown session {id}"));
     }
     let rev = next_rev(&tx).map_err(db_err)?;
-    tx.execute("UPDATE sessions SET state = 'deleting', rev = ? WHERE id = ?", params![rev, id])
+    tx.execute(
+        "UPDATE sessions SET state = 'deleting', rev = ? WHERE id = ?",
+        params![rev, id],
+    )
+    .map_err(db_err)?;
+    tx.execute("DELETE FROM turns WHERE session_id = ?", [id])
         .map_err(db_err)?;
-    tx.execute("DELETE FROM turns WHERE session_id = ?", [id]).map_err(db_err)?;
-    tx.execute("INSERT INTO tombstones(id, rev) VALUES (?, ?)", params![id, rev]).map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO tombstones(id, rev) VALUES (?, ?)",
+        params![id, rev],
+    )
+    .map_err(db_err)?;
     tx.commit().map_err(db_err)?;
     Ok(json!({"rev": rev}))
 }
@@ -385,10 +439,22 @@ pub(crate) mod tests {
         let a = resolve(&mut c, &cfg, &rp("lap", "voice", None), T0).unwrap();
         assert_eq!(a["created"], true);
         append(&mut c, &cfg, ap(&sid(&a), "hi", "hello"), T0 + 1000).unwrap();
-        let b = resolve(&mut c, &cfg, &rp("lap", "voice", None), T0 + 1000 + PAUSE_MS - 1).unwrap();
+        let b = resolve(
+            &mut c,
+            &cfg,
+            &rp("lap", "voice", None),
+            T0 + 1000 + PAUSE_MS - 1,
+        )
+        .unwrap();
         assert_eq!(b["created"], false);
         assert_eq!(sid(&a), sid(&b));
-        let c2 = resolve(&mut c, &cfg, &rp("lap", "voice", Some(&sid(&a))), T0 + 1000 + PAUSE_MS - 1).unwrap();
+        let c2 = resolve(
+            &mut c,
+            &cfg,
+            &rp("lap", "voice", Some(&sid(&a))),
+            T0 + 1000 + PAUSE_MS - 1,
+        )
+        .unwrap();
         assert_eq!(sid(&c2), sid(&a));
     }
 
@@ -401,7 +467,13 @@ pub(crate) mod tests {
         assert_eq!(b["created"], true);
         assert_ne!(sid(&a), sid(&b));
         // an explicit id past the pause also splits
-        let d = resolve(&mut c, &cfg, &rp("lap", "voice", Some(&sid(&a))), T0 + PAUSE_MS).unwrap();
+        let d = resolve(
+            &mut c,
+            &cfg,
+            &rp("lap", "voice", Some(&sid(&a))),
+            T0 + PAUSE_MS,
+        )
+        .unwrap();
         assert_eq!(d["created"], true);
         assert_ne!(sid(&d), sid(&a));
     }
@@ -430,7 +502,13 @@ pub(crate) mod tests {
         let (_d, mut c) = open_temp();
         let cfg = test_config();
         let a = resolve(&mut c, &cfg, &rp("lap", "chat", None), T0).unwrap();
-        let b = resolve(&mut c, &cfg, &rp("lap", "chat", Some(&sid(&a))), T0 + 100 * PAUSE_MS).unwrap();
+        let b = resolve(
+            &mut c,
+            &cfg,
+            &rp("lap", "chat", Some(&sid(&a))),
+            T0 + 100 * PAUSE_MS,
+        )
+        .unwrap();
         assert_eq!(b["created"], false);
         assert_eq!(sid(&a), sid(&b));
         // without an id a chat still starts fresh only after the pause
@@ -459,13 +537,17 @@ pub(crate) mod tests {
         assert!(r2["rev"].as_i64() > r1["rev"].as_i64());
         assert_ne!(r1["turn_id"], r2["turn_id"]);
         let (turns, last_at, rev): (i64, i64, i64) = c
-            .query_row("SELECT turns, last_at, rev FROM sessions WHERE id=?", [&s], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT turns, last_at, rev FROM sessions WHERE id=?",
+                [&s],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
         assert_eq!((turns, last_at), (2, T0 + 20));
         assert_eq!(Some(rev), r2["rev"].as_i64());
-        let trev: i64 = c.query_row("SELECT rev FROM turns WHERE seq=2", [], |r| r.get(0)).unwrap();
+        let trev: i64 = c
+            .query_row("SELECT rev FROM turns WHERE seq=2", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(Some(trev), r2["rev"].as_i64());
     }
 
@@ -485,7 +567,9 @@ pub(crate) mod tests {
         let mut p = ap(&s, "q", "a");
         p.status = "weird".into();
         assert!(append(&mut c, &cfg, p, T0).unwrap_err().contains("status"));
-        let n: i64 = c.query_row("SELECT count(*) FROM turns", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM turns", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 0);
     }
 
@@ -503,11 +587,17 @@ pub(crate) mod tests {
         p.tool_trace = Value::Array(trace);
         append(&mut c, &cfg, p, T0).unwrap();
         let (u, a, t): (String, String, String) = c
-            .query_row("SELECT user_text, answer_text, tool_trace FROM turns", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-            })
+            .query_row(
+                "SELECT user_text, answer_text, tool_trace FROM turns",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
             .unwrap();
-        assert!(u.len() <= 100 && u.ends_with('…'), "user_text len {}", u.len());
+        assert!(
+            u.len() <= 100 && u.ends_with('…'),
+            "user_text len {}",
+            u.len()
+        );
         assert!(u.is_char_boundary(u.len()));
         assert!(a.len() <= 100 && a.ends_with('…'));
         let t: Vec<Value> = serde_json::from_str(&t).unwrap();
@@ -530,8 +620,11 @@ pub(crate) mod tests {
         let mut p = ap(&s, "привет", "ok");
         p.tool_trace = json!([{"tool":"t","args":{"a":1},"result":"fine","ms":3}]);
         append(&mut c, &cfg, p, T0).unwrap();
-        let (u, t): (String, String) =
-            c.query_row("SELECT user_text, tool_trace FROM turns", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (u, t): (String, String) = c
+            .query_row("SELECT user_text, tool_trace FROM turns", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
         assert_eq!(u, "привет");
         let t: Vec<Value> = serde_json::from_str(&t).unwrap();
         assert_eq!(t[0]["args"], "{\"a\":1}");
@@ -556,7 +649,8 @@ pub(crate) mod tests {
                 std::thread::spawn(move || {
                     for i in 0..50 {
                         let mut g = c.lock().unwrap();
-                        let r = append(&mut g, &cfg, ap(&s, &format!("t{t}-{i}"), "a"), T0 + i).unwrap();
+                        let r = append(&mut g, &cfg, ap(&s, &format!("t{t}-{i}"), "a"), T0 + i)
+                            .unwrap();
                         order.lock().unwrap().push(r["rev"].as_i64().unwrap());
                     }
                 })
@@ -567,12 +661,26 @@ pub(crate) mod tests {
         }
         let revs = order.lock().unwrap().clone();
         assert_eq!(revs.len(), 200);
-        assert!(revs.windows(2).all(|w| w[0] < w[1]), "revs not strictly increasing");
-        let distinct: i64 = c.lock().unwrap().query_row("SELECT count(DISTINCT rev) FROM turns", [], |r| r.get(0)).unwrap();
+        assert!(
+            revs.windows(2).all(|w| w[0] < w[1]),
+            "revs not strictly increasing"
+        );
+        let distinct: i64 = c
+            .lock()
+            .unwrap()
+            .query_row("SELECT count(DISTINCT rev) FROM turns", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(distinct, 200);
     }
 
-    fn mk(c: &mut Connection, cfg: &Config, device: &str, kind: &str, source: &str, at: i64) -> String {
+    fn mk(
+        c: &mut Connection,
+        cfg: &Config,
+        device: &str,
+        kind: &str,
+        source: &str,
+        at: i64,
+    ) -> String {
         let mut p = rp(device, kind, None);
         p.source = source.into();
         let s = sid(&resolve(c, cfg, &p, at).unwrap());
@@ -588,16 +696,41 @@ pub(crate) mod tests {
         let b = mk(&mut c, &cfg, "lap", "voice", "daemon", 300);
         let d = mk(&mut c, &cfg, "phone", "chat", "desktop", 200);
         let ids = |v: Value| -> Vec<String> {
-            v["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+            v["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap().to_string())
+                .collect()
         };
-        assert_eq!(ids(list(&c, &ListParams::default()).unwrap()), vec![b.clone(), d.clone(), a.clone()]);
-        let by_kind = ListParams { kind: Some("chat".into()), ..Default::default() };
+        assert_eq!(
+            ids(list(&c, &ListParams::default()).unwrap()),
+            vec![b.clone(), d.clone(), a.clone()]
+        );
+        let by_kind = ListParams {
+            kind: Some("chat".into()),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&c, &by_kind).unwrap()), vec![d.clone(), a.clone()]);
-        let by_src = ListParams { source: Some("daemon".into()), ..Default::default() };
+        let by_src = ListParams {
+            source: Some("daemon".into()),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&c, &by_src).unwrap()), vec![b.clone()]);
-        let range = ListParams { from: Some(150), to: Some(250), ..Default::default() };
+        let range = ListParams {
+            from: Some(150),
+            to: Some(250),
+            ..Default::default()
+        };
         assert_eq!(ids(list(&c, &range).unwrap()), vec![d.clone()]);
-        let one = list(&c, &ListParams { limit: Some(1), ..Default::default() }).unwrap();
+        let one = list(
+            &c,
+            &ListParams {
+                limit: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let s = &one["sessions"][0];
         assert_eq!(s["id"], b.as_str());
         assert_eq!(s["turns"], 1);
@@ -612,18 +745,58 @@ pub(crate) mod tests {
     fn list_pagination_before() {
         let (_d, mut c) = open_temp();
         let cfg = test_config();
-        let ids: Vec<String> = (1..=5).map(|i| mk(&mut c, &cfg, &format!("dev{i}"), "chat", "x", i * 100)).collect();
-        let p1 = list(&c, &ListParams { limit: Some(2), ..Default::default() }).unwrap();
+        let ids: Vec<String> = (1..=5)
+            .map(|i| mk(&mut c, &cfg, &format!("dev{i}"), "chat", "x", i * 100))
+            .collect();
+        let p1 = list(
+            &c,
+            &ListParams {
+                limit: Some(2),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let p1 = p1["sessions"].as_array().unwrap().clone();
         assert_eq!(p1[0]["id"], ids[4].as_str());
         assert_eq!(p1[1]["id"], ids[3].as_str());
         let before = p1[1]["last_at"].as_i64().unwrap();
-        let p2 = list(&c, &ListParams { limit: Some(2), before: Some(before), ..Default::default() }).unwrap();
+        let p2 = list(
+            &c,
+            &ListParams {
+                limit: Some(2),
+                before: Some(before),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let p2 = p2["sessions"].as_array().unwrap().clone();
-        assert_eq!((p2[0]["id"].as_str(), p2[1]["id"].as_str()), (Some(ids[2].as_str()), Some(ids[1].as_str())));
+        assert_eq!(
+            (p2[0]["id"].as_str(), p2[1]["id"].as_str()),
+            (Some(ids[2].as_str()), Some(ids[1].as_str()))
+        );
         // limit is clamped to 200 and floored at 1
-        assert!(list(&c, &ListParams { limit: Some(100_000), ..Default::default() }).is_ok());
-        assert_eq!(list(&c, &ListParams { limit: Some(0), ..Default::default() }).unwrap()["sessions"].as_array().unwrap().len(), 1);
+        assert!(list(
+            &c,
+            &ListParams {
+                limit: Some(100_000),
+                ..Default::default()
+            }
+        )
+        .is_ok());
+        assert_eq!(
+            list(
+                &c,
+                &ListParams {
+                    limit: Some(0),
+                    ..Default::default()
+                }
+            )
+            .unwrap()["sessions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]
@@ -640,7 +813,13 @@ pub(crate) mod tests {
         let r = read(&c, &s, None).unwrap();
         assert_eq!(r["session"]["id"], s.as_str());
         let turns = r["turns"].as_array().unwrap();
-        assert_eq!(turns.iter().map(|t| t["seq"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(
+            turns
+                .iter()
+                .map(|t| t["seq"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
         assert_eq!(turns[0]["user_text"], "q1");
         assert_eq!(turns[0]["answer_text"], "a1");
         assert_eq!(turns[0]["status"], "ok");
@@ -660,7 +839,12 @@ pub(crate) mod tests {
             append(&mut c, &cfg, ap(&s, &format!("q{i}"), "a"), 10 + i).unwrap();
         }
         let r = read(&c, &s, Some(2)).unwrap();
-        let seqs: Vec<i64> = r["turns"].as_array().unwrap().iter().map(|t| t["seq"].as_i64().unwrap()).collect();
+        let seqs: Vec<i64> = r["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["seq"].as_i64().unwrap())
+            .collect();
         assert_eq!(seqs, vec![4, 5]);
     }
 
@@ -669,18 +853,32 @@ pub(crate) mod tests {
         let (_d, mut c) = open_temp();
         let cfg = test_config();
         let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
-        let before: i64 = c.query_row("SELECT rev FROM sessions WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        let before: i64 = c
+            .query_row("SELECT rev FROM sessions WHERE id=?", [&s], |r| r.get(0))
+            .unwrap();
         let r = update(&mut c, &s, Some("Weather chat".into()), Some(true)).unwrap();
         assert!(r["rev"].as_i64().unwrap() > before);
         let got = read(&c, &s, None).unwrap();
         assert_eq!(got["session"]["title"], "Weather chat");
         assert_eq!(got["session"]["pinned"], true);
-        assert_eq!(got["session"]["last_at"], 100, "update must not move last_at");
+        assert_eq!(
+            got["session"]["last_at"], 100,
+            "update must not move last_at"
+        );
         update(&mut c, &s, None, Some(false)).unwrap();
         let got = read(&c, &s, None).unwrap();
-        assert_eq!((got["session"]["title"].as_str(), got["session"]["pinned"].as_bool()), (Some("Weather chat"), Some(false)));
+        assert_eq!(
+            (
+                got["session"]["title"].as_str(),
+                got["session"]["pinned"].as_bool()
+            ),
+            (Some("Weather chat"), Some(false))
+        );
         assert!(update(&mut c, &s, None, None).is_err());
-        assert_eq!(update(&mut c, "nope", Some("t".into()), None).unwrap_err(), "unknown session nope");
+        assert_eq!(
+            update(&mut c, "nope", Some("t".into()), None).unwrap_err(),
+            "unknown session nope"
+        );
     }
 
     #[test]
@@ -691,14 +889,28 @@ pub(crate) mod tests {
         let keep = mk(&mut c, &cfg, "phone", "chat", "x", 100);
         let r = delete(&mut c, &s).unwrap();
         let rev = r["rev"].as_i64().unwrap();
-        let state: String = c.query_row("SELECT state FROM sessions WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        let state: String = c
+            .query_row("SELECT state FROM sessions WHERE id=?", [&s], |r| r.get(0))
+            .unwrap();
         assert_eq!(state, "deleting");
-        let turns: i64 = c.query_row("SELECT count(*) FROM turns WHERE session_id=?", [&s], |r| r.get(0)).unwrap();
+        let turns: i64 = c
+            .query_row("SELECT count(*) FROM turns WHERE session_id=?", [&s], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(turns, 0);
-        let trev: i64 = c.query_row("SELECT rev FROM tombstones WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        let trev: i64 = c
+            .query_row("SELECT rev FROM tombstones WHERE id=?", [&s], |r| r.get(0))
+            .unwrap();
         assert_eq!(trev, rev);
         // other sessions untouched
-        assert_eq!(read(&c, &keep, None).unwrap()["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            read(&c, &keep, None).unwrap()["turns"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(delete(&mut c, "nope").unwrap_err(), "unknown session nope");
     }
 
@@ -710,10 +922,18 @@ pub(crate) mod tests {
         let a = delete(&mut c, &s).unwrap();
         let b = delete(&mut c, &s).unwrap();
         assert_eq!(a, b);
-        let n: i64 = c.query_row("SELECT count(*) FROM tombstones", [], |r| r.get(0)).unwrap();
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM tombstones", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
-        let rev: i64 = c.query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0)).unwrap();
-        assert_eq!(Some(rev), a["rev"].as_i64(), "second delete must not take a new rev");
+        let rev: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            Some(rev),
+            a["rev"].as_i64(),
+            "second delete must not take a new rev"
+        );
     }
 
     #[test]
@@ -724,12 +944,30 @@ pub(crate) mod tests {
         let s = sid(&resolve(&mut c, &cfg, &rp("lap", "voice", None), 100).unwrap());
         append(&mut c, &cfg, ap(&s, "secret pineapple", "noted"), 101).unwrap();
         let del = delete(&mut c, &s).unwrap();
-        assert!(list(&c, &ListParams::default()).unwrap()["sessions"].as_array().unwrap().is_empty());
-        assert_eq!(read(&c, &s, None).unwrap_err(), format!("unknown session {s}"));
-        let sp = SearchParams { query: "pineapple".into(), ..Default::default() };
-        assert!(search(&c, &sp).unwrap()["hits"].as_array().unwrap().is_empty());
-        assert_eq!(update(&mut c, &s, Some("x".into()), None).unwrap_err(), format!("unknown session {s}"));
-        assert_eq!(append(&mut c, &cfg, ap(&s, "more", "x"), 102).unwrap_err(), format!("unknown session {s}"));
+        assert!(list(&c, &ListParams::default()).unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            read(&c, &s, None).unwrap_err(),
+            format!("unknown session {s}")
+        );
+        let sp = SearchParams {
+            query: "pineapple".into(),
+            ..Default::default()
+        };
+        assert!(search(&c, &sp).unwrap()["hits"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            update(&mut c, &s, Some("x".into()), None).unwrap_err(),
+            format!("unknown session {s}")
+        );
+        assert_eq!(
+            append(&mut c, &cfg, ap(&s, "more", "x"), 102).unwrap_err(),
+            format!("unknown session {s}")
+        );
         // resolve neither returns nor extends it, even with the explicit id, inside the pause
         let r = resolve(&mut c, &cfg, &rp("lap", "voice", Some(&s)), 103).unwrap();
         assert_eq!(r["created"], true);
@@ -741,6 +979,8 @@ pub(crate) mod tests {
         let ch = ch["changes"].as_array().unwrap();
         assert!(ch.iter().all(|e| e["op"] != "turn"));
         assert!(ch.iter().all(|e| e["session"]["id"] != s.as_str()));
-        assert!(ch.iter().any(|e| e["op"] == "delete" && e["id"] == s.as_str() && e["rev"] == del["rev"]));
+        assert!(ch
+            .iter()
+            .any(|e| e["op"] == "delete" && e["id"] == s.as_str() && e["rev"] == del["rev"]));
     }
 }
