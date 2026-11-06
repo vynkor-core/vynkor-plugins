@@ -48,6 +48,38 @@ pub fn backup_path(db_path: &Path) -> std::path::PathBuf {
     s.into()
 }
 
+/// A backup is valid when SQLite can open it read-only, `quick_check` is ok and
+/// it holds as many vectors as the database being migrated.
+async fn backup_is_valid(bak: &Path, expected_rows: i64) -> bool {
+    use sqlx::sqlite::SqliteConnectOptions;
+    use sqlx::{ConnectOptions, Connection};
+    use std::str::FromStr;
+    let Ok(opts) = SqliteConnectOptions::from_str(&format!("sqlite://{}", bak.display())) else {
+        return false;
+    };
+    let Ok(mut conn) = opts.read_only(true).connect().await else {
+        return false;
+    };
+    let ok = async {
+        let check: String = sqlx::query_scalar("pragma quick_check")
+            .fetch_one(&mut conn)
+            .await
+            .ok()?;
+        if check != "ok" {
+            return None;
+        }
+        let n: i64 = sqlx::query_scalar("select count(*) from vectors")
+            .fetch_one(&mut conn)
+            .await
+            .ok()?;
+        (n == expected_rows).then_some(())
+    }
+    .await
+    .is_some();
+    let _ = conn.close().await;
+    ok
+}
+
 pub async fn run(pool: &SqlitePool, db_path: &Path) -> Result<MigrateReport, String> {
     let version: i64 = sqlx::query_scalar("pragma user_version")
         .fetch_one(pool)
@@ -83,14 +115,32 @@ pub async fn run(pool: &SqlitePool, db_path: &Path) -> Result<MigrateReport, Str
         return Ok(report);
     }
 
-    // Legacy v0 database with live data: back it up first, once.
+    // Legacy v0 database with live data: back it up first. The backup is
+    // written to a temp file and renamed, so a crash never leaves a half-written
+    // `.bak-v0`; an existing backup is trusted only after it passes verification.
+    let source_rows: i64 = sqlx::query_scalar("select count(*) from vectors")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
     let bak = backup_path(db_path);
-    if !bak.exists() {
+    if !(bak.exists() && backup_is_valid(&bak, source_rows).await) {
+        if bak.exists() {
+            eprintln!(
+                "[vector-db] warn: existing backup {} failed verification; rewriting it",
+                bak.display()
+            );
+        }
+        let mut tmp_name = bak.as_os_str().to_owned();
+        tmp_name.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp_name);
+        let _ = std::fs::remove_file(&tmp);
         sqlx::query("vacuum into ?1")
-            .bind(bak.to_string_lossy().to_string())
+            .bind(tmp.to_string_lossy().to_string())
             .execute(pool)
             .await
-            .map_err(|e| format!("failed to back up database to {}: {e}", bak.display()))?;
+            .map_err(|e| format!("failed to back up database to {}: {e}", tmp.display()))?;
+        std::fs::rename(&tmp, &bak)
+            .map_err(|e| format!("failed to publish backup {}: {e}", bak.display()))?;
         eprintln!(
             "[vector-db] migrating {} to v1; backup at {}",
             db_path.display(),
@@ -173,6 +223,11 @@ pub async fn run(pool: &SqlitePool, db_path: &Path) -> Result<MigrateReport, Str
         .await
         .map_err(|e| e.to_string())?;
 
+    // A damaged v0 file may lack `collections` entirely: create it (with `model`).
+    sqlx::query(COLLECTIONS_DDL)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
     let has_model: i64 = sqlx::query_scalar(
         "select count(*) from pragma_table_info('collections') where name = 'model'",
     )
@@ -429,5 +484,115 @@ mod tests {
             .unwrap();
         assert_eq!(v, 1);
         assert!(!backup_path(&dir.path().join("fresh.db")).exists());
+    }
+
+    async fn open_ro(path: &Path) -> sqlx::SqliteConnection {
+        SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+            .unwrap()
+            .read_only(true)
+            .connect()
+            .await
+            .unwrap()
+    }
+
+    async fn assert_valid_backup(path: &Path, rows: i64) {
+        let mut c = open_ro(path).await;
+        let check: String = sqlx::query_scalar("pragma quick_check").fetch_one(&mut c).await.unwrap();
+        assert_eq!(check, "ok");
+        let n: i64 = sqlx::query_scalar("select count(*) from vectors").fetch_one(&mut c).await.unwrap();
+        assert_eq!(n, rows);
+        let ty: String = sqlx::query_scalar("select typeof(vector) from vectors limit 1")
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
+        assert_eq!(ty, "text", "backup holds the original v0 data");
+    }
+
+    fn refs(rows: &[(&'static str, &'static str, String)]) -> Vec<(&'static str, &'static str, String)> {
+        rows.to_vec()
+    }
+
+    #[tokio::test]
+    async fn backup_is_published_atomically_and_stale_tmp_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = refs(&sample_rows());
+        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        make_v0(dir.path(), "agent", &r).await;
+        let bak = backup_path(&dir.path().join("agent.db"));
+        let mut tmp = bak.as_os_str().to_owned();
+        tmp.push(".tmp");
+        let tmp = std::path::PathBuf::from(tmp);
+        std::fs::write(&tmp, b"half written garbage from a crash").unwrap();
+
+        pools(dir.path()).pool_for("agent").await.unwrap();
+        assert!(!tmp.exists(), "temp file renamed away");
+        assert_valid_backup(&bak, 3).await;
+    }
+
+    #[tokio::test]
+    async fn corrupt_existing_backup_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = refs(&sample_rows());
+        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        make_v0(dir.path(), "agent", &r).await;
+        let bak = backup_path(&dir.path().join("agent.db"));
+        std::fs::write(&bak, b"this is not a sqlite file at all, truncated").unwrap();
+
+        pools(dir.path()).pool_for("agent").await.unwrap();
+        assert_valid_backup(&bak, 3).await;
+    }
+
+    #[tokio::test]
+    async fn backup_with_wrong_row_count_is_rewritten_but_valid_one_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = refs(&sample_rows());
+        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        make_v0(dir.path(), "agent", &r).await;
+        let db = dir.path().join("agent.db");
+        let bak = backup_path(&db);
+        // a perfectly healthy backup of an older state (2 rows)
+        make_v0(dir.path(), "older", &r[..2]).await;
+        std::fs::copy(dir.path().join("older.db"), &bak).unwrap();
+        pools(dir.path()).pool_for("agent").await.unwrap();
+        assert_valid_backup(&bak, 3).await;
+
+        // a matching, healthy backup is left alone
+        let dir2 = tempfile::tempdir().unwrap();
+        make_v0(dir2.path(), "agent", &r).await;
+        let bak2 = backup_path(&dir2.path().join("agent.db"));
+        std::fs::copy(dir2.path().join("agent.db"), &bak2).unwrap();
+        let m1 = std::fs::metadata(&bak2).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        pools(dir2.path()).pool_for("agent").await.unwrap();
+        assert_eq!(m1, std::fs::metadata(&bak2).unwrap().modified().unwrap());
+    }
+
+    #[tokio::test]
+    async fn v0_without_collections_table_migrates() {
+        let dir = tempfile::tempdir().unwrap();
+        let rows = refs(&sample_rows());
+        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        make_v0(dir.path(), "agent", &r).await;
+        {
+            let path = dir.path().join("agent.db");
+            let mut conn = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
+                .unwrap()
+                .connect()
+                .await
+                .unwrap();
+            sqlx::query("drop table collections").execute(&mut conn).await.unwrap();
+        }
+        let pool = pools(dir.path()).pool_for("agent").await.unwrap();
+        let v: i64 = sqlx::query_scalar("pragma user_version").fetch_one(&pool).await.unwrap();
+        assert_eq!(v, 1);
+        let has_model: i64 = sqlx::query_scalar(
+            "select count(*) from pragma_table_info('collections') where name='model'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(has_model, 1);
+        let n: i64 = sqlx::query_scalar("select count(*) from vectors").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 3);
     }
 }

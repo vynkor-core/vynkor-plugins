@@ -55,6 +55,8 @@ struct Loaded {
     ids: Vec<String>,
     data: Vec<f32>,
     meta: Vec<Meta>,
+    /// Serialized metadata length of each row, exactly as counted when added.
+    meta_lens: Vec<usize>,
     index: HashMap<String, usize>,
     /// Sum of per-row overhead (id + metadata estimate), for byte accounting.
     overhead: usize,
@@ -71,6 +73,7 @@ impl Loaded {
             ids: Vec::new(),
             data: Vec::new(),
             meta: Vec::new(),
+            meta_lens: Vec::new(),
             index: HashMap::new(),
             overhead: 0,
         }
@@ -84,15 +87,19 @@ impl Loaded {
         let meta = parse_meta(meta_json);
         if let Some(&i) = self.index.get(&id) {
             self.data[i * self.dim..(i + 1) * self.dim].copy_from_slice(vector);
-            self.overhead -= row_overhead(self.ids[i].len(), meta_len_of(&self.meta[i]));
-            self.overhead += row_overhead(id.len(), meta_json.len());
+            self.overhead = self
+                .overhead
+                .saturating_sub(row_overhead(self.ids[i].len(), self.meta_lens[i]))
+                + row_overhead(id.len(), meta_json.len());
             self.meta[i] = meta;
+            self.meta_lens[i] = meta_json.len();
         } else {
             self.index.insert(id.clone(), self.ids.len());
             self.overhead += row_overhead(id.len(), meta_json.len());
             self.ids.push(id);
             self.data.extend_from_slice(vector);
             self.meta.push(meta);
+            self.meta_lens.push(meta_json.len());
         }
     }
 
@@ -101,25 +108,24 @@ impl Loaded {
             return false;
         };
         let last = self.ids.len() - 1;
-        self.overhead -= row_overhead(self.ids[i].len(), meta_len_of(&self.meta[i]));
+        self.overhead = self
+            .overhead
+            .saturating_sub(row_overhead(self.ids[i].len(), self.meta_lens[i]));
         if i != last {
             let (head, tail) = self.data.split_at_mut(last * self.dim);
             head[i * self.dim..(i + 1) * self.dim].copy_from_slice(&tail[..self.dim]);
             self.ids.swap(i, last);
             self.meta.swap(i, last);
+            self.meta_lens.swap(i, last);
             let moved = self.ids[i].clone();
             self.index.insert(moved, i);
         }
         self.ids.pop();
         self.meta.pop();
+        self.meta_lens.pop();
         self.data.truncate(last * self.dim);
         true
     }
-}
-
-fn meta_len_of(m: &Meta) -> usize {
-    // Approximation used only for accounting symmetry on replace/remove.
-    serde_json::to_string(m).map(|s| s.len()).unwrap_or(2)
 }
 
 fn parse_meta(json: &str) -> Meta {
@@ -217,6 +223,28 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
     s
 }
 
+/// Bytes reserved against the global budget for an in-flight load; released
+/// if the owning future is dropped before `disarm`.
+struct Reservation {
+    cache: VecCache,
+    n: usize,
+    armed: bool,
+}
+
+impl Reservation {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if self.armed {
+            self.cache.release(self.n);
+        }
+    }
+}
+
 struct Slot {
     state: Arc<RwLock<Option<Loaded>>>,
     /// Serializes writers and loaders of this collection.
@@ -270,6 +298,28 @@ impl VecCache {
                 })
             })
             .clone()
+    }
+
+    fn existing_slot(&self, caller: &str, collection: &str) -> Option<Arc<Slot>> {
+        let g = self.inner.slots.lock().unwrap();
+        g.get(&(caller.to_string(), collection.to_string())).cloned()
+    }
+
+    /// Slot for a collection that must already exist in SQLite; never creates
+    /// one for unknown names (callers control collection names).
+    async fn slot_if_collection_exists(
+        &self,
+        pool: &SqlitePool,
+        caller: &str,
+        collection: &str,
+    ) -> Result<Option<Arc<Slot>>, String> {
+        if let Some(s) = self.existing_slot(caller, collection) {
+            return Ok(Some(s));
+        }
+        if Self::collection_dim(pool, collection).await?.is_none() {
+            return Ok(None);
+        }
+        Ok(Some(self.slot(caller, collection)))
     }
 
     fn total_bytes(&self) -> usize {
@@ -334,6 +384,11 @@ impl VecCache {
     fn held_bytes(&self) -> usize {
         let g = self.inner.slots.lock().unwrap();
         g.values().map(|s| s.bytes.load(AtomicOrdering::SeqCst)).sum()
+    }
+
+    #[cfg(test)]
+    fn slot_count(&self) -> usize {
+        self.inner.slots.lock().unwrap().len()
     }
 
     /// True when the collection is currently held in memory.
@@ -474,7 +529,12 @@ impl VecCache {
         top_k: usize,
         filter: Option<&Meta>,
     ) -> Result<Vec<(String, f32)>, String> {
-        let slot = self.slot(caller, collection);
+        let Some(slot) = self
+            .slot_if_collection_exists(pool, caller, collection)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
         slot.last_used.store(self.now(), AtomicOrdering::Relaxed);
 
         loop {
@@ -524,36 +584,65 @@ impl VecCache {
                 drop(_w);
                 return scan_sqlite(pool, collection, q, top_k, filter).await;
             }
-            let loaded = match self.load(pool, collection, dim).await {
-                Ok(l) => l,
-                Err(e) => {
-                    self.release(est);
-                    return Err(e);
-                }
+            // RAII: if this future is dropped mid-load the reservation is returned.
+            let mut res = Reservation {
+                cache: self.clone(),
+                n: est,
+                armed: true,
             };
+            let loaded = self.load(pool, collection, dim).await?;
             let actual = loaded.bytes();
             if actual > est {
                 // The estimate was low (rows grew meanwhile); claim the rest or give up.
-                if !self.reserve_with_eviction(&slot, actual - est) {
-                    self.release(est);
+                let extra = actual - est;
+                if !self.reserve_with_eviction(&slot, extra) {
+                    drop(res);
                     drop(_w);
                     return scan_sqlite(pool, collection, q, top_k, filter).await;
                 }
-            } else {
+                res.n += extra;
+            } else if actual < est {
                 self.release(est - actual);
+                res.n = actual;
             }
             // Install state and bytes together under the write guard so make_room
-            // never sees one without the other.
+            // never sees one without the other. The guard is awaited while the
+            // reservation is still armed; disarming and installing do not await.
             let mut st = slot.state.write().await;
             slot.bytes.store(actual, AtomicOrdering::SeqCst);
             *st = Some(loaded);
+            res.disarm();
         }
     }
 
     /// Write-through upsert: one SQLite transaction (creating the collection
     /// if needed), then the in-memory update, under the writer mutex.
     /// `model` (non-empty) is recorded on the collection when it has none.
+    ///
+    /// The whole write runs in a spawned task: if the caller's future is
+    /// dropped after the SQLite commit, the cache update still happens, so the
+    /// cache can never silently fall behind the database.
     pub async fn upsert(
+        &self,
+        pool: &SqlitePool,
+        caller: &str,
+        collection: &str,
+        dim: usize,
+        model: Option<&str>,
+        rows: Vec<UpsertRow>,
+    ) -> Result<usize, String> {
+        let (this, pool) = (self.clone(), pool.clone());
+        let (caller, collection) = (caller.to_string(), collection.to_string());
+        let model = model.map(str::to_string);
+        tokio::spawn(async move {
+            this.upsert_inner(&pool, &caller, &collection, dim, model.as_deref(), rows)
+                .await
+        })
+        .await
+        .map_err(|e| format!("upsert task failed: {e}"))?
+    }
+
+    async fn upsert_inner(
         &self,
         pool: &SqlitePool,
         caller: &str,
@@ -637,7 +726,28 @@ impl VecCache {
         collection: &str,
         id: &str,
     ) -> Result<bool, String> {
-        let slot = self.slot(caller, collection);
+        let (this, pool) = (self.clone(), pool.clone());
+        let (caller, collection, id) = (caller.to_string(), collection.to_string(), id.to_string());
+        tokio::spawn(async move {
+            this.delete_inner(&pool, &caller, &collection, &id).await
+        })
+        .await
+        .map_err(|e| format!("delete task failed: {e}"))?
+    }
+
+    async fn delete_inner(
+        &self,
+        pool: &SqlitePool,
+        caller: &str,
+        collection: &str,
+        id: &str,
+    ) -> Result<bool, String> {
+        let Some(slot) = self
+            .slot_if_collection_exists(pool, caller, collection)
+            .await?
+        else {
+            return Ok(false);
+        };
         let _w = slot.writer.lock().await;
         let res = sqlx::query("delete from vectors where collection = ?1 and id = ?2")
             .bind(collection)
@@ -656,6 +766,119 @@ impl VecCache {
         }
         Ok(res.rows_affected() > 0)
     }
+
+    /// Atomically publish a finished re-embed: in ONE transaction under the
+    /// collection's writer lock, delete rows without text, replace each row's
+    /// vector with its shadow vector (only if the shadow was computed from the
+    /// row's current text), set `collections.dim`/`model`, and clear the
+    /// shadow. If any row changed since it was embedded the swap is not done
+    /// (`Stale`) and the caller re-embeds those rows first. The cached copy is
+    /// dropped before the writer lock is released, so no reader can pair the
+    /// new model with old cached vectors.
+    pub async fn swap_reembedded(
+        &self,
+        pool: &SqlitePool,
+        caller: &str,
+        collection: &str,
+        model: &str,
+    ) -> Result<SwapOutcome, String> {
+        let (this, pool) = (self.clone(), pool.clone());
+        let (caller, collection, model) = (caller.to_string(), collection.to_string(), model.to_string());
+        tokio::spawn(async move {
+            this.swap_inner(&pool, &caller, &collection, &model).await
+        })
+        .await
+        .map_err(|e| format!("swap task failed: {e}"))?
+    }
+
+    async fn swap_inner(
+        &self,
+        pool: &SqlitePool,
+        caller: &str,
+        collection: &str,
+        model: &str,
+    ) -> Result<SwapOutcome, String> {
+        let slot = self.slot(caller, collection);
+        let _w = slot.writer.lock().await;
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        let stale: i64 = sqlx::query_scalar(
+            "select count(*) from vectors v left join vectors_reembed s \
+               on s.collection = v.collection and s.id = v.id \
+             where v.collection = ?1 and v.text <> '' and (s.id is null or s.text <> v.text)",
+        )
+        .bind(collection)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if stale > 0 {
+            return Ok(SwapOutcome::Stale(stale as usize));
+        }
+        let dropped = sqlx::query("delete from vectors where collection = ?1 and text = ''")
+            .bind(collection)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+        if dropped > 0 {
+            eprintln!(
+                "[vector-db] warn: re-embed of {collection}: deleted {dropped} row(s) with empty text"
+            );
+        }
+        let new_dim: Option<i64> = sqlx::query_scalar(
+            "select length(vector) / 4 from vectors_reembed where collection = ?1 limit 1",
+        )
+        .bind(collection)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        let res = sqlx::query(
+            "update vectors set vector = (select s.vector from vectors_reembed s \
+               where s.collection = vectors.collection and s.id = vectors.id and s.text = vectors.text) \
+             where collection = ?1",
+        )
+        .bind(collection)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        match new_dim {
+            Some(d) => {
+                sqlx::query("update collections set model = ?2, dim = ?3 where name = ?1")
+                    .bind(collection)
+                    .bind(model)
+                    .bind(d)
+                    .execute(&mut *tx)
+                    .await
+            }
+            None => {
+                sqlx::query("update collections set model = ?2 where name = ?1")
+                    .bind(collection)
+                    .bind(model)
+                    .execute(&mut *tx)
+                    .await
+            }
+        }
+        .map_err(|e| e.to_string())?;
+        sqlx::query("delete from vectors_reembed where collection = ?1")
+            .bind(collection)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())?;
+        // still holding the writer lock: drop the stale cached copy
+        let mut st = slot.state.write().await;
+        if st.take().is_some() {
+            self.drop_bytes(&slot);
+        }
+        Ok(SwapOutcome::Done(res.rows_affected() as usize))
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SwapOutcome {
+    /// Swapped; number of rows that now carry the new vectors.
+    Done(usize),
+    /// This many rows changed (or appeared) since they were embedded.
+    Stale(usize),
 }
 
 fn scan_loaded(l: &Loaded, q: &[f32], top_k: usize, filter: Option<&Meta>) -> Vec<(String, f32)> {
@@ -1285,6 +1508,141 @@ mod tests {
         cache.evict_idle(i64::MAX);
         assert_accounting(&cache);
         assert_eq!(cache.total_bytes(), 0);
+    }
+
+    #[test]
+    fn overhead_stays_exact_with_noncanonical_metadata() {
+        let mut l = Loaded::new(2);
+        // metadata whose serialized form differs from the canonical re-serialization
+        l.push("a".into(), &[1.0, 0.0], "{\"k\" :   1,   \"z\":  [1 , 2]}");
+        l.push("b".into(), &[0.0, 1.0], "{ }");
+        l.push("c".into(), &[1.0, 1.0], "{\"x\":\"y\"}");
+        let full = l.bytes();
+        // replace with different-sized metadata, then back
+        l.push("a".into(), &[1.0, 0.0], "{}");
+        l.push("a".into(), &[1.0, 0.0], "{\"k\" :   1,   \"z\":  [1 , 2]}");
+        assert_eq!(l.bytes(), full, "replace round-trips exactly");
+        assert!(l.remove("a"));
+        assert!(l.remove("c"));
+        assert!(l.remove("b"));
+        assert!(!l.remove("b"));
+        assert_eq!(l.overhead, 0, "no residue and no underflow");
+        assert_eq!(l.bytes(), 0);
+    }
+
+    #[tokio::test]
+    async fn query_and_delete_on_unknown_collection_create_no_slot() {
+        let (_d, pool) = setup().await;
+        let cache = VecCache::new(CacheConfig::default());
+        for i in 0..50 {
+            let name = format!("nope{i}");
+            assert!(cache.query(&pool, "t", &name, &[1.0, 0.0], 3, None).await.unwrap().is_empty());
+            assert!(!cache.delete(&pool, "t", &name, "x").await.unwrap());
+        }
+        assert_eq!(cache.slot_count(), 0);
+        // a real collection does get one
+        let mut rng = Rng(2);
+        cache.upsert(&pool, "t", "real", 8, None, rows(&mut rng, 2, 8, "r")).await.unwrap();
+        cache.query(&pool, "t", "real", &rng.unit(8), 1, None).await.unwrap();
+        assert_eq!(cache.slot_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn dropped_load_future_returns_reservation() {
+        let (_d, pool) = setup().await;
+        let cache = VecCache::new(CacheConfig::default());
+        let mut rng = Rng(4);
+        cache.upsert(&pool, "t", "c", 64, None, rows(&mut rng, 50, 64, "d")).await.unwrap();
+        assert_eq!(cache.total_bytes(), 0);
+        // A reader inside the (still unloaded) slot makes the loader's final
+        // `state.write()` wait: the load future is parked mid-way, reservation held.
+        let guard = cache.slot("t", "c").state.clone().read_owned().await;
+        let q = rng.unit(64);
+        let fut = cache.query(&pool, "t", "c", &q, 3, None);
+        let timed_out = tokio::time::timeout(std::time::Duration::from_millis(200), fut).await;
+        assert!(timed_out.is_err(), "load must still be pending");
+        drop(guard);
+        assert_eq!(cache.total_bytes(), 0, "reservation released when the future was dropped");
+        assert_accounting(&cache);
+        // and the collection loads normally afterwards
+        assert_eq!(cache.query(&pool, "t", "c", &q, 3, None).await.unwrap().len(), 3);
+        assert!(cache.total_bytes() > 0);
+        assert_accounting(&cache);
+    }
+
+    #[tokio::test]
+    async fn dropped_upsert_future_still_updates_cache() {
+        let (_d, pool) = setup().await;
+        let cache = VecCache::new(CacheConfig::default());
+        let mut rng = Rng(6);
+        cache.upsert(&pool, "t", "c", 16, None, rows(&mut rng, 5, 16, "d")).await.unwrap();
+        cache.query(&pool, "t", "c", &rng.unit(16), 1, None).await.unwrap();
+        assert!(cache.is_loaded("t", "c").await);
+        let probe = rng.unit(16);
+        // a reader parks the post-commit cache update; the caller gives up waiting
+        let guard = cache.slot("t", "c").state.clone().read_owned().await;
+        let row = UpsertRow { id: "late".into(), text: String::new(), vector: probe.clone(), metadata_json: "{}".into() };
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            cache.upsert(&pool, "t", "c", 16, None, vec![row]),
+        )
+        .await;
+        assert!(r.is_err(), "caller future dropped while the update was parked");
+        drop(guard);
+        // the committed row must show up in the cache anyway
+        let mut found = false;
+        for _ in 0..50 {
+            let hit = cache.query(&pool, "t", "c", &probe, 1, None).await.unwrap();
+            if hit[0].0 == "late" {
+                found = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(found, "cache fell behind the database after a cancelled upsert");
+        assert_accounting(&cache);
+    }
+
+    #[tokio::test]
+    async fn swap_refuses_when_row_changed_after_embedding() {
+        let (_d, pool) = setup().await;
+        let cache = VecCache::new(CacheConfig::default());
+        let mut rng = Rng(12);
+        let rs = rows(&mut rng, 3, 8, "d"); // texts "text 0".."text 2"
+        cache.upsert(&pool, "t", "c", 8, None, rs).await.unwrap();
+        sqlx::query(
+            "create table if not exists vectors_reembed (collection TEXT NOT NULL, id TEXT NOT NULL, \
+             text TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (collection, id))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for i in 0..3 {
+            sqlx::query("insert into vectors_reembed values ('c', ?1, ?2, ?3)")
+                .bind(format!("d{i}"))
+                .bind(format!("text {i}"))
+                .bind(codec::encode(&rng.unit(12)))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        // d1 is rewritten after its shadow vector was computed
+        sqlx::query("update vectors set text = 'edited' where collection = 'c' and id = 'd1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let out = cache.swap_reembedded(&pool, "t", "c", "m2").await.unwrap();
+        assert_eq!(out, SwapOutcome::Stale(1));
+        let (model, dim): (String, i64) = sqlx::query_as("select model, dim from collections where name = 'c'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((model.as_str(), dim), ("", 8), "nothing swapped");
+        let lens: Vec<i64> = sqlx::query_scalar("select distinct length(vector)/4 from vectors")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(lens, vec![8]);
     }
 
     /// Run with: cargo test --release -- --ignored --nocapture query_20k_1024d_fast
