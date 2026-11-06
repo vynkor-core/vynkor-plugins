@@ -151,7 +151,16 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
   logged once per process), an error or a timeout
   (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`, 2000) just means no session. The model
   cannot call `chat_turn_append`, `chat_session_resolve`, `chat_sync`,
-  `chat_session_update` or `chat_delete`, even if allowlisted.
+  `chat_session_update` or `chat_delete`, nor the agent's own `goal_start`,
+  `goal_resume`, `goal_delete`, `memory_forget_session` or `memory_clear`, even
+  if allowlisted (`memory_forget` / `memory_list` remain allowlistable).
+- Tool filtering by goal keywords also looks at the session history (or the
+  caller's `context` without history), so a follow-up keeps the previous tools;
+  the transcript alternates `user`/`assistant` (the first history question is
+  folded into the role message). Turns with an empty question or answer are skipped.
+- Trace redaction also scrubs plain text (`Bearer ...`, `NAME=value`/`name: value`
+  with secret-like names, 32+ char token-like runs) and omits the result of
+  `fs_*`, `exec*` and `shell*` tools (`[omitted]`).
 - Facts remembered by long-term memory are tagged with the session.
 - `goal_delete {id}` -> `{deleted}` and `memory_forget_session {session_id}` ->
   `{deleted}` (facts removed) exist for the history delete cascade; both are

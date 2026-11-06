@@ -246,7 +246,7 @@ pub(crate) async fn persist(db: &Db, doc: &mut GoalDoc) -> Result<(), String> {
     db.put(doc).await
 }
 
-fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
+pub(crate) fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
     let n = doc.steps.iter().map(|s| s.n).max().unwrap_or(0) + 1;
     doc.steps.push(StepRec { n, kind: kind.to_string(), detail });
 }

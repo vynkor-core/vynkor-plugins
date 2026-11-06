@@ -322,8 +322,7 @@ async fn start_goal(
         tool_trace: Vec::new(),
     };
 
-    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
-    record_turn(rpc, config, &doc);
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -345,6 +344,30 @@ fn record_turn(rpc: &Rpc, config: &Config, doc: &GoalDoc) {
     let doc = doc.clone();
     let timeout = config.chats_timeout_ms;
     tokio::spawn(async move { sessions::append_turn(&rpc, timeout, &doc).await });
+}
+
+/// `engine::run` plus the chat turn. When the engine itself fails (storage
+/// or transcript budget), the goal is still ended as `error` (persisted best
+/// effort) and its turn is recorded as `failed`; the error is returned as before.
+async fn run_and_record(
+    db: &Db,
+    rpc: &Rpc,
+    config: &Config,
+    catalog: &Catalog,
+    doc: &mut GoalDoc,
+    entry: engine::Entry,
+) -> Result<(), String> {
+    let result = engine::run(db, rpc, catalog, doc, entry).await;
+    if let Err(e) = &result {
+        doc.status = store::STATUS_ERROR.to_string();
+        doc.error = e.clone();
+        engine::next_step(doc, "error", json!({"error": e}));
+        if let Err(pe) = engine::persist(db, doc).await {
+            eprintln!("[agent] could not persist failed goal {}: {pe}", doc.id);
+        }
+    }
+    record_turn(rpc, config, doc);
+    result
 }
 
 async fn resume_goal(
@@ -380,8 +403,7 @@ async fn resume_goal(
     }
 
     let catalog = Catalog::load_with_discovery(rpc).await?;
-    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
-    record_turn(rpc, config, &doc);
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 

@@ -24,6 +24,11 @@ pub const COLLECTION_ENV: &str = "AGENT_PLUGIN_MEMORY_COLLECTION";
 pub const DEFAULT_COLLECTION: &str = "agent-memory";
 /// Index of fact ids in our own database namespace (drives clear/forget/list).
 pub const INDEX_KEY: &str = "memory:index";
+
+/// Serializes every read-modify-write of [`INDEX_KEY`] in this process:
+/// detached `remember` tasks, `forget`, `clear` and `forget_session` would
+/// otherwise overwrite each other's index changes.
+static INDEX_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const MAX_FACTS_PER_GOAL: usize = 8;
 const MAX_FACT_CHARS: usize = 512;
 pub const RECALL_TOP_K: u32 = 5;
@@ -200,6 +205,7 @@ pub async fn remember(
 
     let db_timeout_ms = 5_000;
     let now = store::now_ms();
+    let _guard = INDEX_LOCK.lock().await;
     let mut index = match read_index(rpc, db_timeout_ms).await {
         Ok(idx) => idx,
         Err(e) => {
@@ -271,6 +277,7 @@ pub async fn forget(rpc: &Rpc, query: &str) -> Result<Option<String>, String> {
         return Ok(None);
     }
     let db_timeout_ms = 5_000;
+    let _guard = INDEX_LOCK.lock().await;
     let mut index = read_index(rpc, db_timeout_ms).await?;
     index.retain(|e| e.get("id").and_then(Value::as_str) != Some(&id));
     write_index(rpc, db_timeout_ms, &index).await?;
@@ -280,6 +287,7 @@ pub async fn forget(rpc: &Rpc, query: &str) -> Result<Option<String>, String> {
 /// Wipe every stored fact (via the id index) plus the index itself.
 pub async fn clear(rpc: &Rpc) -> Result<usize, String> {
     let db_timeout_ms = 5_000;
+    let _guard = INDEX_LOCK.lock().await;
     let index = read_index(rpc, db_timeout_ms).await?;
     let mut deleted = 0usize;
     for entry in &index {
@@ -306,25 +314,46 @@ pub async fn clear(rpc: &Rpc) -> Result<usize, String> {
 /// are never matched. Returns how many facts the vector store reported deleted.
 pub async fn forget_session(rpc: &Rpc, session_id: &str) -> Result<usize, String> {
     let db_timeout_ms = 5_000;
+    let _guard = INDEX_LOCK.lock().await;
     let mut index = read_index(rpc, db_timeout_ms).await?;
     let in_session = |e: &Value| e.get("session_id").and_then(Value::as_str) == Some(session_id);
     let mut deleted = 0usize;
+    // Ids that are gone from the vector store (deleted now or already absent).
+    let mut gone: Vec<String> = Vec::new();
+    let mut failure: Option<String> = None;
     for entry in index.iter().filter(|e| in_session(e)) {
         let Some(id) = entry.get("id").and_then(Value::as_str) else { continue };
-        let ok = rpc
+        match rpc
             .call("vec_delete", json!({"collection": collection(), "id": id}), 10_000)
-            .await?
-            .get("deleted")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        deleted += ok as usize;
+            .await
+        {
+            Ok(v) => {
+                deleted += v.get("deleted").and_then(Value::as_bool).unwrap_or(false) as usize;
+                gone.push(id.to_string());
+            }
+            Err(e) => {
+                failure = Some(e);
+                break;
+            }
+        }
     }
+    // Rewrite the index for what was removed even when a later delete
+    // failed, so a retry does not chase ids that no longer exist.
     let before = index.len();
-    index.retain(|e| !in_session(e));
+    if failure.is_none() {
+        index.retain(|e| !in_session(e));
+    } else {
+        index.retain(|e| {
+            e.get("id").and_then(Value::as_str).map_or(true, |id| !gone.iter().any(|g| g == id))
+        });
+    }
     if index.len() != before {
         write_index(rpc, db_timeout_ms, &index).await?;
     }
-    Ok(deleted)
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(deleted),
+    }
 }
 
 /// Contents of the memory index for `memory_list` / operator inspection.
@@ -411,6 +440,25 @@ mod tests {
         assert_eq!(fake.vec_query_calls.load(Ordering::SeqCst), 1, "non-empty index must still query");
         let block = out.expect("expected a recalled facts block");
         assert!(block.contains("Arch Linux"));
+    }
+
+    #[tokio::test]
+    async fn index_writers_wait_for_the_index_lock() {
+        let fake = fake_rpc(Vec::new(), Vec::new());
+        let guard = INDEX_LOCK.lock().await;
+        let rpc = fake.rpc.clone();
+        let forget = tokio::spawn(async move { forget_session(&rpc, "S1").await });
+        let rpc = fake.rpc.clone();
+        let clear_all = tokio::spawn(async move { clear(&rpc).await });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!forget.is_finished() && !clear_all.is_finished(), "must wait for the lock");
+        assert_eq!(fake.db_get_calls.load(Ordering::SeqCst), 0, "no index read under the lock");
+        drop(guard);
+        // fake rpc has no db_set, so the index write fails after the read: that's fine here,
+        // the point is that both only proceed once the lock is free.
+        let _ = forget.await;
+        let _ = clear_all.await;
+        assert!(fake.db_get_calls.load(Ordering::SeqCst) >= 2);
     }
 
     #[test]

@@ -260,6 +260,17 @@ pub const CHATS_INTERNAL_ACTIONS: [&str; 5] = [
     "chat_delete",
 ];
 
+/// The agent's own management actions: the model must not start nested
+/// goals, resume or delete goals, or wipe memory, whatever the allowlist or
+/// tools file says. (`memory_forget` / `memory_list` stay as they were:
+/// operator-allowlistable.)
+pub const AGENT_MANAGEMENT_ACTIONS: [&str; 5] =
+    ["goal_start", "goal_resume", "goal_delete", "memory_forget_session", "memory_clear"];
+
+fn is_hard_denied(name: &str) -> bool {
+    CHATS_INTERNAL_ACTIONS.contains(&name) || AGENT_MANAGEMENT_ACTIONS.contains(&name)
+}
+
 impl Catalog {
     /// Build the effective catalog from process env. Read per goal start so
     /// operator edits land without a restart (see module docs).
@@ -275,9 +286,9 @@ impl Catalog {
     pub fn build(allowed_raw: &str, file_path: Option<&str>) -> Result<Catalog, String> {
         let mut allowed = parse_allowlist(allowed_raw);
         allowed.retain(|name| {
-            let denied = CHATS_INTERNAL_ACTIONS.contains(&name.as_str());
+            let denied = is_hard_denied(name);
             if denied {
-                eprintln!("[agent] ignoring \"{name}\" in the allowlist: internal chats action");
+                eprintln!("[agent] ignoring \"{name}\" in the allowlist: internal or management action");
             }
             !denied
         });
@@ -945,6 +956,19 @@ mod tests {
         for internal in CHATS_INTERNAL_ACTIONS {
             assert!(cat.get(internal).is_none(), "{internal} must not be dispatchable");
             assert!(!cat.allowed_actions.iter().any(|a| a == internal));
+        }
+    }
+
+    #[test]
+    fn agent_management_actions_never_reach_llm_catalog() {
+        let allowed = "goal_start,goal_resume,goal_delete,memory_forget_session,memory_clear,\
+                       memory_forget,memory_list,goal_get,notify_send";
+        let cat = Catalog::build(allowed, None).unwrap();
+        let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["memory_forget", "memory_list", "goal_get", "notify_send"]);
+        for denied in AGENT_MANAGEMENT_ACTIONS {
+            assert!(cat.get(denied).is_none(), "{denied}");
+            assert!(!cat.allowed_actions.iter().any(|a| a == denied), "{denied}");
         }
     }
 }

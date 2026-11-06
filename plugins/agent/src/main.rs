@@ -409,6 +409,9 @@ mod tests {
     #[derive(Default)]
     struct FakeDb {
         kv: BTreeMap<String, Value>,
+        /// Fail exactly the Nth `db_set` of a `goal:*` key (1-based), once.
+        fail_goal_set_at: Option<usize>,
+        goal_sets: usize,
     }
 
     impl FakeDb {
@@ -427,6 +430,12 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
+                    if k.starts_with("goal:") {
+                        self.goal_sets += 1;
+                        if self.fail_goal_set_at == Some(self.goal_sets) {
+                            return Err("injected db_set failure".to_string());
+                        }
+                    }
                     self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
@@ -1341,6 +1350,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn engine_error_ends_goal_as_error_and_still_records_the_turn() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // 1st goal write (running) succeeds, the 2nd (after the answer) fails.
+        shim.db.lock().await.fail_goal_set_at = Some(2);
+        shim.push_ai_reply("an answer that cannot be saved").await;
+        let err = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap_err();
+        assert!(err.contains("injected db_set failure"), "{err}");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["status"], "failed");
+        // The model had already answered; that text is what the turn keeps.
+        assert_eq!(a["answer_text"], "an answer that cannot be saved");
+        // The recovery write (3rd) succeeded: the goal is not left "running".
+        let got = shim.call("goal_get", serde_json::json!({"id": a["goal_id"]})).await.unwrap();
+        assert_eq!(got["goal"]["status"], "error");
+        assert!(got["goal"]["error"].as_str().unwrap().contains("injected db_set failure"));
+    }
+
+    #[tokio::test]
     async fn goal_without_session_appends_nothing() {
         let shim = start_plugin(Config::default()).await; // chats missing
         shim.push_ai_reply("ok").await;
@@ -1696,6 +1724,13 @@ mod tests {
             params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
         let id = params.get("id").and_then(Value::as_str).unwrap_or_default();
         let mut store = store.lock().await;
+        // Test hook: ids listed in the pseudo-collection `__fail_delete__` fail.
+        let doomed = store
+            .get("__fail_delete__")
+            .is_some_and(|v| v.iter().any(|d| d["id"].as_str() == Some(id)));
+        if doomed {
+            return Err(format!("vec_delete injected failure for {id}"));
+        }
         let docs = store.entry(collection).or_default();
         let before = docs.len();
         docs.retain(|d| d["id"].as_str() != Some(id));
@@ -1874,6 +1909,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unknown["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn forget_session_partial_failure_still_rewrites_the_index() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        seed_session_fact(&shim, "a1", Some("S1")).await;
+        seed_session_fact(&shim, "a2", Some("S1")).await;
+        seed_session_fact(&shim, "a3", Some("S1")).await;
+        seed_session_fact(&shim, "b1", Some("S2")).await;
+        shim.seed_fact("__fail_delete__", "a2", "boom").await;
+        let err = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("injected failure"), "{err}");
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        let mut ids: Vec<&str> =
+            idx["facts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        ids.sort();
+        // a1 was deleted before the failure: gone from the index; a2 (failed), a3 (not tried) remain.
+        assert_eq!(ids, ["a2", "a3", "b1"]);
+        let left: Vec<String> = shim.vec_facts("agent-memory-test").await.iter()
+            .map(|f| f["id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(left, ["a2", "a3", "b1"]);
+        // Once the fault is gone a retry finishes the job.
+        shim.vec_store.lock().await.remove("__fail_delete__");
+        let ok = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(ok["deleted"], 2);
     }
 
     #[tokio::test]
