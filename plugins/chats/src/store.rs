@@ -191,6 +191,131 @@ pub fn append(conn: &mut Connection, cfg: &Config, p: AppendParams, now: i64) ->
     Ok(json!({"turn_id": turn_id, "seq": seq, "rev": rev}))
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ListParams {
+    pub from: Option<i64>,
+    pub to: Option<i64>,
+    pub kind: Option<String>,
+    pub source: Option<String>,
+    pub limit: Option<i64>,
+    pub before: Option<i64>,
+}
+
+/// Column list matching [`session_from_row`].
+pub const SESSION_COLS: &str =
+    "id, kind, device, source, title, started_at, last_at, summary, tags, tier, pinned, turns";
+/// Column list matching [`turn_from_row`] (columns 0..=7).
+pub const TURN_COLS: &str = "id, seq, at, user_text, answer_text, status, tool_trace, goal_id";
+
+fn parse_json_or(s: &str, fallback: Value) -> Value {
+    serde_json::from_str(s).unwrap_or(fallback)
+}
+
+pub fn session_from_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
+    let tags: String = r.get(8)?;
+    Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "kind": r.get::<_, String>(1)?,
+        "device": r.get::<_, String>(2)?,
+        "source": r.get::<_, String>(3)?,
+        "title": r.get::<_, String>(4)?,
+        "started_at": r.get::<_, i64>(5)?,
+        "last_at": r.get::<_, i64>(6)?,
+        "summary": r.get::<_, String>(7)?,
+        "tags": parse_json_or(&tags, json!([])),
+        "tier": r.get::<_, String>(9)?,
+        "pinned": r.get::<_, i64>(10)? != 0,
+        "turns": r.get::<_, i64>(11)?,
+    }))
+}
+
+pub fn turn_from_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
+    let trace: String = r.get(6)?;
+    Ok(json!({
+        "id": r.get::<_, String>(0)?,
+        "seq": r.get::<_, i64>(1)?,
+        "at": r.get::<_, i64>(2)?,
+        "user_text": r.get::<_, String>(3)?,
+        "answer_text": r.get::<_, String>(4)?,
+        "status": r.get::<_, String>(5)?,
+        "tool_trace": parse_json_or(&trace, json!([])),
+        "goal_id": r.get::<_, Option<String>>(7)?,
+    }))
+}
+
+/// Live sessions only, most recently active first.
+pub fn list(conn: &Connection, p: &ListParams) -> Result<Value, String> {
+    let limit = p.limit.unwrap_or(50).clamp(1, 200);
+    let sql = format!(
+        "SELECT {SESSION_COLS} FROM sessions
+         WHERE state = 'live'
+           AND (?1 IS NULL OR last_at >= ?1)
+           AND (?2 IS NULL OR last_at <= ?2)
+           AND (?3 IS NULL OR kind = ?3)
+           AND (?4 IS NULL OR source = ?4)
+           AND (?5 IS NULL OR last_at < ?5)
+         ORDER BY last_at DESC, id DESC LIMIT ?6"
+    );
+    let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
+    let rows = stmt
+        .query_map(params![p.from, p.to, p.kind, p.source, p.before, limit], session_from_row)
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db_err)?;
+    Ok(json!({"sessions": rows}))
+}
+
+pub fn read(conn: &Connection, id: &str, last: Option<u32>) -> Result<Value, String> {
+    let session = conn
+        .query_row(
+            &format!("SELECT {SESSION_COLS} FROM sessions WHERE id = ? AND state = 'live'"),
+            [id],
+            session_from_row,
+        )
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| format!("unknown session {id}"))?;
+    let sql = match last {
+        Some(_) => format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2"),
+        None => format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2"),
+    };
+    let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
+    let mut turns = stmt
+        .query_map(params![id, last.map(i64::from).unwrap_or(-1)], turn_from_row)
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(db_err)?;
+    if last.is_some() {
+        turns.reverse();
+    }
+    Ok(json!({"session": session, "turns": turns}))
+}
+
+/// Rename and/or pin a session. Does not touch `last_at`.
+pub fn update(conn: &mut Connection, id: &str, title: Option<String>, pinned: Option<bool>) -> Result<Value, String> {
+    if title.is_none() && pinned.is_none() {
+        return Err("nothing to update: pass title and/or pinned".into());
+    }
+    let title = title.map(|t| truncate_chars(t.trim(), 512));
+    let tx = conn.transaction().map_err(db_err)?;
+    let exists: bool = tx
+        .query_row("SELECT 1 FROM sessions WHERE id = ? AND state = 'live'", [id], |_| Ok(true))
+        .optional()
+        .map_err(db_err)?
+        .unwrap_or(false);
+    if !exists {
+        return Err(format!("unknown session {id}"));
+    }
+    let rev = next_rev(&tx).map_err(db_err)?;
+    tx.execute(
+        "UPDATE sessions SET title = COALESCE(?1, title), pinned = COALESCE(?2, pinned), rev = ?3 WHERE id = ?4",
+        params![title, pinned.map(i64::from), rev, id],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(json!({"rev": rev}))
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -416,5 +541,116 @@ pub(crate) mod tests {
         assert!(revs.windows(2).all(|w| w[0] < w[1]), "revs not strictly increasing");
         let distinct: i64 = c.lock().unwrap().query_row("SELECT count(DISTINCT rev) FROM turns", [], |r| r.get(0)).unwrap();
         assert_eq!(distinct, 200);
+    }
+
+    fn mk(c: &mut Connection, cfg: &Config, device: &str, kind: &str, source: &str, at: i64) -> String {
+        let mut p = rp(device, kind, None);
+        p.source = source.into();
+        let s = sid(&resolve(c, cfg, &p, at).unwrap());
+        append(c, cfg, ap(&s, "q", "a"), at).unwrap();
+        s
+    }
+
+    #[test]
+    fn list_orders_by_last_at_and_filters() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let a = mk(&mut c, &cfg, "lap", "chat", "desktop", 100);
+        let b = mk(&mut c, &cfg, "lap", "voice", "daemon", 300);
+        let d = mk(&mut c, &cfg, "phone", "chat", "desktop", 200);
+        let ids = |v: Value| -> Vec<String> {
+            v["sessions"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect()
+        };
+        assert_eq!(ids(list(&c, &ListParams::default()).unwrap()), vec![b.clone(), d.clone(), a.clone()]);
+        let by_kind = ListParams { kind: Some("chat".into()), ..Default::default() };
+        assert_eq!(ids(list(&c, &by_kind).unwrap()), vec![d.clone(), a.clone()]);
+        let by_src = ListParams { source: Some("daemon".into()), ..Default::default() };
+        assert_eq!(ids(list(&c, &by_src).unwrap()), vec![b.clone()]);
+        let range = ListParams { from: Some(150), to: Some(250), ..Default::default() };
+        assert_eq!(ids(list(&c, &range).unwrap()), vec![d.clone()]);
+        let one = list(&c, &ListParams { limit: Some(1), ..Default::default() }).unwrap();
+        let s = &one["sessions"][0];
+        assert_eq!(s["id"], b.as_str());
+        assert_eq!(s["turns"], 1);
+        assert_eq!(s["pinned"], false);
+        assert_eq!(s["tags"], json!([]));
+        assert_eq!(s["tier"], "full");
+        assert_eq!(s["device"], "lap");
+        assert!(s.get("rev").is_none());
+    }
+
+    #[test]
+    fn list_pagination_before() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let ids: Vec<String> = (1..=5).map(|i| mk(&mut c, &cfg, &format!("dev{i}"), "chat", "x", i * 100)).collect();
+        let p1 = list(&c, &ListParams { limit: Some(2), ..Default::default() }).unwrap();
+        let p1 = p1["sessions"].as_array().unwrap().clone();
+        assert_eq!(p1[0]["id"], ids[4].as_str());
+        assert_eq!(p1[1]["id"], ids[3].as_str());
+        let before = p1[1]["last_at"].as_i64().unwrap();
+        let p2 = list(&c, &ListParams { limit: Some(2), before: Some(before), ..Default::default() }).unwrap();
+        let p2 = p2["sessions"].as_array().unwrap().clone();
+        assert_eq!((p2[0]["id"].as_str(), p2[1]["id"].as_str()), (Some(ids[2].as_str()), Some(ids[1].as_str())));
+        // limit is clamped to 200 and floored at 1
+        assert!(list(&c, &ListParams { limit: Some(100_000), ..Default::default() }).is_ok());
+        assert_eq!(list(&c, &ListParams { limit: Some(0), ..Default::default() }).unwrap()["sessions"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn read_returns_turns_in_order() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 10).unwrap());
+        for i in 1..=3 {
+            let mut p = ap(&s, &format!("q{i}"), &format!("a{i}"));
+            p.goal_id = Some("g1".into());
+            p.tool_trace = json!([{"tool":"t","args":"x","result":"y","ms":1}]);
+            append(&mut c, &cfg, p, 10 + i).unwrap();
+        }
+        let r = read(&c, &s, None).unwrap();
+        assert_eq!(r["session"]["id"], s.as_str());
+        let turns = r["turns"].as_array().unwrap();
+        assert_eq!(turns.iter().map(|t| t["seq"].as_i64().unwrap()).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert_eq!(turns[0]["user_text"], "q1");
+        assert_eq!(turns[0]["answer_text"], "a1");
+        assert_eq!(turns[0]["status"], "ok");
+        assert_eq!(turns[0]["goal_id"], "g1");
+        assert_eq!(turns[0]["tool_trace"][0]["tool"], "t");
+        assert_eq!(turns[0]["at"], 11);
+        assert!(turns[0]["id"].is_string());
+        assert_eq!(read(&c, "nope", None).unwrap_err(), "unknown session nope");
+    }
+
+    #[test]
+    fn read_last_n() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 10).unwrap());
+        for i in 1..=5 {
+            append(&mut c, &cfg, ap(&s, &format!("q{i}"), "a"), 10 + i).unwrap();
+        }
+        let r = read(&c, &s, Some(2)).unwrap();
+        let seqs: Vec<i64> = r["turns"].as_array().unwrap().iter().map(|t| t["seq"].as_i64().unwrap()).collect();
+        assert_eq!(seqs, vec![4, 5]);
+    }
+
+    #[test]
+    fn update_sets_title_and_pinned_bumps_rev() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
+        let before: i64 = c.query_row("SELECT rev FROM sessions WHERE id=?", [&s], |r| r.get(0)).unwrap();
+        let r = update(&mut c, &s, Some("Weather chat".into()), Some(true)).unwrap();
+        assert!(r["rev"].as_i64().unwrap() > before);
+        let got = read(&c, &s, None).unwrap();
+        assert_eq!(got["session"]["title"], "Weather chat");
+        assert_eq!(got["session"]["pinned"], true);
+        assert_eq!(got["session"]["last_at"], 100, "update must not move last_at");
+        update(&mut c, &s, None, Some(false)).unwrap();
+        let got = read(&c, &s, None).unwrap();
+        assert_eq!((got["session"]["title"].as_str(), got["session"]["pinned"].as_bool()), (Some("Weather chat"), Some(false)));
+        assert!(update(&mut c, &s, None, None).is_err());
+        assert_eq!(update(&mut c, "nope", Some("t".into()), None).unwrap_err(), "unknown session nope");
     }
 }
