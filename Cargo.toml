@@ -38,6 +38,7 @@ members = [
     "plugins/automations",
     "plugins/calendar",
     "plugins/capture",
+    "plugins/chats",
     "plugins/clipboard",
     "plugins/contacts",
     "plugins/daemon",
