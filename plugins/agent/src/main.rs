@@ -1289,7 +1289,7 @@ mod tests {
         assert!(!a.to_string().contains("hunter2"), "leak: {a}");
         let t = &a["tool_trace"][0];
         assert_eq!(t["tool"], "fs_read");
-        assert_eq!(t["error"], "fs_read failed: read failed:");
+        assert_eq!(t["error"], "[omitted]");
     }
 
     #[tokio::test]

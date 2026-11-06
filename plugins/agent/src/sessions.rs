@@ -83,8 +83,6 @@ pub fn trace_text(s: &str) -> String {
     }
 }
 
-/// First-line cap for errors of fs/exec/shell tools (chars).
-const OMIT_ERROR_MAX_CHARS: usize = 60;
 const REDACTED: &str = "[redacted]";
 
 /// Tool names whose arguments and results are secret by nature.
@@ -184,18 +182,13 @@ fn redact_result(tool: &str, result: &str) -> String {
 }
 
 /// Error text: same masking as results. For fs/exec/shell tools the error
-/// body may quote file or command output, so only the first line survives:
-/// scrubbed, capped at 60 chars, and `[omitted]` if the scrub changed anything.
+/// body may quote file, command or JSON output, so the trace gets a fixed
+/// `[omitted]` and no tool text at all (the LLM transcript keeps the full error).
 fn redact_error(tool: &str, err: &str) -> String {
     if is_sensitive_tool(tool) {
         REDACTED.to_string()
     } else if is_omit_tool(tool) {
-        let first = err.lines().next().unwrap_or("");
-        if scrub_text(first) != first {
-            "[omitted]".to_string()
-        } else {
-            first.chars().take(OMIT_ERROR_MAX_CHARS).collect()
-        }
+        "[omitted]".to_string()
     } else {
         scrub_text(&mask_json_text(err))
     }
@@ -483,8 +476,6 @@ mod tests {
         let rec = TraceRec::new("fs_read", &json!({"path": "/etc/x"}), Ok("body"), 1);
         assert_eq!(rec.result, "[omitted]");
         assert!(rec.args.contains("/etc/x"), "args stay: {}", rec.args);
-        let rec = TraceRec::new("fs_read", &json!({}), Err("no such file"), 1);
-        assert_eq!(rec.error.as_deref(), Some("no such file"));
     }
 
     #[test]
@@ -500,15 +491,17 @@ mod tests {
     }
 
     #[test]
-    fn omit_tool_errors_keep_only_a_scrubbed_first_line() {
-        let env_err = "command failed:\nDB_PASSWORD=hunter2\nAPI_KEY=abc";
-        let rec = TraceRec::new("exec_run", &json!({}), Err(env_err), 1);
-        assert_eq!(rec.error.as_deref(), Some("command failed:"), "only the first line");
-        let rec = TraceRec::new("exec_run", &json!({}), Err("DB_PASSWORD=hunter2\nrest"), 1);
-        assert_eq!(rec.error.as_deref(), Some("[omitted]"), "scrub changed the line");
-        let long = format!("{} tail", "e".repeat(100));
-        let rec = TraceRec::new("laptop.shell_exec", &json!({}), Err(&long), 1);
-        assert_eq!(rec.error.unwrap().chars().count(), OMIT_ERROR_MAX_CHARS);
+    fn omit_tool_errors_are_a_fixed_string() {
+        for tool in ["exec_run", "fs_read", "dev-phone.fs_read", "laptop.shell_exec"] {
+            for err in [
+                "command failed:\nDB_PASSWORD=hunter2",
+                r#"failed: {"password":"hunter2"}"#,
+                "plain",
+            ] {
+                let rec = TraceRec::new(tool, &json!({}), Err(err), 1);
+                assert_eq!(rec.error.as_deref(), Some("[omitted]"), "{tool} / {err}");
+            }
+        }
         // ordinary tools keep their (scrubbed) multi-line error
         let rec = TraceRec::new("http_get", &json!({}), Err("a\nb"), 1);
         assert_eq!(rec.error.as_deref(), Some("a\nb"));
