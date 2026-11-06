@@ -297,7 +297,29 @@ impl VecCache {
     }
 
     fn release(&self, n: usize) {
-        self.inner.total.fetch_sub(n, AtomicOrdering::SeqCst);
+        // Saturating: the counter must never wrap even if accounting drifts.
+        let _ = self
+            .inner
+            .total
+            .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |t| {
+                Some(t.saturating_sub(n))
+            });
+    }
+
+    /// Re-account a loaded slot whose size changed to `new` bytes (caller holds
+    /// the slot's state write guard). Growth is reserved globally; false means
+    /// no room, and the caller must unload the slot.
+    fn account(&self, slot: &Arc<Slot>, new: usize) -> bool {
+        let old = slot.bytes.load(AtomicOrdering::SeqCst);
+        if new > old {
+            if !self.reserve_with_eviction(slot, new - old) {
+                return false;
+            }
+        } else {
+            self.release(old - new);
+        }
+        slot.bytes.store(new, AtomicOrdering::SeqCst);
+        true
     }
 
     /// Return a slot's accounted bytes to the global budget (call right after
@@ -325,8 +347,10 @@ impl VecCache {
     pub async fn invalidate(&self, caller: &str, collection: &str) {
         let slot = self.slot(caller, collection);
         let _w = slot.writer.lock().await;
-        *slot.state.write().await = None;
-        self.drop_bytes(&slot);
+        let mut st = slot.state.write().await;
+        if st.take().is_some() {
+            self.drop_bytes(&slot);
+        }
     }
 
     /// Unload collections not touched for longer than the idle window.
@@ -390,8 +414,9 @@ impl VecCache {
             let Some(v) = victim else { return };
             match v.state.try_write() {
                 Ok(mut st) => {
-                    *st = None;
-                    self.drop_bytes(&v);
+                    if st.take().is_some() {
+                        self.drop_bytes(&v);
+                    }
                 }
                 // In use right now: treat as not evictable this round.
                 Err(_) => return,
@@ -517,8 +542,11 @@ impl VecCache {
             } else {
                 self.release(est - actual);
             }
+            // Install state and bytes together under the write guard so make_room
+            // never sees one without the other.
+            let mut st = slot.state.write().await;
             slot.bytes.store(actual, AtomicOrdering::SeqCst);
-            *slot.state.write().await = Some(loaded);
+            *st = Some(loaded);
         }
     }
 
@@ -591,19 +619,10 @@ impl VecCache {
                 l.push(r.id, &r.vector, &r.metadata_json);
             }
             let new = l.bytes();
-            let old = slot.bytes.load(AtomicOrdering::SeqCst);
-            if new > old {
-                // Account the growth against the global budget, not this collection alone.
-                if self.reserve_with_eviction(&slot, new - old) {
-                    slot.bytes.store(new, AtomicOrdering::SeqCst);
-                } else {
-                    // No room: unload so later queries scan SQLite.
-                    *st = None;
-                    self.drop_bytes(&slot);
-                }
-            } else {
-                self.release(old - new);
-                slot.bytes.store(new, AtomicOrdering::SeqCst);
+            if !self.account(&slot, new) {
+                // No room: unload so later queries scan SQLite.
+                *st = None;
+                self.drop_bytes(&slot);
             }
         }
         slot.last_used.store(self.now(), AtomicOrdering::Relaxed);
@@ -630,8 +649,10 @@ impl VecCache {
         if let Some(l) = st.as_mut() {
             l.remove(id);
             let new = l.bytes();
-            let old = slot.bytes.swap(new, AtomicOrdering::SeqCst);
-            self.release(old.saturating_sub(new));
+            if !self.account(&slot, new) {
+                *st = None;
+                self.drop_bytes(&slot);
+            }
         }
         Ok(res.rows_affected() > 0)
     }
@@ -762,6 +783,18 @@ mod tests {
         (dir, pool)
     }
 
+    /// At quiescence the global counter must equal what loaded slots hold.
+    fn assert_accounting(cache: &VecCache) {
+        assert_eq!(cache.total_bytes(), cache.held_bytes(), "global total drifted from slot bytes");
+        // every slot's accounted bytes match what it really holds
+        let slots: Vec<Arc<Slot>> = cache.inner.slots.lock().unwrap().values().cloned().collect();
+        for sl in slots {
+            let st = sl.state.try_read().expect("quiescent");
+            let want = st.as_ref().map(|l| l.bytes()).unwrap_or(0);
+            assert_eq!(sl.bytes.load(AtomicOrdering::SeqCst), want, "slot bytes out of sync with its state");
+        }
+    }
+
     fn cfg(max_mb_bytes: usize) -> CacheConfig {
         CacheConfig {
             max_bytes: max_mb_bytes,
@@ -871,6 +904,7 @@ mod tests {
             .unwrap();
         assert_eq!(all.len(), 9);
         assert!(all.iter().all(|h| h.0 != "d3"));
+        assert_accounting(&cache);
         // swap-remove kept the other ids addressable with their own vectors
         for i in [0usize, 9, 5] {
             let v = scan_sqlite(&pool, "c", &target, 20, None).await.unwrap();
@@ -1139,6 +1173,7 @@ mod tests {
         cache.query(&pool, "t", "b", &q, 1, None).await.unwrap();
         assert!(cache.is_loaded("t", "b").await);
         assert!(cache.total_bytes() <= 150_000);
+        assert_accounting(&cache);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1212,6 +1247,44 @@ mod tests {
         let hit = cache.query(&pool, "t", "y", &q, 5, None).await.unwrap();
         let want = scan_sqlite(&pool, "y", &q, 5, None).await.unwrap();
         assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn eviction_during_load_keeps_accounting_exact() {
+        let (_d, pool) = setup().await;
+        let cap = 150_000; // one ~120 KB collection at a time: constant eviction pressure
+        let cache = VecCache::new(cfg(cap));
+        let mut rng = Rng(8);
+        let names = ["a", "b", "c", "d", "e", "f"];
+        for c in names {
+            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+        }
+        let mut tasks = Vec::new();
+        for t in 0..16usize {
+            let (cache, pool) = (cache.clone(), pool.clone());
+            tasks.push(tokio::spawn(async move {
+                let mut rng = Rng(100 + t as u64);
+                for i in 0..40 {
+                    let c = names[(t * 5 + i) % names.len()];
+                    let q = rng.unit(256);
+                    assert_eq!(cache.query(&pool, "t", c, &q, 2, None).await.unwrap().len(), 2);
+                    if i % 7 == 0 {
+                        let row = rows(&mut rng, 1, 256, &format!("x{t}-{i}-"));
+                        cache.upsert(&pool, "t", c, 256, None, row).await.unwrap();
+                    }
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        assert_accounting(&cache);
+        assert!(cache.total_bytes() <= cap);
+        // idle eviction and invalidation keep it exact too
+        cache.evict_idle(i64::MAX);
+        assert_accounting(&cache);
+        assert_eq!(cache.total_bytes(), 0);
     }
 
     /// Run with: cargo test --release -- --ignored --nocapture query_20k_1024d_fast
