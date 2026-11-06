@@ -26,7 +26,7 @@ pub struct Worker {
     kick_work: Notify,
     kick_cleanup: Notify,
     /// Called after a pass changed synced state (emits the `changed` event).
-    pub(crate) changed: Arc<dyn Fn() + Send + Sync>,
+    pub(crate) changed: Arc<dyn Fn(&str) + Send + Sync>,
     failures: Mutex<HashMap<&'static str, u64>>,
     /// Sessions whose summary call failed at transport level: retry-after (ms).
     pub(crate) summary_retry_at: Mutex<HashMap<String, i64>>,
@@ -40,7 +40,7 @@ impl Worker {
         db: Db,
         rpc: Rpc,
         cfg: Arc<Config>,
-        changed: Arc<dyn Fn() + Send + Sync>,
+        changed: Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Arc<Self> {
         Arc::new(Worker {
             db,
@@ -113,7 +113,7 @@ impl Worker {
         }
         let _g = self.work_lock.lock().await;
         if self.summarize_pass(now).await {
-            (self.changed)();
+            (self.changed)("worker");
         }
         self.embed_pass().await;
     }
@@ -124,8 +124,12 @@ impl Worker {
             return;
         }
         let _g = self.cleanup_lock.lock().await;
+        // maintenance first: what it deletes is cleaned up by the same pass
+        if self.maintenance_pass(now).await {
+            (self.changed)("maintenance");
+        }
         if self.cascade_pass(now).await {
-            (self.changed)();
+            (self.changed)("worker");
         }
         self.sweep_pass(now).await;
     }

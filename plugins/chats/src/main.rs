@@ -101,8 +101,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     ));
     let worker = Worker::new(Arc::clone(&conn), rpc, Arc::clone(&config), {
         let out = outbound_tx.clone();
-        Arc::new(move || {
-            let payload = serde_json::json!({"action": "worker"});
+        Arc::new(move |action: &str| {
+            let payload = serde_json::json!({"action": action});
             let _ = out.try_send(event_envelope("changed", &payload));
         })
     });

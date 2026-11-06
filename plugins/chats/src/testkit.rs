@@ -379,7 +379,7 @@ impl Fixture {
             Arc::clone(&db),
             rpc.clone(),
             Arc::clone(&cfg),
-            Arc::new(|| {}),
+            Arc::new(|_| {}),
         );
         Fixture {
             _dir: dir,

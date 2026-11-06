@@ -219,7 +219,7 @@ pub fn append(
     )
     .map_err(db_err)?;
     tx.execute(
-        "UPDATE sessions SET turns = ?, last_at = MAX(last_at, ?), rev = ? WHERE id = ?",
+        "UPDATE sessions SET turns = ?, last_at = MAX(last_at, ?), rev = ?, tier = 'full' WHERE id = ?",
         params![seq, now, rev, p.session_id],
     )
     .map_err(db_err)?;
@@ -480,9 +480,13 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()
         .map_err(db_err)?;
+    // An unfinished job of this session (e.g. a compaction) is taken over by the
+    // delete job; bumping `gen` stops the worker from finishing the old one.
     tx.execute(
-        "INSERT OR REPLACE INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
-         VALUES (?, ?, ?, 0, 0, '[]')",
+        "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done, mode)
+         VALUES (?1, ?2, ?3, 0, 0, '[]', 'delete')
+         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, goal_ids = ?3, attempts = 0,
+             next_at = 0, done = '[]', mode = 'delete', gen = gen + 1",
         params![id, json!(turn_ids).to_string(), json!(goal_ids).to_string()],
     )
     .map_err(db_err)?;

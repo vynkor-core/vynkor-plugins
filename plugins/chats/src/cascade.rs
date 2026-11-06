@@ -48,7 +48,7 @@ pub fn requeue(conn: &mut Connection, session_id: &str, turn_ids: &[String]) -> 
         "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
          VALUES (?1, ?2, '[]', 0, 0, '[]')
          ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, attempts = 0, next_at = 0, done = '[]',
-                                               gen = gen + 1",
+                                               mode = 'delete', gen = gen + 1",
         params![session_id, json!(ids).to_string()],
     )
     .map_err(db_err)?;
