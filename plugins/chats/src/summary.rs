@@ -132,7 +132,12 @@ fn candidates(conn: &Connection, idle_before: i64) -> Result<Vec<Candidate>, Str
 ///   the session is retried when a new turn bumps its rev;
 /// - `Some`: summary/tags/title (title unless set manually) and a new rev;
 ///   `summarized_rev` follows the new rev only if no turn arrived meanwhile.
-pub fn apply(conn: &mut Connection, id: &str, seen_rev: i64, s: Option<&Summary>) -> Result<bool, String> {
+pub fn apply(
+    conn: &mut Connection,
+    id: &str,
+    seen_rev: i64,
+    s: Option<&Summary>,
+) -> Result<bool, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db_err)?;
@@ -150,7 +155,11 @@ pub fn apply(conn: &mut Connection, id: &str, seen_rev: i64, s: Option<&Summary>
     let changed = match s {
         None => {
             tx.execute(
-                "UPDATE sessions SET summarized_rev = MAX(summarized_rev, ?) WHERE id = ?",
+                "UPDATE sessions SET
+                    embedded_rev = CASE WHEN embedded_rev >= summarized_rev
+                                        THEN MAX(embedded_rev, ?1) ELSE embedded_rev END,
+                    summarized_rev = MAX(summarized_rev, ?1)
+                 WHERE id = ?2",
                 params![seen_rev, id],
             )
             .map_err(db_err)?;
@@ -164,7 +173,14 @@ pub fn apply(conn: &mut Connection, id: &str, seen_rev: i64, s: Option<&Summary>
                     title = CASE WHEN title_manual = 0 AND ?3 != '' THEN ?3 ELSE title END,
                     rev = ?4, summarized_rev = ?5
                  WHERE id = ?6",
-                params![s.summary, json!(s.tags).to_string(), s.title, rev, marked, id],
+                params![
+                    s.summary,
+                    json!(s.tags).to_string(),
+                    s.title,
+                    rev,
+                    marked,
+                    id
+                ],
             )
             .map_err(db_err)?;
             true
@@ -280,11 +296,8 @@ mod tests {
         assert!(rev > rev_before);
         assert_eq!(sum_rev, rev);
         // visible to sync clients
-        let c = f.lock();
-        let out = sync::sync(&c, rev_before, 100, 500).unwrap();
-        let s = &out["changes"][0]["session"];
-        assert_eq!(s["title"], "Weather in Tashkent");
-        drop(c);
+        let out = sync::sync(&f.lock(), rev_before, 100, 500).unwrap();
+        assert_eq!(out["changes"][0]["session"]["title"], "Weather in Tashkent");
         // request carries the exact prompt, the transcript and the token cap
         let call = &f.fake.calls("chat_completion")[0];
         let content = call["messages"][0]["content"].as_str().unwrap();
@@ -326,8 +339,11 @@ mod tests {
         let (sid, later) = setup(&f);
         {
             let c = f.lock();
-            c.execute("UPDATE sessions SET summary='old', title='Old' WHERE id=?", [&sid])
-                .unwrap();
+            c.execute(
+                "UPDATE sessions SET summary='old', title='Old' WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
         }
         f.fake.script_completion(Ok("I cannot do that"));
         f.worker.run_once(later).await;
@@ -338,7 +354,11 @@ mod tests {
         assert_eq!((title.as_str(), summary.as_str()), ("Old", "old"));
         assert_eq!(sum_rev, rev);
         f.worker.run_once(later).await;
-        assert_eq!(f.fake.calls("chat_completion").len(), 1, "no endless retries");
+        assert_eq!(
+            f.fake.calls("chat_completion").len(),
+            1,
+            "no endless retries"
+        );
         // a new turn makes it a candidate again
         f.turn(&sid, "more", "stuff", T0 + 10);
         f.fake.script_completion(Ok(REPLY));
@@ -358,9 +378,14 @@ mod tests {
             crate::store::delete(&mut c, &sid2).unwrap();
         });
         f.worker.run_once(later).await;
-        let (title, summary, state): (String, String, String) =
-            f.q2("SELECT title, summary, state FROM sessions WHERE id=?", &sid);
-        assert_eq!((title.as_str(), summary.as_str(), state.as_str()), ("", "", "deleting"));
+        let (title, summary, state): (String, String, String) = f.q2(
+            "SELECT title, summary, state FROM sessions WHERE id=?",
+            &sid,
+        );
+        assert_eq!(
+            (title.as_str(), summary.as_str(), state.as_str()),
+            ("", "", "deleting")
+        );
     }
 
     #[tokio::test]
@@ -371,10 +396,17 @@ mod tests {
         let (db, cfg, sid2) = (std::sync::Arc::clone(&f.db), f.cfg.clone(), sid.clone());
         f.fake.on_call("chat_completion", move |_| {
             let mut c = db.lock().unwrap();
-            crate::store::append(&mut c, &cfg, crate::store::tests::ap(&sid2, "and tomorrow", "rain"), T0 + 5).unwrap();
+            crate::store::append(
+                &mut c,
+                &cfg,
+                crate::store::tests::ap(&sid2, "and tomorrow", "rain"),
+                T0 + 5,
+            )
+            .unwrap();
         });
         f.worker.run_once(later).await;
-        let (rev, sum_rev): (i64, i64) = f.q2("SELECT rev, summarized_rev FROM sessions WHERE id=?", &sid);
+        let (rev, sum_rev): (i64, i64) =
+            f.q2("SELECT rev, summarized_rev FROM sessions WHERE id=?", &sid);
         assert!(sum_rev < rev, "new turn must trigger another summary");
     }
 

@@ -26,6 +26,8 @@ pub struct Doc {
     pub metadata: Value,
 }
 
+pub type Hook = Arc<dyn Fn(&Value) + Send + Sync>;
+
 #[derive(Default)]
 pub struct St {
     /// Every call that reached the kernel: (action, params).
@@ -40,7 +42,7 @@ pub struct St {
     pub delay_ms: HashMap<&'static str, u64>,
     pub model: String,
     pub synonyms: HashMap<String, String>,
-    pub hooks: HashMap<String, Arc<dyn Fn(&Value) + Send + Sync>>,
+    pub hooks: HashMap<String, Hook>,
 }
 
 #[derive(Clone)]
@@ -66,7 +68,10 @@ fn fnv(s: &str) -> usize {
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| (*x as f64) * (*y as f64)).sum()
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum()
 }
 
 impl FakeKernel {
@@ -200,13 +205,11 @@ impl FakeKernel {
             return Err(format!("{plugin} backend unavailable"));
         }
         match action {
-            "chat_completion" => {
-                match self.with(|s| s.completions.pop_front()) {
-                    Some(Ok(content)) => Ok(json!({"content": content})),
-                    Some(Err(e)) => Err(e),
-                    None => Err("no scripted completion".into()),
-                }
-            }
+            "chat_completion" => match self.with(|s| s.completions.pop_front()) {
+                Some(Ok(content)) => Ok(json!({"content": content})),
+                Some(Err(e)) => Err(e),
+                None => Err("no scripted completion".into()),
+            },
             "vec_upsert_batch" => {
                 let coll = params["collection"].as_str().unwrap_or("").to_string();
                 let docs = params["docs"].as_array().cloned().unwrap_or_default();
@@ -269,7 +272,14 @@ impl FakeKernel {
                 let coll = params["collection"].as_str().unwrap_or("");
                 let (count, model) = self.with(|s| {
                     let n = s.vectors.get(coll).map(Vec::len).unwrap_or(0);
-                    (n, if n > 0 { s.model.clone() } else { String::new() })
+                    (
+                        n,
+                        if n > 0 {
+                            s.model.clone()
+                        } else {
+                            String::new()
+                        },
+                    )
                 });
                 Ok(json!({"count": count, "dim": if count > 0 { DIM } else { 0 }, "model": model}))
             }
@@ -326,7 +336,12 @@ impl Fixture {
         let cfg = Arc::new(cfg);
         let fake = FakeKernel::new();
         let rpc = fake.rpc();
-        let worker = Worker::new(Arc::clone(&db), rpc.clone(), Arc::clone(&cfg), Arc::new(|| {}));
+        let worker = Worker::new(
+            Arc::clone(&db),
+            rpc.clone(),
+            Arc::clone(&cfg),
+            Arc::new(|| {}),
+        );
         Fixture {
             _dir: dir,
             db,
@@ -343,8 +358,13 @@ impl Fixture {
 
     pub fn session(&self, device: &str, kind: &str, now: i64) -> String {
         let mut c = self.lock();
-        let r = store::resolve(&mut c, &self.cfg, &store::tests::rp(device, kind, None), now)
-            .unwrap();
+        let r = store::resolve(
+            &mut c,
+            &self.cfg,
+            &store::tests::rp(device, kind, None),
+            now,
+        )
+        .unwrap();
         store::tests::sid(&r)
     }
 
@@ -357,7 +377,14 @@ impl Fixture {
             .to_string()
     }
 
-    pub fn turn_with_goal(&self, sid: &str, user: &str, answer: &str, goal: &str, now: i64) -> String {
+    pub fn turn_with_goal(
+        &self,
+        sid: &str,
+        user: &str,
+        answer: &str,
+        goal: &str,
+        now: i64,
+    ) -> String {
         let mut p = store::tests::ap(sid, user, answer);
         p.goal_id = Some(goal.into());
         let mut c = self.lock();

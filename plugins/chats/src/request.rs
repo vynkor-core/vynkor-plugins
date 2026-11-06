@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::{search, store, sync};
 
-pub const ACTIONS: [&str; 8] = [
+pub const ACTIONS: [&str; 9] = [
     "chat_session_resolve",
     "chat_turn_append",
     "chat_sessions_list",
@@ -15,6 +15,7 @@ pub const ACTIONS: [&str; 8] = [
     "chat_delete",
     "chat_search",
     "chat_sync",
+    "chat_recall",
 ];
 
 /// Whether a successful `action` with this `result` changed stored state and
@@ -61,7 +62,7 @@ struct SyncParams {
     limit: Option<i64>,
 }
 
-fn parse<T: DeserializeOwned>(action: &str, raw: &[u8]) -> Result<T, String> {
+pub(crate) fn parse<T: DeserializeOwned>(action: &str, raw: &[u8]) -> Result<T, String> {
     let raw: &[u8] = if raw.iter().all(u8::is_ascii_whitespace) {
         b"{}"
     } else {
@@ -101,6 +102,7 @@ pub fn handle(
             let limit = p.limit.unwrap_or(cfg.sync_max as i64).max(1) as usize;
             sync::sync(conn, p.since_rev.max(0), limit, cfg.sync_max)
         }
+        "chat_recall" => Err("internal error: chat_recall is served by the async service".into()),
         other => Err(format!("unknown action {other}")),
     }
 }

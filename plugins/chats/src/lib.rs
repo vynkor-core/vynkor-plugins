@@ -1,9 +1,12 @@
+pub mod cascade;
 pub mod config;
 pub mod db;
+pub mod embed;
 pub mod request;
 pub mod rpc;
 pub mod schema;
 pub mod search;
+pub mod service;
 pub mod store;
 pub mod summary;
 pub mod sync;

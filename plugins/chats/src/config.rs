@@ -137,7 +137,11 @@ mod tests {
         assert_eq!(c.pause_secs, 60);
         assert!(c.semantic);
         assert_eq!(
-            (c.work_interval_secs, c.summary_idle_secs, c.summary_max_tokens),
+            (
+                c.work_interval_secs,
+                c.summary_idle_secs,
+                c.summary_max_tokens
+            ),
             (60, 900, 400)
         );
         assert_eq!((c.search_vec_timeout_ms, c.recall_min_score), (800, 0.72));

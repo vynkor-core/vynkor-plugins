@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use chats_plugin::config::Config;
 use chats_plugin::rpc::{Router, Rpc, RpcCall};
+use chats_plugin::service::Service;
 use chats_plugin::worker::Worker;
 use chats_plugin::{request, schema};
 use serde_json::Value;
@@ -19,7 +20,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "chats";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = "0.2.0";
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -92,7 +93,13 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
     let mut router = Router::default();
 
-    let worker = Worker::new(Arc::clone(&conn), Rpc::new(rpc_tx), Arc::clone(&config), {
+    let rpc = Rpc::new(rpc_tx);
+    let service = Arc::new(Service::new(
+        Arc::clone(&conn),
+        rpc.clone(),
+        Arc::clone(&config),
+    ));
+    let worker = Worker::new(Arc::clone(&conn), rpc, Arc::clone(&config), {
         let out = outbound_tx.clone();
         Arc::new(move || {
             let payload = serde_json::json!({"action": "worker"});
@@ -125,19 +132,13 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                     }
                     Some(envelope::Payload::EventPublishAck(_)) => {}
                     Some(envelope::Payload::ActionRequest(req)) => {
-                        let conn = Arc::clone(&conn);
-                        let config = Arc::clone(&config);
+                        let service = Arc::clone(&service);
                         let out = outbound_tx.clone();
                         let worker = Arc::clone(&worker);
                         tokio::spawn(async move {
                             let action = req.action.clone();
                             let params = req.params_json.clone();
-                            let res = tokio::task::spawn_blocking(move || {
-                                let mut guard = conn.lock().unwrap_or_else(|p| p.into_inner());
-                                request::handle(&mut guard, &config, &action, &params, unix_millis())
-                            })
-                            .await
-                            .unwrap_or_else(|e| Err(format!("internal error: {e}")));
+                            let res = service.handle(&action, &params, unix_millis()).await;
                             match res {
                                 Ok(val) => {
                                     let data = serde_json::to_vec(&val).unwrap_or_default();
@@ -239,9 +240,13 @@ mod serve_tests {
     use serde_json::{json, Value};
     use tokio::net::UnixStream;
     use vynkor_sdk::proto::{
-        envelope, ActionRequest, ActionStatus, Envelope, PluginRegisterAck, PluginShutdown,
+        envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, PluginRegisterAck,
+        PluginShutdown,
     };
     use vynkor_sdk::VynkorClient;
+
+    /// Outbound actions the plugin sent to the (fake) kernel.
+    static OUTBOUND: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
     async fn call(
         kernel: &mut VynkorClient,
@@ -277,6 +282,21 @@ mod serve_tests {
                     };
                 }
                 Some(envelope::Payload::EventPublish(ev)) => assert_eq!(ev.event_type, "changed"),
+                // the plugin calls other plugins (vector search): none is installed
+                Some(envelope::Payload::ActionRequest(req)) => {
+                    assert!(req.action_id.starts_with("rpc-"), "{}", req.action_id);
+                    OUTBOUND.lock().unwrap().push(req.action.clone());
+                    let resp = Envelope {
+                        payload: Some(envelope::Payload::ActionResponse(ActionResponse {
+                            action_id: req.action_id,
+                            status: ActionStatus::ActionError as i32,
+                            data_json: Vec::new(),
+                            error: "action not found".into(),
+                        })),
+                        ..Default::default()
+                    };
+                    kernel.send("chats", resp).await.unwrap();
+                }
                 other => panic!("unexpected payload: {other:?}"),
             }
         }
@@ -351,6 +371,8 @@ mod serve_tests {
             .unwrap();
         assert_eq!(r["hits"][0]["turn_id"], turn_id.as_str());
         assert_eq!(r["hits"][0]["session_id"], sid.as_str());
+        // hybrid search asked vector-db over the socket and fell back to FTS
+        assert!(OUTBOUND.lock().unwrap().iter().any(|a| a == "vec_query"));
 
         let r = call(&mut kernel, 4, "chat_sync", json!({"since_rev": 0}))
             .await

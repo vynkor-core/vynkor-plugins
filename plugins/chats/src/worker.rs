@@ -72,6 +72,7 @@ impl Worker {
         if self.summarize_pass(now).await {
             (self.changed)();
         }
+        self.embed_pass().await;
     }
 
     /// Log a missing/failed dependency once per kind.
@@ -99,7 +100,9 @@ mod tests {
         f.delete(&sid).await;
         assert!(f.worker.spawn().is_none());
         f.worker.kick();
-        f.worker.run_once(super::super::testkit::T0 + 10_000_000).await;
+        f.worker
+            .run_once(super::super::testkit::T0 + 10_000_000)
+            .await;
         assert_eq!(f.fake.call_count(), 0);
     }
 }

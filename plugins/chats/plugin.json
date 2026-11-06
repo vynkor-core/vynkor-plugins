@@ -1,6 +1,6 @@
 {
   "plugin_id": "chats",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -326,7 +326,7 @@
     },
     {
       "name": "chat_search",
-      "description": "Full-text search over everything said in past conversations, all devices. Words match as prefixes, case-insensitively, all words must appear in one turn. Returns best matches first with a highlighted snippet. Use for 'what did we talk about / what did I say about X'.",
+      "description": "Search everything said in past conversations, all devices. Combines word matching (prefixes, case-insensitive, all words in one turn) with semantic similarity over turns and session summaries when the semantic layer is on, so synonyms also match. Returns best matches first with a snippet; a hit on a session summary has turn_id null. Use for 'what did we talk about / what did I say about X'.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -374,7 +374,11 @@
                   "type": "string"
                 },
                 "turn_id": {
-                  "type": "string"
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "null when the hit is a session summary."
                 },
                 "at": {
                   "type": "integer"
@@ -472,6 +476,78 @@
           "more",
           "review_pending",
           "reset"
+        ]
+      }
+    },
+    {
+      "name": "chat_recall",
+      "description": "Find past conversation sessions similar to a ready-made embedding vector (semantic recall for other plugins). Pass the vector and the name of the embedding model that produced it; a vector from a different model than the stored summaries, or the placeholder model 'fake', yields no hits. Returns live sessions with title and summary, best first. Not a text search (use chat_search).",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "vector": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 1,
+            "description": "Query embedding."
+          },
+          "model": {
+            "type": "string",
+            "description": "Embedding model that produced the vector (must match the stored summaries' model)."
+          },
+          "exclude_session_id": {
+            "type": "string",
+            "description": "Session to leave out, usually the current one."
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "Max hits, default 3."
+          },
+          "min_score": {
+            "type": "number",
+            "description": "Minimum similarity, default CHATS_RECALL_MIN_SCORE (0.72)."
+          }
+        },
+        "required": [
+          "vector",
+          "model"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "integer"
+                },
+                "score": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "hits"
         ]
       }
     }
@@ -600,6 +676,48 @@
         "default": 500,
         "minimum": 1,
         "description": "Upper bound for a chat_sync page."
+      },
+      "CHATS_SEMANTIC": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "on",
+        "description": "Summaries, embeddings, hybrid search and delete cascade. off = plain full-text behaviour with no calls to other plugins."
+      },
+      "CHATS_WORK_INTERVAL_SECS": {
+        "type": "integer",
+        "default": 60,
+        "minimum": 1,
+        "description": "Background worker tick."
+      },
+      "CHATS_SUMMARY_IDLE_SECS": {
+        "type": "integer",
+        "default": 900,
+        "minimum": 0,
+        "description": "A session is summarized once silent this long."
+      },
+      "CHATS_AI_AGENT_ID": {
+        "type": "string",
+        "description": "Optional ai agent profile used for summaries (default: host default)."
+      },
+      "CHATS_SUMMARY_MAX_TOKENS": {
+        "type": "integer",
+        "default": 400,
+        "minimum": 1,
+        "description": "Token cap of a summary completion."
+      },
+      "CHATS_SEARCH_VEC_TIMEOUT_MS": {
+        "type": "integer",
+        "default": 800,
+        "minimum": 1,
+        "description": "Budget for the vector half of chat_search; on timeout only text results are returned."
+      },
+      "CHATS_RECALL_MIN_SCORE": {
+        "type": "number",
+        "default": 0.72,
+        "description": "Default min_score of chat_recall."
       }
     },
     "required": [
