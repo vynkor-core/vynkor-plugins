@@ -295,7 +295,7 @@ mod tests {
             std::env::set_var("AGENT_PLUGIN_AI_BASE_URL", "http://llm.test/v1");
             std::env::set_var("AGENT_PLUGIN_AI_MODEL", "test-model");
             std::env::set_var("AGENT_PLUGIN_AI_API_KEY_ENV", "TEST_LLM_KEY");
-            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read,secret_get");
+            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read,secret_get,ping_a,ping_b");
             let dir = std::env::temp_dir().join(format!("vynkor-agent-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("tools.json");
@@ -1081,6 +1081,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn follow_up_keeps_tools_from_history() {
+        let tool_names = |req: &Value| -> Vec<String> {
+            req["tools"].as_array().unwrap().iter()
+                .map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        // Bare follow-up: the fs_* tool is filtered out of what the model sees.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "какая погода", "+5", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?"})).await.unwrap();
+        assert!(!tool_names(&shim.ai_requests().await[0]).contains(&"fs_read".to_string()));
+        drop(shim);
+
+        // Same follow-up after a file question keeps it.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "прочитай файл notes.txt", "готово", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?"})).await.unwrap();
+        assert!(tool_names(&shim.ai_requests().await[0]).contains(&"fs_read".to_string()));
+    }
+
+    #[tokio::test]
     async fn history_skips_turns_with_empty_text() {
         let shim = start_plugin(Config::default()).await;
         shim.chats_normal(
@@ -1428,7 +1450,8 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let tools = requests[0]["tools"].as_array().expect("tools param missing");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get"]);
+        // Dynamic catalog: no file words in the goal, so fs_* is filtered out.
+        assert_eq!(names, vec!["notify_send", "secret_get", "ping_a", "ping_b"]);
         assert_eq!(tools[0]["input_schema"]["type"], "object");
     }
 
@@ -1576,7 +1599,7 @@ mod tests {
         assert_eq!(res["tools_file_set"], true);
         let names: Vec<&str> = res["tools"].as_array().unwrap()
             .iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get"]);
+        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get", "ping_a", "ping_b"]);
 
         // notify_send has an operator entry, so its description and schema
         // stay exactly as written — but the entry left `risk` empty, and
