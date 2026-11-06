@@ -36,6 +36,16 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # sherpa-onnx-sys's build script unpacks its prebuilt static libs
+          # into <target>/sherpa-onnx-prebuilt (outside the profile dirs that
+          # rust-cache saves) but emits a link-search path to it. A restored
+          # cache whose build-script output is reused while that directory is
+          # gone fails speech/stt/tts with "could not find native static
+          # library sherpa-onnx-c-api". Persist the directory with the rest of
+          # the cache; the new prefix-key retires caches saved without it.
+          prefix-key: v1-rust
+          cache-directories: target/sherpa-onnx-prebuilt
       # vynkor-wire's build.rs runs protoc; the pipe-masked test loop hid
       # that no plugin had ever compiled in CI without it
       - name: Install system build dependencies

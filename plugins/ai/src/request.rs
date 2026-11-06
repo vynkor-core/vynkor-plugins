@@ -369,11 +369,25 @@ pub struct EmbeddingParams {
     pub base_url: String,
     pub model: String,
     pub api_key_env: String,
-    pub input: String,
+    pub input: EmbedInput,
     pub timeout_ms: u64,
     pub max_retries: u32,
     pub retry_backoff_ms: u64,
     pub agent_id: Option<String>,
+}
+
+/// Maximum items in an array `input` of the `embedding` action.
+pub const MAX_EMBED_BATCH: usize = 64;
+/// Maximum characters in one embedding input.
+pub const MAX_EMBED_CHARS: usize = 10000;
+
+/// `embedding` input: one text (single-vector reply) or a batch (reply with
+/// `embeddings`, in input order).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(untagged)]
+pub enum EmbedInput {
+    One(String),
+    Many(Vec<String>),
 }
 
 pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, String> {
@@ -383,14 +397,13 @@ pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, St
         base_url: Option<String>,
         model: Option<String>,
         api_key_env: Option<String>,
-        input: Option<String>,
+        input: Option<EmbedInput>,
         timeout_ms: Option<u64>,
         max_retries: Option<u32>,
         retry_backoff_ms: Option<u64>,
         agent_id: Option<String>,
     }
-    let raw: Raw =
-        serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
+    let raw: Raw = serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
     let agent_id = raw.agent_id.filter(|s| !s.is_empty());
     let provider = match raw.provider {
         Some(p) => match p.as_str() {
@@ -416,11 +429,28 @@ pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, St
         return Err("missing required field: api_key_env".to_string());
     }
     let input = raw.input.ok_or("missing required field: input")?;
-    if input.trim().is_empty() {
-        return Err("input must not be empty".to_string());
-    }
-    if input.len() > 10000 {
-        return Err("input too long (max 10000)".to_string());
+    match &input {
+        EmbedInput::One(text) => {
+            if text.trim().is_empty() {
+                return Err("input must not be empty".to_string());
+            }
+            if text.len() > MAX_EMBED_CHARS {
+                return Err("input too long (max 10000)".to_string());
+            }
+        }
+        EmbedInput::Many(items) => {
+            if items.is_empty() || items.len() > MAX_EMBED_BATCH {
+                return Err(format!("input array must have 1..={MAX_EMBED_BATCH} items"));
+            }
+            for (i, text) in items.iter().enumerate() {
+                if text.trim().is_empty() {
+                    return Err(format!("input[{i}] must not be empty"));
+                }
+                if text.len() > MAX_EMBED_CHARS {
+                    return Err(format!("input[{i}] too long (max 10000)"));
+                }
+            }
+        }
     }
     let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
     let max_retries = raw
@@ -644,7 +674,10 @@ mod tests {
             ]}]
         });
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();
-        assert!(err.contains("unsupported image mime_type"), "error was: {err}");
+        assert!(
+            err.contains("unsupported image mime_type"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -704,7 +737,10 @@ mod tests {
             "messages": [{"role": "user", "content": [{"type": "video", "url": "x"}]}]
         });
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();
-        assert!(err.contains("unsupported content block type"), "error was: {err}");
+        assert!(
+            err.contains("unsupported content block type"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -777,8 +813,7 @@ mod tests {
     fn rejects_oversized_tool_schema() {
         let mut schema = serde_json::json!({"type": "object", "properties": {}});
         for i in 0..2000 {
-            schema["properties"][format!("prop{i}")] =
-                serde_json::Value::String("x".repeat(64));
+            schema["properties"][format!("prop{i}")] = serde_json::Value::String("x".repeat(64));
         }
         let body = serde_json::json!({
             "provider": "anthropic",
@@ -799,5 +834,45 @@ mod tests {
         let params = parse_request(body.to_string().as_bytes()).unwrap();
         assert_eq!(params.max_retries, MAX_RETRIES);
         assert_eq!(params.retry_backoff_ms, MAX_RETRY_BACKOFF_MS);
+    }
+
+    fn embed_json(input: serde_json::Value) -> Vec<u8> {
+        serde_json::json!({
+            "provider": "openai",
+            "base_url": "http://x/v1",
+            "model": "m",
+            "api_key_env": "K",
+            "input": input,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    #[test]
+    fn embedding_array_over_limit_rejected() {
+        let items: Vec<String> = (0..65).map(|i| format!("t{i}")).collect();
+        let err = parse_embedding_request(&embed_json(serde_json::json!(items))).unwrap_err();
+        assert_eq!(err, "input array must have 1..=64 items");
+        let ok: Vec<String> = (0..64).map(|i| format!("t{i}")).collect();
+        let p = parse_embedding_request(&embed_json(serde_json::json!(ok))).unwrap();
+        assert!(matches!(p.input, EmbedInput::Many(v) if v.len() == 64));
+        let err = parse_embedding_request(&embed_json(serde_json::json!([]))).unwrap_err();
+        assert_eq!(err, "input array must have 1..=64 items");
+    }
+
+    #[test]
+    fn embedding_array_empty_item_rejected() {
+        let err =
+            parse_embedding_request(&embed_json(serde_json::json!(["a", "  ", "c"]))).unwrap_err();
+        assert!(err.contains("input[1]"), "error was: {err}");
+        let long = "x".repeat(10001);
+        let err = parse_embedding_request(&embed_json(serde_json::json!(["a", long]))).unwrap_err();
+        assert!(err.contains("input[1] too long"), "error was: {err}");
+    }
+
+    #[test]
+    fn embedding_string_input_still_parses() {
+        let p = parse_embedding_request(&embed_json(serde_json::json!("hello"))).unwrap();
+        assert_eq!(p.input, EmbedInput::One("hello".into()));
     }
 }

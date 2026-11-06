@@ -27,25 +27,6 @@ pub struct DbPools {
 
 const PAGE_SIZE: u32 = 4096;
 
-const COLLECTIONS_DDL: &str = "create table if not exists collections (\
-    name TEXT PRIMARY KEY, \
-    dim INTEGER NOT NULL, \
-    created_at INTEGER NOT NULL\
-)";
-
-const VECTORS_DDL: &str = "create table if not exists vectors (\
-    collection TEXT NOT NULL, \
-    id TEXT NOT NULL, \
-    text TEXT NOT NULL DEFAULT '', \
-    vector TEXT NOT NULL, \
-    metadata TEXT NOT NULL DEFAULT '{}', \
-    updated_at INTEGER NOT NULL, \
-    PRIMARY KEY (collection, id)\
-)";
-
-const VECTORS_INDEX_DDL: &str =
-    "create index if not exists idx_vectors_collection on vectors(collection)";
-
 pub fn sanitize_caller_id(caller_plugin_id: &str) -> Result<&str, String> {
     if caller_plugin_id.is_empty() {
         return Err("missing caller_plugin_id".to_string());
@@ -70,7 +51,9 @@ pub fn sanitize_collection(name: &str) -> Result<&str, String> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
     {
-        return Err(format!("invalid collection name {name:?}: allowed [a-zA-Z0-9_.-]"));
+        return Err(format!(
+            "invalid collection name {name:?}: allowed [a-zA-Z0-9_.-]"
+        ));
     }
     Ok(name)
 }
@@ -112,12 +95,15 @@ impl DbPools {
             .map_err(|e| format!("failed to create data_dir: {e}"))?;
         let db_path = self.config.data_dir.join(format!("{caller_id}.db"));
 
-        let mut options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
-            .map_err(|e| format!("invalid sqlite path: {e}"))?
-            .create_if_missing(true)
-            .busy_timeout(std::time::Duration::from_millis(self.config.busy_timeout_ms))
-            .page_size(PAGE_SIZE)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        let mut options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+                .map_err(|e| format!("invalid sqlite path: {e}"))?
+                .create_if_missing(true)
+                .busy_timeout(std::time::Duration::from_millis(
+                    self.config.busy_timeout_ms,
+                ))
+                .page_size(PAGE_SIZE)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
 
         if self.config.max_db_bytes > 0 {
             let max_pages = (self.config.max_db_bytes / PAGE_SIZE as u64).max(1);
@@ -130,18 +116,9 @@ impl DbPools {
             .await
             .map_err(|e| format!("failed to open database for {caller_id}: {e}"))?;
 
-        sqlx::query(COLLECTIONS_DDL)
-            .execute(&pool)
+        crate::migrate::run(&pool, &db_path)
             .await
-            .map_err(|e| format!("failed to init collections table for {caller_id}: {e}"))?;
-        sqlx::query(VECTORS_DDL)
-            .execute(&pool)
-            .await
-            .map_err(|e| format!("failed to init vectors table for {caller_id}: {e}"))?;
-        sqlx::query(VECTORS_INDEX_DDL)
-            .execute(&pool)
-            .await
-            .map_err(|e| format!("failed to init vectors index for {caller_id}: {e}"))?;
+            .map_err(|e| format!("failed to init schema for {caller_id}: {e}"))?;
 
         pools.insert(caller_id.to_string(), pool.clone());
         Ok(pool)
@@ -154,7 +131,10 @@ mod tests {
 
     #[test]
     fn sanitize_accepts_normal_id() {
-        assert_eq!(sanitize_caller_id("notes_plugin-v2").unwrap(), "notes_plugin-v2");
+        assert_eq!(
+            sanitize_caller_id("notes_plugin-v2").unwrap(),
+            "notes_plugin-v2"
+        );
     }
 
     #[test]
