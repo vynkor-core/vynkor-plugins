@@ -202,7 +202,8 @@ fn weave_history(transcript: &mut Vec<Turn>, history: Vec<(String, String)>) {
     let mut woven = Vec::new();
     for (i, (q, a)) in history.into_iter().enumerate() {
         if i == 0 {
-            transcript[0].content = format!("{}\n\n{q}", transcript[0].content);
+            transcript[0].content =
+                format!("{}\n\n---\n[EARLIER IN THIS CONVERSATION]\n{q}", transcript[0].content);
         } else {
             woven.push(Turn { role: "user".into(), content: q });
         }
