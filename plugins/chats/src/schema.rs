@@ -106,7 +106,33 @@ const SCHEMA_V2_TABLE_COLUMNS: [(&str, &str, &str); 4] = [
     ("swept", "next_at", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
-pub const USER_VERSION: i64 = 2;
+/// v3 (retention): usage counters, cascade modes and the monthly review.
+const SCHEMA_V3_COLUMNS: [(&str, &str, &str); 4] = [
+    ("sessions", "recall_count", "INTEGER NOT NULL DEFAULT 0"),
+    ("sessions", "last_used_at", "INTEGER NOT NULL DEFAULT 0"),
+    // 'delete' = remove everything of the session, 'compact' = vectors of the
+    // turns and agent goals only; the session itself stays
+    ("cascade", "mode", "TEXT NOT NULL DEFAULT 'delete'"),
+    // 1 = the sweep must not touch the session's summary vector (compaction)
+    ("swept", "turns_only", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+const SCHEMA_V3_TABLES: &str = "
+CREATE TABLE IF NOT EXISTS reviews(
+  id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  status TEXT NOT NULL,            -- pending | applied | dismissed
+  groups TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS reviews_status ON reviews(status);
+";
+
+fn ensure_v3_shape(conn: &Connection) -> rusqlite::Result<()> {
+    add_missing_columns(conn, &SCHEMA_V3_COLUMNS)?;
+    conn.execute_batch(SCHEMA_V3_TABLES)
+}
+
+pub const USER_VERSION: i64 = 3;
 
 fn has_column(conn: &Connection, table: &str, col: &str) -> rusqlite::Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -172,6 +198,7 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     } else {
         ensure_v2_shape(&tx)?;
     }
+    ensure_v3_shape(&tx)?;
     tx.commit()?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     Ok(conn)
@@ -196,12 +223,12 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_schema_v2() {
+    fn open_creates_schema_v3() {
         let (_d, c) = open_temp();
         let v: i64 = c
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         for t in [
             "sessions",
             "turns",
@@ -210,6 +237,7 @@ mod tests {
             "meta",
             "cascade",
             "swept",
+            "reviews",
         ] {
             let n: i64 = c
                 .query_row(
@@ -257,7 +285,7 @@ mod tests {
         let v: i64 = c
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
         let (title, sum_rev, manual, emb_rev): (String, i64, i64, i64) = c
             .query_row(
                 "SELECT title, summarized_rev, title_manual, embedded_rev FROM sessions WHERE id='s1'",
@@ -378,6 +406,63 @@ mod tests {
         assert_eq!((gen, until, swept_at), (0, 99, 0));
         drop(c);
         assert!(open(&p).is_ok(), "reopening is a no-op");
+    }
+
+    /// A v2 database (C2) opens as v3: usage counters start at 0, cascade jobs
+    /// keep working as `delete` jobs, the review table exists, data is intact.
+    #[test]
+    fn migrates_v2_to_v3_keeps_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("chats.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(SCHEMA_V1).unwrap();
+            migrate_v2(&c).unwrap();
+            c.execute_batch(
+                "INSERT INTO sessions(id, kind, device, started_at, last_at, rev, turns, title, summary, pinned)
+                   VALUES('s1','chat','lap',1,2,5,1,'T','S',1);
+                 INSERT INTO turns(id, session_id, seq, at, user_text, answer_text, status, rev)
+                   VALUES('t1','s1',1,2,'weather today','sunny','ok',5);
+                 INSERT INTO cascade(session_id, turn_ids) VALUES('gone','[\"x\"]');
+                 UPDATE meta SET value=5 WHERE key='rev';",
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let c = open(&p).unwrap();
+        let v: i64 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 3);
+        let (title, pinned, recall, used): (String, i64, i64, i64) = c
+            .query_row(
+                "SELECT title, pinned, recall_count, last_used_at FROM sessions WHERE id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((title.as_str(), pinned, recall, used), ("T", 1, 0, 0));
+        let mode: String = c
+            .query_row(
+                "SELECT mode FROM cascade WHERE session_id='gone'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, "delete");
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'weather'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(c
+            .prepare("SELECT id, created_at, status, groups FROM reviews")
+            .is_ok());
+        drop(c);
+        assert!(open(&p).is_ok(), "reopening a v3 file is a no-op");
     }
 
     #[test]

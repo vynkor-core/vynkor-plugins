@@ -172,7 +172,16 @@ pub fn resolve(
         }
     }
     let (session_id, created) = match found {
-        Some(id) => (id, false),
+        Some(id) => {
+            // A resumed session counts as used right now (host-local, no rev):
+            // retention must not treat an old chat that is being continued as idle.
+            tx.execute(
+                "UPDATE sessions SET last_used_at = MAX(last_used_at, ?1) WHERE id = ?2",
+                params![now, id],
+            )
+            .map_err(db_err)?;
+            (id, false)
+        }
         None => (new_session(&tx, p, now)?, true),
     };
     tx.commit().map_err(db_err)?;
@@ -219,7 +228,7 @@ pub fn append(
     )
     .map_err(db_err)?;
     tx.execute(
-        "UPDATE sessions SET turns = ?, last_at = MAX(last_at, ?), rev = ? WHERE id = ?",
+        "UPDATE sessions SET turns = ?, last_at = MAX(last_at, ?), rev = ?, tier = 'full' WHERE id = ?",
         params![seq, now, rev, p.session_id],
     )
     .map_err(db_err)?;
@@ -410,9 +419,15 @@ pub fn update(
     }
     let rev = next_rev(&tx).map_err(db_err)?;
     tx.execute(
+        // Title/pin changes do not change what the summary describes: a current
+        // summary / embedding stays current under the new revision.
         "UPDATE sessions SET title = COALESCE(?1, title),
                 title_manual = CASE WHEN ?1 IS NOT NULL THEN 1 ELSE title_manual END,
-                pinned = COALESCE(?2, pinned), rev = ?3 WHERE id = ?4",
+                pinned = COALESCE(?2, pinned),
+                embedded_rev = CASE WHEN embedded_rev >= summarized_rev AND summarized_rev >= rev
+                                    THEN ?3 ELSE embedded_rev END,
+                summarized_rev = CASE WHEN summarized_rev >= rev THEN ?3 ELSE summarized_rev END,
+                rev = ?3 WHERE id = ?4",
         params![title, pinned.map(i64::from), rev, id],
     )
     .map_err(db_err)?;
@@ -480,9 +495,33 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()
         .map_err(db_err)?;
+    // An unfinished job of this session (e.g. a compaction) is taken over by the
+    // delete job; bumping `gen` stops the worker from finishing the old one.
+    // Its still-pending ids are merged in: the turns of a `summary` session are
+    // gone from `turns`, but their vector/goal deletions may still be queued.
+    let (mut turn_ids, mut goal_ids) = (turn_ids, goal_ids);
+    let old_job: Option<(String, String)> = tx
+        .query_row(
+            "SELECT turn_ids, goal_ids FROM cascade WHERE session_id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    if let Some((t, g)) = old_job {
+        for (mine, old) in [(&mut turn_ids, t), (&mut goal_ids, g)] {
+            for x in serde_json::from_str::<Vec<String>>(&old).unwrap_or_default() {
+                if !mine.contains(&x) {
+                    mine.push(x);
+                }
+            }
+        }
+    }
     tx.execute(
-        "INSERT OR REPLACE INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
-         VALUES (?, ?, ?, 0, 0, '[]')",
+        "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done, mode)
+         VALUES (?1, ?2, ?3, 0, 0, '[]', 'delete')
+         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, goal_ids = ?3, attempts = 0,
+             next_at = 0, done = '[]', mode = 'delete', gen = gen + 1",
         params![id, json!(turn_ids).to_string(), json!(goal_ids).to_string()],
     )
     .map_err(db_err)?;

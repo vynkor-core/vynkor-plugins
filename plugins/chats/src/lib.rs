@@ -3,6 +3,7 @@ pub mod config;
 pub mod db;
 pub mod embed;
 pub mod request;
+pub mod retention;
 pub mod rpc;
 pub mod schema;
 pub mod search;

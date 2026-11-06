@@ -9,6 +9,7 @@ use crate::db::with_db;
 use crate::embed::{SESSIONS, TURNS};
 use crate::worker::Worker;
 
+pub const MODE_COMPACT: &str = "compact";
 const SWEEP_EVERY_MS: i64 = 24 * 3600 * 1000;
 const SWEEP_KEEP_MS: i64 = 7 * SWEEP_EVERY_MS;
 /// A sweep cycle is closed after this long even if some rows were not swept.
@@ -48,8 +49,46 @@ pub fn requeue(conn: &mut Connection, session_id: &str, turn_ids: &[String]) -> 
         "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
          VALUES (?1, ?2, '[]', 0, 0, '[]')
          ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, attempts = 0, next_at = 0, done = '[]',
-                                               gen = gen + 1",
+                                               mode = 'delete', gen = gen + 1",
         params![session_id, json!(ids).to_string()],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)
+}
+
+/// Queue removal of turn vectors for a session that stays alive (compaction):
+/// merges with a pending job of any mode (keeping its mode), resets `done` and
+/// bumps `gen`, like [`requeue`].
+pub fn enqueue_vectors(
+    conn: &mut Connection,
+    session_id: &str,
+    turn_ids: &[String],
+) -> Result<(), String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let existing: Option<String> = tx
+        .query_row(
+            "SELECT turn_ids FROM cascade WHERE session_id = ?",
+            [session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let mut ids: Vec<String> = existing
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    for t in turn_ids {
+        if !ids.contains(t) {
+            ids.push(t.clone());
+        }
+    }
+    tx.execute(
+        "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done, mode)
+         VALUES (?1, ?2, '[]', 0, 0, '[]', ?3)
+         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, attempts = 0, next_at = 0,
+                                               done = '[]', gen = gen + 1",
+        params![session_id, json!(ids).to_string(), MODE_COMPACT],
     )
     .map_err(db_err)?;
     tx.commit().map_err(db_err)
@@ -62,12 +101,14 @@ struct Job {
     attempts: i64,
     done: HashSet<String>,
     gen: i64,
+    /// `delete` (everything) or `compact` (turn vectors + goals only)
+    mode: String,
 }
 
 fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT session_id, turn_ids, goal_ids, attempts, done, gen FROM cascade
+            "SELECT session_id, turn_ids, goal_ids, attempts, done, gen, mode FROM cascade
              WHERE next_at <= ? ORDER BY next_at LIMIT ?",
         )
         .map_err(db_err)?;
@@ -81,6 +122,7 @@ fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
                 attempts: r.get(3)?,
                 done: list(r.get(4)?).into_iter().collect(),
                 gen: r.get(5)?,
+                mode: r.get(6)?,
             })
         })
         .map_err(db_err)?
@@ -93,6 +135,44 @@ fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
 pub fn backoff_ms(attempts: i64) -> i64 {
     let exp = (attempts - 1).clamp(0, 20) as u32;
     (BACKOFF_BASE_MS << exp).min(BACKOFF_MAX_MS)
+}
+
+/// Remember the vector ids of a finished job for the daily sweep (a worker
+/// write may still land after the cleanup). `turns_only`: the session lives on,
+/// so the sweep must leave its summary vector alone.
+fn sweep_later(
+    tx: &rusqlite::Transaction,
+    job: &Job,
+    now: i64,
+    turns_only: bool,
+) -> Result<(), String> {
+    let old: Option<String> = tx
+        .query_row(
+            "SELECT turn_ids FROM swept WHERE session_id = ?",
+            [&job.session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let mut ids: Vec<String> = old
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    for t in &job.turn_ids {
+        if !ids.contains(t) {
+            ids.push(t.clone());
+        }
+    }
+    if turns_only && ids.is_empty() {
+        return Ok(());
+    }
+    tx.execute(
+        "INSERT INTO swept(session_id, turn_ids, until, swept_at, turns_only) VALUES (?1, ?2, ?3, 0, ?4)
+         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, until = ?3, swept_at = 0,
+             turns_only = CASE WHEN ?4 = 0 THEN 0 ELSE turns_only END",
+        params![job.session_id, json!(ids).to_string(), now + SWEEP_KEEP_MS, i64::from(turns_only)],
+    )
+    .map_err(db_err)?;
+    Ok(())
 }
 
 /// All steps done: drop the job and the session row, remember the vector ids
@@ -113,32 +193,19 @@ fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<bool, String> {
     if removed == 0 {
         return Ok(false);
     }
+    let turns_only = job.mode == MODE_COMPACT;
+    if turns_only {
+        // the session stays; only the queued cleanup is done
+        sweep_later(&tx, job, now, true)?;
+        tx.commit().map_err(db_err)?;
+        return Ok(true);
+    }
     tx.execute(
         "DELETE FROM sessions WHERE id = ? AND state = 'deleting'",
         [&job.session_id],
     )
     .map_err(db_err)?;
-    let old: Option<String> = tx
-        .query_row(
-            "SELECT turn_ids FROM swept WHERE session_id = ?",
-            [&job.session_id],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(db_err)?;
-    let mut ids: Vec<String> = old
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default();
-    for t in &job.turn_ids {
-        if !ids.contains(t) {
-            ids.push(t.clone());
-        }
-    }
-    tx.execute(
-        "INSERT OR REPLACE INTO swept(session_id, turn_ids, until, swept_at) VALUES (?, ?, ?, 0)",
-        params![job.session_id, json!(ids).to_string(), now + SWEEP_KEEP_MS],
-    )
-    .map_err(db_err)?;
+    sweep_later(&tx, job, now, false)?;
     tx.commit().map_err(db_err)?;
     Ok(true)
 }
@@ -184,6 +251,14 @@ fn steps_of(job: &Job) -> Vec<Step> {
             "vec_delete",
             json!({"collection": TURNS, "id": t}),
         ));
+    }
+    if job.mode == MODE_COMPACT {
+        // compaction keeps the session: its summary vector and the agent's
+        // facts stay, only turn vectors and goals go
+        for g in &job.goal_ids {
+            steps.push((format!("g:{g}"), "agent", "goal_delete", json!({"id": g})));
+        }
+        return steps;
     }
     steps.push((
         "s".into(),
@@ -301,12 +376,16 @@ impl Worker {
         let mut swept: Vec<(String, String)> = Vec::new();
         let mut failed_rows: Vec<(String, String, i64)> = Vec::new();
         let mut failures = 0;
-        'rows: for (n, (sid, turn_ids, row_failures)) in rows.iter().enumerate() {
+        'rows: for (n, (sid, turn_ids, row_failures, turns_only)) in rows.iter().enumerate() {
             if n > 0 && started.elapsed() >= budget {
                 break;
             }
             let ids: Vec<String> = serde_json::from_str(turn_ids).unwrap_or_default();
-            let mut calls = vec![(SESSIONS, sid.clone())];
+            // a compaction sweep leaves the session's summary vector alone
+            let mut calls = Vec::new();
+            if !*turns_only {
+                calls.push((SESSIONS, sid.clone()));
+            }
             calls.extend(ids.into_iter().map(|t| (TURNS, t)));
             for (coll, id) in calls {
                 match self
@@ -358,7 +437,8 @@ impl Worker {
     }
 }
 
-type SweepRows = Vec<(String, String, i64)>;
+/// (session id, turn ids as JSON, failures so far, turns only)
+type SweepRows = Vec<(String, String, i64, bool)>;
 
 /// Prune expired rows, open or continue a cycle and pick the rows still to
 /// visit; closes the cycle when none is left.
@@ -404,13 +484,13 @@ fn sweep_plan(c: &Connection, now: i64) -> Result<Option<(i64, SweepRows)>, Stri
     };
     let rows: SweepRows = c
         .prepare(
-            "SELECT session_id, turn_ids, failures FROM swept
+            "SELECT session_id, turn_ids, failures, turns_only FROM swept
              WHERE swept_at < ?1 AND next_at <= ?2
              ORDER BY next_at, swept_at, session_id LIMIT 200",
         )
         .map_err(db_err)?
         .query_map(params![cycle, now], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0))
         })
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()

@@ -7,7 +7,8 @@ search (SQLite FTS5) and revision-based sync. One SQLite file
 Status: C2 (semantic layer). A background worker writes session summaries,
 titles and tags through `ai`, stores vectors in `vector-db`, search is hybrid
 (FTS5 + vectors, reciprocal rank fusion), and deleting a session cascades to
-vectors, agent goals and agent facts. Compaction arrives later.
+vectors, agent goals and agent facts. Retention (C3) keeps the store tidy: usage tracking, automatic junk
+cleanup, compaction of old unused sessions and a monthly review for the owner.
 
 ## Configuration (environment)
 
@@ -25,6 +26,14 @@ vectors, agent goals and agent facts. Compaction arrives later.
 | `CHATS_SUMMARY_MAX_TOKENS` | 400 | token cap of a summary completion |
 | `CHATS_SEARCH_VEC_TIMEOUT_MS` | 800 | budget for the vector half of `chat_search`; on timeout only text hits are returned |
 | `CHATS_RECALL_MIN_SCORE` | 0.72 | default `min_score` of `chat_recall` |
+| `CHATS_RETENTION` | on | `on`/`off`: junk cleanup, compaction, monthly review (runs in the worker, so it needs `CHATS_SEMANTIC=on`) |
+| `CHATS_MAINT_INTERVAL_SECS` | 3600 | maintenance pass period |
+| `CHATS_JUNK_AGE_SECS` | 86400 | a session of only junk turns is deleted once this old |
+| `CHATS_COMPACT_AGE_SECS` | 7776000 | sessions older than this (and summarized) may be compacted |
+| `CHATS_COMPACT_UNUSED_SECS` | 5184000 | ... if also not found by search/recall for this long |
+| `CHATS_REVIEW_INTERVAL_SECS` | 2592000 | how often a review is prepared |
+| `CHATS_REVIEW_LOWVALUE_AGE_SECS` | 2592000 | review `junk` group: low-value voice sessions older than this |
+| `CHATS_REVIEW_SUMMARY_AGE_SECS` | 15552000 | review `compress` group: compact sessions unused this long |
 
 ## Actions
 
@@ -37,6 +46,8 @@ vectors, agent goals and agent facts. Compaction arrives later.
 | `chat_session_update` | `id, title?, pinned?` | `{rev}` |
 | `chat_delete` | `id` | `{rev, deleted}` |
 | `chat_search` | `query, from?, to?, kind?, limit?(20, max 100)` | `{hits:[{session_id, turn_id \| null, at, snippet, score}]}` |
+| `chat_review_get` | - | `{review: null \| {id, created_at, groups:[{key, action, sessions:[{id, title, last_at, turns, tier}]}]}}` |
+| `chat_review_apply` | `id, accept:[key], exclude?:[session_id]` | `{deleted, compressed, skipped, rev}` |
 | `chat_recall` | `vector, model, exclude_session_id?, top_k?(3, max 10), min_score?` | `{hits:[{session_id, title, summary, at, score}]}` |
 | `chat_sync` | `since_rev, limit?` | `{changes, rev, more, review_pending, reset}` |
 
@@ -104,6 +115,48 @@ restarting, so its steps stay queued and are retried indefinitely.
   it keeps its place across partial passes. A requeue (late vector found by the
   worker) bumps the job's generation so a concurrently finishing cascade cannot
   drop it.
+
+## Retention (C3)
+
+Tiers: `full` -> `compact` (automatic) -> `summary` (only by the owner's
+review). `pinned` sessions are never touched by any rule, nor by a review
+applied after they were pinned.
+
+- **Usage.** `chat_recall` hits count `recall_count` and set `last_used_at`;
+  `chat_search` hits set `last_used_at`. Host-local, never bumps `rev`.
+- **Junk.** A live, unpinned session older than `CHATS_JUNK_AGE_SECS` whose
+  every turn is junk (status not `ok`, or an empty question/answer; or no
+  turns at all) is deleted through the normal delete path (tombstone and
+  cascade). One good turn keeps the session.
+- **Compaction.** A summarized `full` session older than
+  `CHATS_COMPACT_AGE_SECS` and unused for `CHATS_COMPACT_UNUSED_SECS` becomes
+  `compact`: tool traces are emptied (new `rev`), turn vectors and agent goals
+  are removed through a `cascade` job in `compact` mode (retried like a delete;
+  summary, tags, summary vector and facts stay). A new turn makes the session
+  `full` again.
+- **Current summaries only.** Compaction, the `compress` group and the
+  `summary` tier need a non-empty summary that is current (`summarized_rev >=
+  rev`). Compaction and the tier change keep the summary current under their
+  new `rev` (no re-summarizing, no re-embedding); title and pin edits do too.
+  Only `full` sessions with a good turn are ever summarized, so a `summary`-tier
+  session (no turns) can never be overwritten by an empty-transcript reply.
+- **Resumed chats.** Resolving an existing session stamps `last_used_at`
+  (no `rev`), so an old chat that is being continued is not junk.
+- **Monthly review.** Every `CHATS_REVIEW_INTERVAL_SECS` the worker prepares a
+  review with two groups: `junk` (low-value voice sessions: at most one good
+  turn, never recalled, older than `CHATS_REVIEW_LOWVALUE_AGE_SECS`; action
+  delete) and `compress` (compact sessions unused for
+  `CHATS_REVIEW_SUMMARY_AGE_SECS`; action summary = drop the turns, keep title,
+  summary and tags, `tier = summary`, no tombstones). `chat_sync` reports
+  `review_pending`; the worker publishes `changed` with `action: "review"`.
+  `chat_review_apply` carries out the accepted group keys, re-checking every
+  session first (pinned, used or deleted since -> `skipped`). A review can be
+  applied once (`review already applied`; a replaced one is `review not
+  pending`); an unknown id is `review not found`. Every successful apply
+  publishes `changed`. A due review with no candidates dismisses a pending one.
+  The maintenance pass works one session per database call within the
+  cleanup lane's 60 s budget and writes its interval stamp last; a stamp in the
+  future counts as due.
 
 ## Events
 
