@@ -1,0 +1,610 @@
+{
+  "plugin_id": "chats",
+  "version": "0.1.0",
+  "permissions": [
+    "PERMISSION_STORAGE",
+    "PERMISSION_EVENT_PUBLISH"
+  ],
+  "kernel_compatibility_range": {
+    "min": "0.1.0",
+    "max": "*"
+  },
+  "binary": "chats",
+  "events": [],
+  "files": [
+    "chats",
+    "plugin.json"
+  ],
+  "actions": [
+    {
+      "name": "chat_session_resolve",
+      "description": "Find or open the conversation session a new turn belongs to. Pass the session_id you already hold to continue it; a chat session never times out; a voice session silent longer than the pause (default 30 min), an id of another device/kind, or an unknown id starts a new one. Call once before chat_turn_append. Not for reading history (use chat_sessions_list).",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device": {
+            "type": "string",
+            "description": "Name of the device the conversation happens on."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "voice"
+            ],
+            "description": "chat = typed conversation (never times out, also without session_id), voice = spoken (ends after a pause)."
+          },
+          "source": {
+            "type": "string",
+            "description": "Free-form origin label, e.g. desktop, daemon, telegram."
+          },
+          "session_id": {
+            "type": "string",
+            "description": "Existing session id to continue, if the caller has one."
+          }
+        },
+        "required": [
+          "device",
+          "kind"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "session_id",
+          "created"
+        ]
+      }
+    },
+    {
+      "name": "chat_turn_append",
+      "description": "Record one finished exchange (user text, answer, outcome, tool calls) in a session. Texts over 64 KiB and tool_trace args/result over 200 chars are truncated, trace is capped at 50 entries. tool_trace must be an array of objects; only tool/args/result/error/ms are kept. Fails with 'unknown session' if the session was deleted.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "description": "Session id from chat_session_resolve."
+          },
+          "user_text": {
+            "type": "string",
+            "description": "What the user said or typed."
+          },
+          "answer_text": {
+            "type": "string",
+            "description": "What the assistant answered."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "tool_trace": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "args": {},
+                "result": {},
+                "error": {
+                  "type": "string"
+                },
+                "ms": {
+                  "type": "integer"
+                }
+              }
+            },
+            "description": "Tool calls made during the turn."
+          },
+          "goal_id": {
+            "type": "string",
+            "description": "Agent goal id that produced this turn, if any."
+          }
+        },
+        "required": [
+          "session_id",
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "turn_id": {
+            "type": "string"
+          },
+          "seq": {
+            "type": "integer",
+            "description": "1-based position in the session."
+          },
+          "rev": {
+            "type": "integer",
+            "description": "Host revision assigned to this change."
+          }
+        },
+        "required": [
+          "turn_id",
+          "seq",
+          "rev"
+        ]
+      }
+    },
+    {
+      "name": "chat_sessions_list",
+      "description": "List conversation sessions of all devices, most recently active first. Sessions without turns are hidden. Filter by time range, kind or source; while next_before is returned there is another page: pass it as before. Use chat_session_read for the turns of one session, chat_search to find by words.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "integer",
+            "description": "Only sessions with last_at >= this (unix ms)."
+          },
+          "to": {
+            "type": "integer",
+            "description": "Only sessions with last_at <= this (unix ms)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "voice"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "description": "Only this source label."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size, default 50, max 200.",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "before": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Opaque cursor: pass next_before of the previous page (a bare last_at integer is also accepted)."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/session"
+            }
+          },
+          "next_before": {
+            "type": "string",
+            "description": "Cursor for the next page; absent on the last page."
+          }
+        },
+        "required": [
+          "sessions"
+        ]
+      }
+    },
+    {
+      "name": "chat_session_read",
+      "description": "Read one session with its turns in order. Returns the newest 200 turns by default; last=N (max 1000) picks how many newest turns, always in ascending order. Fails with 'unknown session' for missing or deleted ids.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Session id."
+          },
+          "last": {
+            "type": "integer",
+            "description": "Newest N turns (default 200, max 1000).",
+            "minimum": 1,
+            "maximum": 1000
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "$ref": "#/$defs/session"
+          },
+          "turns": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/turn"
+            }
+          }
+        },
+        "required": [
+          "session",
+          "turns"
+        ]
+      }
+    },
+    {
+      "name": "chat_session_update",
+      "description": "Rename a session or pin/unpin it (pinned sessions are never compacted). At least one of title/pinned is required.",
+      "risk": "medium",
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Session id."
+          },
+          "title": {
+            "type": "string",
+            "description": "New title (max 512 chars)."
+          },
+          "pinned": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "rev": {
+            "type": "integer",
+            "description": "Host revision of this change."
+          }
+        },
+        "required": [
+          "rev"
+        ]
+      }
+    },
+    {
+      "name": "chat_delete",
+      "description": "Permanently delete a conversation session and all its turns. It disappears from every read and search at once and devices learn of it via chat_sync. Irreversible and idempotent: an unknown or already deleted id is not an error (deleted=false).",
+      "risk": "high",
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Session id."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "rev": {
+            "type": "integer",
+            "description": "Host revision of the deletion (current revision if nothing was deleted)."
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "true only for the call that actually deleted the session."
+          }
+        },
+        "required": [
+          "rev",
+          "deleted"
+        ]
+      }
+    },
+    {
+      "name": "chat_search",
+      "description": "Full-text search over everything said in past conversations, all devices. Words match as prefixes, case-insensitively, all words must appear in one turn. Returns best matches first with a highlighted snippet. Use for 'what did we talk about / what did I say about X'.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Words to look for; operators and punctuation are ignored."
+          },
+          "from": {
+            "type": "integer",
+            "description": "Only turns at >= this (unix ms)."
+          },
+          "to": {
+            "type": "integer",
+            "description": "Only turns at <= this (unix ms)."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "voice"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max hits, default 20, max 100.",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "hits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "session_id": {
+                  "type": "string"
+                },
+                "turn_id": {
+                  "type": "string"
+                },
+                "at": {
+                  "type": "integer"
+                },
+                "snippet": {
+                  "type": "string"
+                },
+                "score": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "hits"
+        ]
+      }
+    },
+    {
+      "name": "chat_sync",
+      "description": "Return every change (sessions, turns, deletions) made after revision since_rev, oldest first, for keeping a device's local copy in sync. Persist the returned rev and pass it next time; repeat while more is true. A turn change may arrive before its session change: clients upsert a placeholder session and fill it when the session change arrives. If reset is true the caller's since_rev is ahead of this store: discard the local copy and resync from 0 using the returned rev.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {
+          "since_rev": {
+            "type": "integer",
+            "description": "Last revision the caller has already applied (0 = everything).",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size, default and max 500 (CHATS_SYNC_MAX).",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "since_rev"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "rev": {
+                  "type": "integer"
+                },
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "session",
+                    "turn",
+                    "delete"
+                  ]
+                },
+                "session": {
+                  "$ref": "#/$defs/session"
+                },
+                "turn": {
+                  "$ref": "#/$defs/turn"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "rev",
+                "op"
+              ]
+            }
+          },
+          "rev": {
+            "type": "integer"
+          },
+          "more": {
+            "type": "boolean"
+          },
+          "review_pending": {
+            "type": "boolean"
+          },
+          "reset": {
+            "type": "boolean",
+            "description": "true when since_rev was greater than the store revision; changes is then empty."
+          }
+        },
+        "required": [
+          "changes",
+          "rev",
+          "more",
+          "review_pending",
+          "reset"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "session": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "chat",
+            "voice"
+          ]
+        },
+        "device": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "integer"
+        },
+        "last_at": {
+          "type": "integer"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "full",
+            "compact",
+            "summary"
+          ]
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "turns": {
+          "type": "integer"
+        }
+      }
+    },
+    "turn": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer"
+        },
+        "at": {
+          "type": "integer"
+        },
+        "user_text": {
+          "type": "string"
+        },
+        "answer_text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "tool_trace": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "goal_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  "config_schema": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "CHATS_DATA_DIR": {
+        "type": "string",
+        "description": "Directory holding chats.db (required)."
+      },
+      "CHATS_PAUSE_SECS": {
+        "type": "integer",
+        "default": 1800,
+        "minimum": 1,
+        "description": "Silence after which a voice session ends and a new one starts."
+      },
+      "CHATS_TRACE_MAX_CHARS": {
+        "type": "integer",
+        "default": 200,
+        "minimum": 1,
+        "description": "tool_trace args/result/error are truncated to this many characters."
+      },
+      "CHATS_TEXT_MAX_BYTES": {
+        "type": "integer",
+        "default": 65536,
+        "minimum": 1,
+        "description": "user_text/answer_text are truncated to this many bytes."
+      },
+      "CHATS_SYNC_MAX": {
+        "type": "integer",
+        "default": 500,
+        "minimum": 1,
+        "description": "Upper bound for a chat_sync page."
+      }
+    },
+    "required": [
+      "CHATS_DATA_DIR"
+    ],
+    "additionalProperties": true
+  }
+}

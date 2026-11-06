@@ -1,0 +1,9 @@
+# The chats plugin reads ENVIRONMENT VARIABLES only; it does not read this
+# file or any YAML. Set them in the plugin's `env:` list in plugins.d/chats.yaml.
+# Listed here as KEY=value examples (defaults shown).
+#
+# CHATS_DATA_DIR=/var/lib/vynkor/chats   # holds chats.db (required, no default)
+# CHATS_PAUSE_SECS=1800                  # a voice session ends after this much silence
+# CHATS_TRACE_MAX_CHARS=200              # tool_trace tool/args/result/error are cut to this
+# CHATS_TEXT_MAX_BYTES=65536             # user_text / answer_text are cut to this
+# CHATS_SYNC_MAX=500                     # upper bound for chat_sync page size
