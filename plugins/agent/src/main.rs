@@ -2189,7 +2189,10 @@ mod tests {
         }
         let goal = goal_message(&req);
         assert!(goal.starts_with("weather?\n\n---\n[PAST SESSIONS]"), "{goal}");
-        assert!(goal.contains("- 2026-11-05 — Weather: sunny in Tashkent"), "{goal}");
+        assert!(
+            goal.contains(r#"{"date":"2026-11-05","summary":"sunny in Tashkent","title":"Weather"}"#),
+            "{goal}"
+        );
         let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
         assert_eq!(got["goal"]["recalled_sessions"], serde_json::json!(["P1"]));
     }
