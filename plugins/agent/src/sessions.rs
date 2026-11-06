@@ -51,6 +51,81 @@ pub fn origin(
     }
 }
 
+/// Cap for `args` / `result` / `error` kept in the trace (chars).
+pub const TRACE_TEXT_MAX_CHARS: usize = 200;
+
+/// One tool call of a goal, as stored in `GoalDoc.tool_trace` and sent to
+/// `chats` as `tool_trace[]`. Text fields are already cut to
+/// [`TRACE_TEXT_MAX_CHARS`] (+ `…`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TraceRec {
+    pub tool: String,
+    pub args: String,
+    pub result: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    pub ms: u64,
+}
+
+/// Cut to [`TRACE_TEXT_MAX_CHARS`] characters (not bytes), marking the cut with `…`.
+pub fn trace_text(s: &str) -> String {
+    if s.chars().count() <= TRACE_TEXT_MAX_CHARS {
+        s.to_string()
+    } else {
+        let cut: String = s.chars().take(TRACE_TEXT_MAX_CHARS).collect();
+        format!("{cut}…")
+    }
+}
+
+impl TraceRec {
+    /// A call that ran (or failed) after `ms` milliseconds.
+    pub fn new(tool: &str, args: &Value, outcome: Result<&str, &str>, ms: u64) -> Self {
+        let (result, error) = match outcome {
+            Ok(body) => (trace_text(body), None),
+            Err(e) => (String::new(), Some(trace_text(e))),
+        };
+        Self { tool: tool.to_string(), args: trace_text(&args.to_string()), result, error, ms }
+    }
+}
+
+/// `chats` turn status for a goal status; `None` = not finished, write nothing.
+pub fn turn_status(goal_status: &str) -> Option<&'static str> {
+    match goal_status {
+        "completed" => Some("ok"),
+        "declined" => Some("cancelled"),
+        "error" | "max_steps_reached" => Some("failed"),
+        _ => None,
+    }
+}
+
+/// Write the finished goal as a turn of its session. No-op without a
+/// session or while the goal is still running / awaiting confirmation.
+/// Failures are logged, never returned: the turn already happened.
+pub async fn append_turn(rpc: &Rpc, timeout_ms: u32, doc: &crate::store::GoalDoc) {
+    let (Some(session_id), Some(status)) = (doc.session_id.as_deref(), turn_status(&doc.status))
+    else {
+        return;
+    };
+    let answer = if !doc.final_answer.is_empty() {
+        doc.final_answer.clone()
+    } else if !doc.error.is_empty() {
+        doc.error.clone()
+    } else {
+        format!("Stopped without an answer ({}).", doc.status)
+    };
+    let params = json!({
+        "session_id": session_id,
+        "user_text": doc.goal,
+        "answer_text": answer,
+        "status": status,
+        "tool_trace": doc.tool_trace,
+        "goal_id": doc.id,
+    });
+    if let Err(e) = rpc.call("chat_turn_append", params, timeout_ms).await {
+        warn_chats("turn append", &e, &MISSING_WARNED);
+    }
+}
+
 /// A resolved chat session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Resolved {
@@ -168,6 +243,26 @@ mod tests {
 
     fn o(device: &str, kind: &str, source: &str) -> Origin {
         Origin { device: device.into(), kind: kind.into(), source: source.into() }
+    }
+
+    #[test]
+    fn turn_status_maps_every_goal_status() {
+        assert_eq!(turn_status("completed"), Some("ok"));
+        assert_eq!(turn_status("declined"), Some("cancelled"));
+        assert_eq!(turn_status("error"), Some("failed"));
+        assert_eq!(turn_status("max_steps_reached"), Some("failed"));
+        assert_eq!(turn_status("running"), None);
+        assert_eq!(turn_status("needs_confirmation"), None);
+    }
+
+    #[test]
+    fn trace_text_cuts_by_chars_not_bytes() {
+        assert_eq!(trace_text("short"), "short");
+        let cyr = "ж".repeat(TRACE_TEXT_MAX_CHARS);
+        assert_eq!(trace_text(&cyr), cyr, "exactly at the cap is kept");
+        let cut = trace_text(&"ж".repeat(TRACE_TEXT_MAX_CHARS + 1));
+        assert_eq!(cut.chars().count(), TRACE_TEXT_MAX_CHARS + 1);
+        assert!(cut.ends_with('…'));
     }
 
     #[test]

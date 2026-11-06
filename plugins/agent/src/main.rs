@@ -765,8 +765,13 @@ mod tests {
                                     None => Err("no scripted ai reply".to_string()),
                                 }
                             } else {
+                                let big = params.get("big").and_then(Value::as_bool) == Some(true);
                                 dispatched.lock().await.push((req.action.clone(), params));
-                                Ok(serde_json::json!({"ok": true}))
+                                if big {
+                                    Ok(serde_json::json!({"blob": "x".repeat(1_000_000)}))
+                                } else {
+                                    Ok(serde_json::json!({"ok": true}))
+                                }
                             };
                             let resp = match outcome {
                                 Ok(v) => ProtoActionResponse {
@@ -1093,6 +1098,136 @@ mod tests {
         assert_eq!(res["session_id"], "S1");
         assert!(shim.chats_calls("chat_session_read").await.is_empty());
         assert!(!shim.ai_requests().await[0].to_string().contains("q1"));
+    }
+
+    /// `chat_turn_append` runs in the background after the reply: poll for it.
+    async fn wait_for_chats_calls(shim: &Shim, action: &str, n: usize) -> Vec<Value> {
+        for _ in 0..120 {
+            let calls = shim.chats_calls(action).await;
+            if calls.len() >= n {
+                return calls;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        shim.chats_calls(action).await
+    }
+
+    #[tokio::test]
+    async fn completed_goal_appends_turn_with_trace() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "notify_send", "params": {"title": "hi"}}"#).await;
+        shim.push_ai_reply("notified").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "notify me"})).await.unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        assert_eq!(appended.len(), 1);
+        let a = &appended[0];
+        assert_eq!(a["session_id"], "S1");
+        assert_eq!(a["user_text"], "notify me");
+        assert_eq!(a["answer_text"], "notified");
+        assert_eq!(a["status"], "ok");
+        assert_eq!(a["goal_id"], res["id"]);
+        let t = &a["tool_trace"][0];
+        assert_eq!(t["tool"], "notify_send");
+        assert_eq!(t["args"], r#"{"title":"hi"}"#);
+        assert!(t["result"].as_str().unwrap().contains("ok"));
+        assert!(t["ms"].is_u64(), "{t}");
+        assert!(t.get("error").is_none(), "no error key on success: {t}");
+        // Only contract keys cross the wire (chats rejects unknown fields).
+        let mut keys: Vec<&String> = a.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["answer_text", "goal_id", "session_id", "status", "tool_trace", "user_text"]);
+        let mut tkeys: Vec<&String> = t.as_object().unwrap().keys().collect();
+        tkeys.sort();
+        assert_eq!(tkeys, ["args", "ms", "result", "tool"]);
+        // The doc keeps the same trace.
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(got["goal"]["tool_trace"][0]["tool"], "notify_send");
+    }
+
+    #[tokio::test]
+    async fn huge_tool_result_is_truncated_in_trace() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "notify_send", "params": {"big": true}}"#).await;
+        shim.push_ai_reply("done").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "big"})).await.unwrap();
+        assert_eq!(res["status"], "completed");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        let result = a["tool_trace"][0]["result"].as_str().unwrap();
+        assert_eq!(result.chars().count(), 201, "200 chars + ellipsis");
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        let stored = got["goal"]["tool_trace"][0]["result"].as_str().unwrap();
+        assert!(stored.chars().count() <= 201);
+    }
+
+    #[tokio::test]
+    async fn failed_tool_and_unknown_tool_are_traced_with_error() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "no_such_tool", "params": {}}"#).await;
+        shim.push_ai_reply("gave up").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["tool_trace"][0]["tool"], "no_such_tool");
+        assert!(a["tool_trace"][0]["error"].as_str().unwrap().contains("not in the operator"));
+    }
+
+    #[tokio::test]
+    async fn needs_confirmation_appends_nothing_until_resume() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/x"}}"#).await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "read it"})).await.unwrap();
+        assert_eq!(res["status"], "needs_confirmation");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(shim.chats_calls("chat_turn_append").await.is_empty(), "nothing while pending");
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": false}))
+            .await
+            .unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        assert_eq!(appended.len(), 1);
+        assert_eq!(appended[0]["status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn approved_resume_appends_the_final_turn_once() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/x"}}"#).await;
+        shim.push_ai_reply("it says hi").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "read it"})).await.unwrap();
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": true}))
+            .await
+            .unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(shim.chats_calls("chat_turn_append").await.len(), 1);
+        assert_eq!(appended[0]["status"], "ok");
+        assert_eq!(appended[0]["answer_text"], "it says hi");
+        assert_eq!(appended[0]["tool_trace"][0]["tool"], "fs_read");
+    }
+
+    #[tokio::test]
+    async fn llm_failure_appends_failed_turn() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // No scripted replies: every chat_completion fails, even the text retry.
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert_eq!(res["status"], "error");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["status"], "failed");
+        assert_eq!(a["answer_text"], res["error"], "answer_text carries the error text");
+        assert!(a["answer_text"].as_str().unwrap().contains("chat_completion"), "{a}");
+    }
+
+    #[tokio::test]
+    async fn goal_without_session_appends_nothing() {
+        let shim = start_plugin(Config::default()).await; // chats missing
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(shim.chats_calls("chat_turn_append").await.is_empty());
     }
 
     #[tokio::test]

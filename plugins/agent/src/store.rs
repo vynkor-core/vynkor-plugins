@@ -93,6 +93,9 @@ pub struct GoalDoc {
     pub session_id: Option<String>,
     #[serde(default)]
     pub origin: Option<crate::sessions::Origin>,
+    /// Every tool call of the goal (args/results cut short), oldest first.
+    #[serde(default)]
+    pub tool_trace: Vec<crate::sessions::TraceRec>,
 }
 
 impl GoalDoc {
@@ -433,6 +436,7 @@ mod tests {
             tool_last_ms: Default::default(),
             session_id: None,
             origin: None,
+            tool_trace: Vec::new(),
         }
     }
 

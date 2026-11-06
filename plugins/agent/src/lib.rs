@@ -318,9 +318,11 @@ async fn start_goal(
         tool_last_ms: Default::default(),
         session_id: resolved.map(|r| r.id),
         origin: Some(origin),
+        tool_trace: Vec::new(),
     };
 
     engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
+    record_turn(rpc, config, &doc);
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -332,9 +334,22 @@ async fn start_goal(
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
+/// Write the finished turn to `chats` in the background: the caller's reply
+/// never waits on it. No-op for unfinished goals (see `sessions::turn_status`).
+fn record_turn(rpc: &Rpc, config: &Config, doc: &GoalDoc) {
+    if doc.session_id.is_none() || sessions::turn_status(&doc.status).is_none() {
+        return;
+    }
+    let rpc = rpc.clone();
+    let doc = doc.clone();
+    let timeout = config.chats_timeout_ms;
+    tokio::spawn(async move { sessions::append_turn(&rpc, timeout, &doc).await });
+}
+
 async fn resume_goal(
     db: &Db,
     rpc: &Rpc,
+    config: &Config,
     id: &str,
     approve: bool,
 ) -> Result<ActionResult, String> {
@@ -359,11 +374,13 @@ async fn resume_goal(
             detail: json!({"tool": tool}),
         });
         engine::persist(db, &mut doc).await?;
+        record_turn(rpc, config, &doc);
         return ok(summary(&doc), Some(changed(&doc.status, &doc.id)));
     }
 
     let catalog = Catalog::load_with_discovery(rpc).await?;
     engine::run(db, rpc, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
+    record_turn(rpc, config, &doc);
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
@@ -405,7 +422,7 @@ pub async fn handle_action(
             let goals = db.list_summaries(limit).await?;
             ok(json!({"total": goals.len(), "goals": goals}), None)
         }
-        AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, &id, approve).await,
+        AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, config, &id, approve).await,
         AgentRequest::ToolsList => {
             let catalog = Catalog::load_with_discovery(&rpc).await?;
             ok(

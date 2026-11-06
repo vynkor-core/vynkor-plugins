@@ -15,6 +15,7 @@ use crate::llm::{self, Reply};
 use crate::memory;
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
+use crate::sessions::TraceRec;
 use crate::tools::Catalog;
 use crate::Rpc;
 
@@ -237,6 +238,7 @@ async fn dispatch_and_observe(
     name: &str,
     params: Value,
 ) -> Result<bool, String> {
+    let started = std::time::Instant::now();
     let mut outcome = rpc.call(name, params.clone(), spec_timeout_ms).await;
     if outcome.is_err() && is_device_target(name) {
         let err = outcome.as_ref().err().unwrap().to_string();
@@ -250,6 +252,8 @@ async fn dispatch_and_observe(
         Err(e) => ("error", e),
     };
     let ok = status == "ok";
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    doc.tool_trace.push(TraceRec::new(name, &params, if ok { Ok(&body) } else { Err(&body) }, ms));
     let observation =
         truncate_chars(&format!("[TOOL RESULT name={name} status={status}]\n{body}"), OBSERVATION_MAX);
     push_turn(doc, "user", observation)?;
@@ -336,6 +340,7 @@ pub async fn run(
             doc.status = store::STATUS_RUNNING.to_string();
             if let Some(s) = spec {
                 if let Err(e) = check_quota(doc, s) {
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&e), 0));
                     push_turn(doc, "user", format!("[TOOL RESULT name={} status=error]\n{e}", name))?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": e}));
                     persist(db, doc).await?;
@@ -423,6 +428,7 @@ pub async fn run(
                     let msg = format!(
                         "unknown tool \"{name}\": not in the operator's tool catalog"
                     );
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(
                         doc,
                         "user",
@@ -442,6 +448,7 @@ pub async fn run(
                 }
                 if let Err(quota_err) = check_quota(doc, spec) {
                     let msg = quota_err.clone();
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
                     persist(db, doc).await?;
