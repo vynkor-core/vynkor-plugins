@@ -83,6 +83,8 @@ pub fn trace_text(s: &str) -> String {
     }
 }
 
+/// First-line cap for errors of fs/exec/shell tools (chars).
+const OMIT_ERROR_MAX_CHARS: usize = 60;
 const REDACTED: &str = "[redacted]";
 
 /// Tool names whose arguments and results are secret by nature.
@@ -93,8 +95,14 @@ const SENSITIVE_KEY_WORDS: [&str; 11] = [
     "cookie", "private_key",
 ];
 
+/// Tool names may be target-prefixed (`dev-phone.fs_read`, `laptop.exec`):
+/// classify on the base name after the last `.`, lower-cased.
+fn base_name(tool: &str) -> String {
+    tool.rsplit('.').next().unwrap_or(tool).to_lowercase()
+}
+
 fn is_sensitive_tool(tool: &str) -> bool {
-    let t = tool.to_lowercase();
+    let t = base_name(tool);
     SENSITIVE_TOOL_WORDS.iter().any(|w| t.contains(w))
 }
 
@@ -145,7 +153,7 @@ pub fn redact(tool: &str, args: &Value, result: &str) -> (String, String) {
 
 /// Tools whose output is file or shell content: never copied into the trace.
 fn is_omit_tool(tool: &str) -> bool {
-    let t = tool.to_lowercase();
+    let t = base_name(tool);
     t.starts_with("fs_") || t.starts_with("exec") || t.starts_with("shell")
 }
 
@@ -175,11 +183,19 @@ fn redact_result(tool: &str, result: &str) -> String {
     }
 }
 
-/// Error text: same masking as results, but fs/exec errors are kept (they
-/// say what went wrong, not what the file held) after the text scrub.
+/// Error text: same masking as results. For fs/exec/shell tools the error
+/// body may quote file or command output, so only the first line survives:
+/// scrubbed, capped at 60 chars, and `[omitted]` if the scrub changed anything.
 fn redact_error(tool: &str, err: &str) -> String {
     if is_sensitive_tool(tool) {
         REDACTED.to_string()
+    } else if is_omit_tool(tool) {
+        let first = err.lines().next().unwrap_or("");
+        if scrub_text(first) != first {
+            "[omitted]".to_string()
+        } else {
+            first.chars().take(OMIT_ERROR_MAX_CHARS).collect()
+        }
     } else {
         scrub_text(&mask_json_text(err))
     }
@@ -469,6 +485,33 @@ mod tests {
         assert!(rec.args.contains("/etc/x"), "args stay: {}", rec.args);
         let rec = TraceRec::new("fs_read", &json!({}), Err("no such file"), 1);
         assert_eq!(rec.error.as_deref(), Some("no such file"));
+    }
+
+    #[test]
+    fn target_prefixed_tool_names_are_classified_by_base_name() {
+        assert_eq!(redact("dev-phone.fs_read", &json!({}), "BODY").1, "[omitted]");
+        assert_eq!(redact("laptop.exec", &json!({}), "BODY").1, "[omitted]");
+        let (a, r) = redact("dev-x.secret_get", &json!({"name": "db_pass"}), "hunter2");
+        assert_eq!(r, "[redacted]");
+        assert_eq!(a, r#"{"name":"[redacted]"}"#);
+        assert_eq!(redact("Dev-X.Secret_Get", &json!({}), "hunter2").1, "[redacted]");
+        // prefix text is not the tool: a plain tool on a device called "fs_box" is not omitted
+        assert_eq!(redact("fs_box.ping", &json!({}), "pong").1, "pong");
+    }
+
+    #[test]
+    fn omit_tool_errors_keep_only_a_scrubbed_first_line() {
+        let env_err = "command failed:\nDB_PASSWORD=hunter2\nAPI_KEY=abc";
+        let rec = TraceRec::new("exec_run", &json!({}), Err(env_err), 1);
+        assert_eq!(rec.error.as_deref(), Some("command failed:"), "only the first line");
+        let rec = TraceRec::new("exec_run", &json!({}), Err("DB_PASSWORD=hunter2\nrest"), 1);
+        assert_eq!(rec.error.as_deref(), Some("[omitted]"), "scrub changed the line");
+        let long = format!("{} tail", "e".repeat(100));
+        let rec = TraceRec::new("laptop.shell_exec", &json!({}), Err(&long), 1);
+        assert_eq!(rec.error.unwrap().chars().count(), OMIT_ERROR_MAX_CHARS);
+        // ordinary tools keep their (scrubbed) multi-line error
+        let rec = TraceRec::new("http_get", &json!({}), Err("a\nb"), 1);
+        assert_eq!(rec.error.as_deref(), Some("a\nb"));
     }
 
     #[test]

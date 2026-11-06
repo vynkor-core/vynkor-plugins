@@ -788,8 +788,12 @@ mod tests {
                             } else {
                                 let action_is_secret = req.action == "secret_get";
                                 let big = params.get("big").and_then(Value::as_bool) == Some(true);
+                                let envfail = req.action == "fs_read"
+                                    && params.get("path").and_then(Value::as_str) == Some("/tmp/envfail");
                                 dispatched.lock().await.push((req.action.clone(), params));
-                                if action_is_secret {
+                                if envfail {
+                                    Err("read failed:\nDB_PASSWORD=hunter2\nAPI_KEY=abc".to_string())
+                                } else if action_is_secret {
                                     Ok(serde_json::json!({"secret": "hunter2", "note": "hunter2"}))
                                 } else if big {
                                     Ok(serde_json::json!({"blob": "x".repeat(1_000_000)}))
@@ -1269,6 +1273,23 @@ mod tests {
         assert_eq!(a["tool_trace"][0]["args"], r#"{"name":"[redacted]"}"#);
         let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
         assert!(!got["goal"]["tool_trace"].to_string().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn fs_error_with_env_lines_never_reaches_chats() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/envfail"}}"#).await;
+        shim.push_ai_reply("could not read").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": true}))
+            .await
+            .unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert!(!a.to_string().contains("hunter2"), "leak: {a}");
+        let t = &a["tool_trace"][0];
+        assert_eq!(t["tool"], "fs_read");
+        assert_eq!(t["error"], "fs_read failed: read failed:");
     }
 
     #[tokio::test]
