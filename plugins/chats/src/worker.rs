@@ -73,6 +73,10 @@ impl Worker {
             (self.changed)();
         }
         self.embed_pass().await;
+        if self.cascade_pass(now).await {
+            (self.changed)();
+        }
+        self.sweep_pass(now).await;
     }
 
     /// Log a missing/failed dependency once per kind.

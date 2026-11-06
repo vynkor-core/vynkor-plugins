@@ -371,6 +371,8 @@ mod tests {
         let f = Fixture::new();
         let (sid, later) = setup(&f);
         f.fake.script_completion(Ok(REPLY));
+        // keep the row around after the cascade tried (vector-db down)
+        f.fake.set_failing("vector-db", true);
         let db = std::sync::Arc::clone(&f.db);
         let sid2 = sid.clone();
         f.fake.on_call("chat_completion", move |_| {
