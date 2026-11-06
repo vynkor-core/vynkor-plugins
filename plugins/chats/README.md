@@ -4,7 +4,10 @@ Host-wide conversation history for every device: sessions, turns, full-text
 search (SQLite FTS5) and revision-based sync. One SQLite file
 (`$CHATS_DATA_DIR/chats.db`) per host; history is shared across callers.
 
-Status: C1 (storage). Summaries, vectors and compaction arrive later.
+Status: C2 (semantic layer). A background worker writes session summaries,
+titles and tags through `ai`, stores vectors in `vector-db`, search is hybrid
+(FTS5 + vectors, reciprocal rank fusion), and deleting a session cascades to
+vectors, agent goals and agent facts. Compaction arrives later.
 
 ## Configuration (environment)
 
@@ -15,6 +18,13 @@ Status: C1 (storage). Summaries, vectors and compaction arrive later.
 | `CHATS_TRACE_MAX_CHARS` | 200 | tool_trace `args`/`result`/`error` cut to this |
 | `CHATS_TEXT_MAX_BYTES` | 65536 | `user_text`/`answer_text` cut to this (char boundary, `…` suffix) |
 | `CHATS_SYNC_MAX` | 500 | upper bound for a `chat_sync` page |
+| `CHATS_SEMANTIC` | on | `on`/`off`; off = plain full-text behaviour, no calls to other plugins |
+| `CHATS_WORK_INTERVAL_SECS` | 60 | background worker tick (it is also woken after every append/delete) |
+| `CHATS_SUMMARY_IDLE_SECS` | 900 | a session is summarized once silent this long |
+| `CHATS_AI_AGENT_ID` | unset | optional `ai` agent profile used for summaries |
+| `CHATS_SUMMARY_MAX_TOKENS` | 400 | token cap of a summary completion |
+| `CHATS_SEARCH_VEC_TIMEOUT_MS` | 800 | budget for the vector half of `chat_search`; on timeout only text hits are returned |
+| `CHATS_RECALL_MIN_SCORE` | 0.72 | default `min_score` of `chat_recall` |
 
 ## Actions
 
@@ -26,7 +36,8 @@ Status: C1 (storage). Summaries, vectors and compaction arrive later.
 | `chat_session_read` | `id, last?(default 200, max 1000)` | `{session, turns}` |
 | `chat_session_update` | `id, title?, pinned?` | `{rev}` |
 | `chat_delete` | `id` | `{rev, deleted}` |
-| `chat_search` | `query, from?, to?, kind?, limit?(20, max 100)` | `{hits:[{session_id, turn_id, at, snippet, score}]}` |
+| `chat_search` | `query, from?, to?, kind?, limit?(20, max 100)` | `{hits:[{session_id, turn_id \| null, at, snippet, score}]}` |
+| `chat_recall` | `vector, model, exclude_session_id?, top_k?(3, max 10), min_score?` | `{hits:[{session_id, title, summary, at, score}]}` |
 | `chat_sync` | `since_rev, limit?` | `{changes, rev, more, review_pending, reset}` |
 
 Times are unix milliseconds from the host clock (client time is never
@@ -50,6 +61,37 @@ The query is split into words; each becomes a quoted FTS5 prefix term and all
 must match (AND), so FTS syntax characters in user input are harmless.
 Matching is case-insensitive (including Cyrillic) and diacritics-insensitive.
 `score` is `-bm25` (higher is better); `snippet` marks matches with `[` `]`.
+
+## Semantic layer (C2)
+
+Needs the `ai`, `vector-db` and `agent` plugins; any that is not installed
+(`action not found`) is skipped with one warning and `chats` keeps working
+like C1.
+
+- **Summaries.** A live session silent for `CHATS_SUMMARY_IDLE_SECS` whose
+  `rev` moved since the last summary gets one `chat_completion` (JSON title,
+  summary, tags). The result is written with a new `rev` (so `chat_sync`
+  clients see it); a title set by `chat_session_update` is never overwritten.
+  An unusable reply marks that `rev` as processed (no retry loop, nothing
+  overwritten); the next turn makes the session a candidate again.
+- **Vectors.** Turns of `tier = full` sessions go to `chats-turns`
+  (`"Q: ...\nA: ..."`, <= 2000 chars), summaries to `chats-sessions`
+  (`title\nsummary`), metadata `{session_id, kind, at}`.
+- **Hybrid `chat_search`.** FTS top 50 plus vector top 50 over turns and
+  summaries, merged by reciprocal rank fusion (`score = sum 1/(60+rank)`).
+  Vector hits of deleted sessions are dropped; a slow or failing
+  `vector-db` degrades to the FTS result inside `CHATS_SEARCH_VEC_TIMEOUT_MS`.
+  A hit on a session summary has `turn_id: null`. With `CHATS_SEMANTIC=off`
+  the C1 scoring (`-bm25`) is used.
+- **`chat_recall`.** Similar past sessions for a ready-made vector (used by
+  the agent). `model` must equal the model of the `chats-sessions` collection
+  (`vec_stats`, cached 60 s); a different model or `"fake"` returns no hits.
+- **Delete cascade.** `chat_delete` queues a job in the same transaction. The
+  worker deletes the turn and session vectors, calls `goal_delete` per
+  `goal_id` and `memory_forget_session` on `agent`, retrying with backoff
+  (1 min, doubled, max 1 h; finished steps are not repeated). When done the
+  session row is removed (the tombstone stays). A daily sweep repeats the
+  vector deletes for sessions finished in the last 7 days to catch late writes.
 
 ## Events
 

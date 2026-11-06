@@ -580,4 +580,92 @@ mod tests {
             .unwrap();
         assert_eq!(r, json!({"hits": []}));
     }
+
+    /// Run with: cargo test --release --manifest-path plugins/chats/Cargo.toml -- --ignored --nocapture hybrid_search_20k
+    #[tokio::test]
+    #[ignore]
+    async fn hybrid_search_20k_turns_fast() {
+        const WORDS: [&str; 12] = [
+            "weather",
+            "tomorrow",
+            "погода",
+            "завтра",
+            "meeting",
+            "calendar",
+            "music",
+            "light",
+            "kitchen",
+            "reminder",
+            "timer",
+            "rain",
+        ];
+        let f = Fixture::new();
+        let mut x: u64 = 0x9E3779B97F4A7C15;
+        {
+            let mut c = f.lock();
+            let tx = c.transaction().unwrap();
+            for sidx in 0..200 {
+                tx.execute(
+                    "INSERT INTO sessions(id, kind, device, source, started_at, last_at, turns, rev, embedded_rev) VALUES (?,?,?,?,?,?,?,?,0)",
+                    rusqlite::params![format!("s{sidx}"), "chat", "lap", "bench", 0, 0, 100, 1],
+                )
+                .unwrap();
+                for seq in 1..=100 {
+                    let mut text = String::new();
+                    while text.chars().count() < 200 {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        text.push_str(WORDS[(x % WORDS.len() as u64) as usize]);
+                        text.push(' ');
+                    }
+                    tx.execute(
+                        "INSERT INTO turns(id, session_id, seq, at, user_text, answer_text, status, rev, embedded) VALUES (?,?,?,?,?,?,?,?,1)",
+                        rusqlite::params![format!("t{sidx}-{seq}"), format!("s{sidx}"), seq, seq, text.chars().take(50).collect::<String>(), text, "ok", 1],
+                    )
+                    .unwrap();
+                }
+            }
+            tx.commit().unwrap();
+        }
+        // the in-memory vector store holds the vectors of 2000 of the turns
+        for i in 0..2000 {
+            let (sid, tid) = (
+                format!("s{}", i / 10),
+                format!("t{}-{}", i / 10, i % 10 + 1),
+            );
+            let text = format!("{} {}", WORDS[i % 12], WORDS[(i / 12) % 12]);
+            f.fake
+                .handle(
+                    "vec_upsert_batch",
+                    json!({"collection": "chats-turns", "docs": [{"id": tid, "text": text, "metadata": {"session_id": sid}}]}),
+                )
+                .await
+                .unwrap();
+        }
+        let s = svc(&f);
+        let mut times = Vec::new();
+        for _ in 0..5 {
+            for q in [
+                "weather",
+                "погода",
+                "meeting calendar",
+                "rain light",
+                "timer",
+                "music kitchen",
+            ] {
+                let t = Instant::now();
+                let hits = search(&s, q).await;
+                times.push(t.elapsed());
+                assert!(!hits.is_empty(), "no hits for {q}");
+            }
+        }
+        times.sort();
+        let median = times[times.len() / 2];
+        println!(
+            "hybrid search over 20000 turns: median {median:?}, max {:?}",
+            times[times.len() - 1]
+        );
+        assert!(median < Duration::from_millis(100), "median {median:?}");
+    }
 }
