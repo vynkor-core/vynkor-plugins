@@ -18,7 +18,7 @@
   "actions": [
     {
       "name": "chat_session_resolve",
-      "description": "Find or open the conversation session a new turn belongs to. Pass the session_id you already hold to continue it; a voice session silent longer than the pause (default 30 min) or an unknown id starts a new one. Call once before chat_turn_append. Not for reading history (use chat_sessions_list).",
+      "description": "Find or open the conversation session a new turn belongs to. Pass the session_id you already hold to continue it; a chat session never times out; a voice session silent longer than the pause (default 30 min), an id of another device/kind, or an unknown id starts a new one. Call once before chat_turn_append. Not for reading history (use chat_sessions_list).",
       "risk": "low",
       "input": {
         "type": "object",
@@ -33,7 +33,7 @@
               "chat",
               "voice"
             ],
-            "description": "chat = typed conversation (never times out), voice = spoken (ends after a pause)."
+            "description": "chat = typed conversation (never times out, also without session_id), voice = spoken (ends after a pause)."
           },
           "source": {
             "type": "string",
@@ -68,7 +68,7 @@
     },
     {
       "name": "chat_turn_append",
-      "description": "Record one finished exchange (user text, answer, outcome, tool calls) in a session. Texts over 64 KiB and tool_trace args/result over 200 chars are truncated, trace is capped at 50 entries. Fails with 'unknown session' if the session was deleted.",
+      "description": "Record one finished exchange (user text, answer, outcome, tool calls) in a session. Texts over 64 KiB and tool_trace args/result over 200 chars are truncated, trace is capped at 50 entries. tool_trace must be an array of objects; only tool/args/result/error/ms are kept. Fails with 'unknown session' if the session was deleted.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -149,7 +149,7 @@
     },
     {
       "name": "chat_sessions_list",
-      "description": "List conversation sessions of all devices, most recently active first. Filter by time range, kind or source; page back with before. Use chat_session_read for the turns of one session, chat_search to find by words.",
+      "description": "List conversation sessions of all devices, most recently active first. Sessions without turns are hidden. Filter by time range, kind or source; while next_before is returned there is another page: pass it as before. Use chat_session_read for the turns of one session, chat_search to find by words.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -180,8 +180,11 @@
             "maximum": 200
           },
           "before": {
-            "type": "integer",
-            "description": "Only sessions with last_at < this (unix ms); pass the last_at of the previous page."
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Opaque cursor: pass next_before of the previous page (a bare last_at integer is also accepted)."
           }
         },
         "required": [],
@@ -195,6 +198,10 @@
             "items": {
               "$ref": "#/$defs/session"
             }
+          },
+          "next_before": {
+            "type": "string",
+            "description": "Cursor for the next page; absent on the last page."
           }
         },
         "required": [
@@ -204,7 +211,7 @@
     },
     {
       "name": "chat_session_read",
-      "description": "Read one session with its turns in order. last=N returns only the N most recent turns. Fails with 'unknown session' for missing or deleted ids.",
+      "description": "Read one session with its turns in order. Returns the newest 200 turns by default; last=N (max 1000) picks how many newest turns, always in ascending order. Fails with 'unknown session' for missing or deleted ids.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -215,8 +222,9 @@
           },
           "last": {
             "type": "integer",
-            "description": "Only the last N turns.",
-            "minimum": 1
+            "description": "Newest N turns (default 200, max 1000).",
+            "minimum": 1,
+            "maximum": 1000
           }
         },
         "required": [
@@ -282,7 +290,7 @@
     },
     {
       "name": "chat_delete",
-      "description": "Permanently delete a conversation session and all its turns. It disappears from every read and search at once and devices learn of it via chat_sync. Irreversible; idempotent.",
+      "description": "Permanently delete a conversation session and all its turns. It disappears from every read and search at once and devices learn of it via chat_sync. Irreversible and idempotent: an unknown or already deleted id is not an error (deleted=false).",
       "risk": "high",
       "requires_confirmation": true,
       "input": {
@@ -303,11 +311,16 @@
         "properties": {
           "rev": {
             "type": "integer",
-            "description": "Host revision of the deletion."
+            "description": "Host revision of the deletion (current revision if nothing was deleted)."
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "true only for the call that actually deleted the session."
           }
         },
         "required": [
-          "rev"
+          "rev",
+          "deleted"
         ]
       }
     },
@@ -383,7 +396,7 @@
     },
     {
       "name": "chat_sync",
-      "description": "Return every change (sessions, turns, deletions) made after revision since_rev, oldest first, for keeping a device's local copy in sync. Persist the returned rev and pass it next time; repeat while more is true.",
+      "description": "Return every change (sessions, turns, deletions) made after revision since_rev, oldest first, for keeping a device's local copy in sync. Persist the returned rev and pass it next time; repeat while more is true. A turn change may arrive before its session change: clients upsert a placeholder session and fill it when the session change arrives. If reset is true the caller's since_rev is ahead of this store: discard the local copy and resync from 0 using the returned rev.",
       "risk": "low",
       "input": {
         "type": "object",
@@ -447,13 +460,18 @@
           },
           "review_pending": {
             "type": "boolean"
+          },
+          "reset": {
+            "type": "boolean",
+            "description": "true when since_rev was greater than the store revision; changes is then empty."
           }
         },
         "required": [
           "changes",
           "rev",
           "more",
-          "review_pending"
+          "review_pending",
+          "reset"
         ]
       }
     }

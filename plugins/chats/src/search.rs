@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SearchParams {
     pub query: String,
     pub from: Option<i64>,

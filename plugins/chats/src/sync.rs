@@ -102,12 +102,22 @@ pub fn sync(
     sync_max: usize,
 ) -> Result<Value, String> {
     let limit = limit.min(sync_max).max(1);
+    let current: i64 = conn
+        .query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))
+        .map_err(db_err)?;
+    if since_rev > current {
+        // The caller is ahead of this store (restored/replaced database):
+        // it must drop its local copy and resync from 0.
+        return Ok(
+            json!({"changes": [], "rev": current, "more": false, "review_pending": false, "reset": true}),
+        );
+    }
     let mut page = fetch(conn, since_rev, i64::MAX, limit as i64)?;
     page.truncate(limit);
     let last_rev = match page.last() {
         None => {
             return Ok(
-                json!({"changes": [], "rev": since_rev, "more": false, "review_pending": false}),
+                json!({"changes": [], "rev": since_rev, "more": false, "review_pending": false, "reset": false}),
             );
         }
         Some(c) => c.rev,
@@ -117,7 +127,9 @@ pub fn sync(
     page.extend(fetch(conn, last_rev - 1, last_rev, -1)?);
     let more = !fetch(conn, last_rev, i64::MAX, 1)?.is_empty();
     let changes: Vec<Value> = page.into_iter().map(|c| c.body).collect();
-    Ok(json!({"changes": changes, "rev": last_rev, "more": more, "review_pending": false}))
+    Ok(
+        json!({"changes": changes, "rev": last_rev, "more": more, "review_pending": false, "reset": false}),
+    )
 }
 
 #[cfg(test)]
@@ -244,8 +256,29 @@ mod tests {
         let (_d, c) = open_temp();
         assert_eq!(
             sync(&c, 0, 500, 500).unwrap(),
-            json!({"changes": [], "rev": 0, "more": false, "review_pending": false})
+            json!({"changes": [], "rev": 0, "more": false, "review_pending": false, "reset": false})
         );
-        assert_eq!(sync(&c, 42, 500, 500).unwrap()["rev"], 42);
+    }
+
+    #[test]
+    fn sync_since_ahead_of_store_resets() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 100).unwrap());
+        append(&mut c, &cfg, ap(&s, "q", "a"), 101).unwrap();
+        let cur: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
+        let r = sync(&c, cur + 50, 500, 500).unwrap();
+        assert_eq!(r["reset"], true);
+        assert_eq!(r["rev"], cur);
+        assert_eq!(r["changes"], json!([]));
+        assert_eq!(r["more"], false);
+        // exactly current is a normal empty page, not a reset
+        let r = sync(&c, cur, 500, 500).unwrap();
+        assert_eq!(
+            (r["reset"].as_bool(), r["rev"].as_i64()),
+            (Some(false), Some(cur))
+        );
     }
 }

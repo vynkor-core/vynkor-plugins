@@ -17,14 +17,20 @@ pub const ACTIONS: [&str; 8] = [
     "chat_sync",
 ];
 
-pub fn is_mutation(action: &str) -> bool {
-    matches!(
-        action,
-        "chat_session_resolve" | "chat_turn_append" | "chat_session_update" | "chat_delete"
-    )
+/// Whether a successful `action` with this `result` changed stored state and
+/// should publish a `changed` event. Resolve only counts when it created a
+/// session; a delete only when it actually deleted.
+pub fn is_mutation(action: &str, result: &Value) -> bool {
+    match action {
+        "chat_session_resolve" => result["created"] == true,
+        "chat_delete" => result["deleted"] == true,
+        "chat_turn_append" | "chat_session_update" => true,
+        _ => false,
+    }
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadParams {
     id: String,
     #[serde(default)]
@@ -32,6 +38,7 @@ struct ReadParams {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateParams {
     id: String,
     #[serde(default)]
@@ -41,11 +48,13 @@ struct UpdateParams {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct IdParams {
     id: String,
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SyncParams {
     since_rev: i64,
     #[serde(default)]
@@ -93,5 +102,38 @@ pub fn handle(
             sync::sync(conn, p.since_rev.max(0), limit, cfg.sync_max)
         }
         other => Err(format!("unknown action {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::test_config;
+    use crate::schema::open_temp;
+
+    #[test]
+    fn unknown_param_fields_are_rejected() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let cases = [
+            ("chat_turn_append", r#"{"sessionId":"x","status":"ok"}"#),
+            (
+                "chat_session_resolve",
+                r#"{"device":"d","kind":"chat","sesion_id":"x"}"#,
+            ),
+            ("chat_sessions_list", r#"{"limt":3}"#),
+            ("chat_session_read", r#"{"id":"x","lst":3}"#),
+            ("chat_session_update", r#"{"id":"x","titel":"t"}"#),
+            ("chat_delete", r#"{"id":"x","force":true}"#),
+            ("chat_search", r#"{"query":"a","limt":3}"#),
+            ("chat_sync", r#"{"since_rev":0,"sinceRev":1}"#),
+        ];
+        for (action, params) in cases {
+            let e = handle(&mut c, &cfg, action, params.as_bytes(), 1).unwrap_err();
+            assert!(
+                e.contains("invalid params") && e.contains("unknown field"),
+                "{action}: {e}"
+            );
+        }
     }
 }

@@ -1,10 +1,11 @@
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::config::Config;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolveParams {
     pub device: String,
     pub kind: String,
@@ -15,6 +16,7 @@ pub struct ResolveParams {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppendParams {
     pub session_id: String,
     #[serde(default)]
@@ -74,30 +76,38 @@ fn clip_field(v: &Value, max: usize) -> Value {
     Value::String(truncate_chars(&s, max))
 }
 
-fn normalize_trace(trace: &Value, cfg: &Config) -> Value {
-    let Value::Array(items) = trace else {
-        return json!([]);
+/// Keep only the documented keys of each trace entry and bound their size.
+/// Non-object entries are dropped; anything but an array is an error.
+fn normalize_trace(trace: &Value, cfg: &Config) -> Result<Value, String> {
+    let items = match trace {
+        Value::Null => return Ok(json!([])),
+        Value::Array(items) => items,
+        _ => return Err("tool_trace must be an array".into()),
     };
     let out: Vec<Value> = items
         .iter()
+        .filter_map(|item| item.as_object())
         .take(MAX_TRACE_ENTRIES)
-        .map(|item| {
-            let Value::Object(map) = item else {
-                return item.clone();
-            };
-            let mut map = map.clone();
+        .map(|map| {
+            let mut entry = serde_json::Map::new();
+            if let Some(Value::String(tool)) = map.get("tool") {
+                entry.insert(
+                    "tool".into(),
+                    Value::String(truncate_chars(tool, cfg.trace_max_chars)),
+                );
+            }
             for k in ["args", "result", "error"] {
-                if let Some(v) = map.get(k) {
-                    if !v.is_null() {
-                        let clipped = clip_field(v, cfg.trace_max_chars);
-                        map.insert(k.to_string(), clipped);
-                    }
+                if let Some(v) = map.get(k).filter(|v| !v.is_null()) {
+                    entry.insert(k.into(), clip_field(v, cfg.trace_max_chars));
                 }
             }
-            Value::Object(map)
+            if let Some(ms) = map.get("ms").filter(|v| v.is_number()) {
+                entry.insert("ms".into(), ms.clone());
+            }
+            Value::Object(entry)
         })
         .collect();
-    Value::Array(out)
+    Ok(Value::Array(out))
 }
 
 fn new_session(tx: &Transaction, p: &ResolveParams, now: i64) -> Result<String, String> {
@@ -125,8 +135,11 @@ pub fn resolve(
         return Err("device is required".into());
     }
     let pause_ms = cfg.pause_secs.saturating_mul(1000);
+    // chat sessions never time out; only voice sessions split on silence
     let fresh = |last_at: i64| p.kind == "chat" || now - last_at < pause_ms;
-    let tx = conn.transaction().map_err(db_err)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
     let mut found: Option<String> = None;
     if let Some(id) = &p.session_id {
         let row: Option<(String, String, i64)> = tx
@@ -153,7 +166,7 @@ pub fn resolve(
             .optional()
             .map_err(db_err)?;
         if let Some((id, last_at)) = row {
-            if now - last_at < pause_ms {
+            if fresh(last_at) {
                 found = Some(id);
             }
         }
@@ -181,8 +194,10 @@ pub fn append(
     }
     let user_text = truncate_bytes(&p.user_text, cfg.text_max_bytes);
     let answer_text = truncate_bytes(&p.answer_text, cfg.text_max_bytes);
-    let trace = normalize_trace(&p.tool_trace, cfg).to_string();
-    let tx = conn.transaction().map_err(db_err)?;
+    let trace = normalize_trace(&p.tool_trace, cfg)?.to_string();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
     let count: Option<i64> = tx
         .query_row(
             "SELECT turns FROM sessions WHERE id = ? AND state = 'live'",
@@ -213,13 +228,15 @@ pub fn append(
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ListParams {
     pub from: Option<i64>,
     pub to: Option<i64>,
     pub kind: Option<String>,
     pub source: Option<String>,
     pub limit: Option<i64>,
-    pub before: Option<i64>,
+    /// Cursor from a previous page's `next_before`, or a bare `last_at`.
+    pub before: Option<Value>,
 }
 
 /// Column list matching [`session_from_row`].
@@ -264,31 +281,82 @@ pub fn turn_from_row(r: &rusqlite::Row) -> rusqlite::Result<Value> {
     }))
 }
 
-/// Live sessions only, most recently active first.
+/// Parse a `before` cursor: `<last_at>:<id>` or a bare integer `last_at`.
+fn parse_cursor(v: &Value) -> Result<(i64, Option<String>), String> {
+    let bad = || format!("invalid before cursor {v}");
+    match v {
+        Value::Number(n) => Ok((n.as_i64().ok_or_else(bad)?, None)),
+        Value::String(s) => match s.split_once(':') {
+            Some((at, id)) if !id.is_empty() => {
+                Ok((at.parse().map_err(|_| bad())?, Some(id.to_string())))
+            }
+            Some(_) => Err(bad()),
+            None => Ok((s.parse().map_err(|_| bad())?, None)),
+        },
+        _ => Err(bad()),
+    }
+}
+
+/// Live sessions that have at least one turn, most recently active first.
+/// Empty sessions stay out of the list but remain visible to `sync`.
+/// When more rows exist the reply carries `next_before`, an opaque cursor
+/// (`<last_at>:<id>`) to pass as `before` for the next page.
 pub fn list(conn: &Connection, p: &ListParams) -> Result<Value, String> {
     let limit = p.limit.unwrap_or(50).clamp(1, 200);
+    let (before_at, before_id) = match p.before.as_ref().filter(|v| !v.is_null()) {
+        Some(v) => {
+            let (a, i) = parse_cursor(v)?;
+            (Some(a), i)
+        }
+        None => (None, None),
+    };
     let sql = format!(
         "SELECT {SESSION_COLS} FROM sessions
-         WHERE state = 'live'
+         WHERE state = 'live' AND turns > 0
            AND (?1 IS NULL OR last_at >= ?1)
            AND (?2 IS NULL OR last_at <= ?2)
            AND (?3 IS NULL OR kind = ?3)
            AND (?4 IS NULL OR source = ?4)
-           AND (?5 IS NULL OR last_at < ?5)
-         ORDER BY last_at DESC, id DESC LIMIT ?6"
+           AND (?5 IS NULL OR last_at < ?5 OR (?6 IS NOT NULL AND last_at = ?5 AND id < ?6))
+         ORDER BY last_at DESC, id DESC LIMIT ?7"
     );
     let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
-    let rows = stmt
+    let mut rows = stmt
         .query_map(
-            params![p.from, p.to, p.kind, p.source, p.before, limit],
+            params![
+                p.from,
+                p.to,
+                p.kind,
+                p.source,
+                before_at,
+                before_id,
+                limit + 1
+            ],
             session_from_row,
         )
         .map_err(db_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db_err)?;
-    Ok(json!({"sessions": rows}))
+    let more = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    let mut out = json!({"sessions": rows});
+    if more {
+        if let Some(last) = out["sessions"].as_array().and_then(|a| a.last()) {
+            let cursor = format!(
+                "{}:{}",
+                last["last_at"],
+                last["id"].as_str().unwrap_or_default()
+            );
+            out["next_before"] = json!(cursor);
+        }
+    }
+    Ok(out)
 }
 
+pub const READ_DEFAULT_TURNS: u32 = 200;
+pub const READ_MAX_TURNS: u32 = 1000;
+
+/// A session and its newest turns (default 200, at most 1000), ascending by seq.
 pub fn read(conn: &Connection, id: &str, last: Option<u32>) -> Result<Value, String> {
     let session = conn
         .query_row(
@@ -299,26 +367,18 @@ pub fn read(conn: &Connection, id: &str, last: Option<u32>) -> Result<Value, Str
         .optional()
         .map_err(db_err)?
         .ok_or_else(|| format!("unknown session {id}"))?;
-    let sql = match last {
-        Some(_) => format!(
+    let n = last.unwrap_or(READ_DEFAULT_TURNS).clamp(1, READ_MAX_TURNS);
+    let mut stmt = conn
+        .prepare_cached(&format!(
             "SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq DESC LIMIT ?2"
-        ),
-        None => {
-            format!("SELECT {TURN_COLS} FROM turns WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2")
-        }
-    };
-    let mut stmt = conn.prepare_cached(&sql).map_err(db_err)?;
+        ))
+        .map_err(db_err)?;
     let mut turns = stmt
-        .query_map(
-            params![id, last.map(i64::from).unwrap_or(-1)],
-            turn_from_row,
-        )
+        .query_map(params![id, n], turn_from_row)
         .map_err(db_err)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(db_err)?;
-    if last.is_some() {
-        turns.reverse();
-    }
+    turns.reverse();
     Ok(json!({"session": session, "turns": turns}))
 }
 
@@ -333,7 +393,9 @@ pub fn update(
         return Err("nothing to update: pass title and/or pinned".into());
     }
     let title = title.map(|t| truncate_chars(t.trim(), 512));
-    let tx = conn.transaction().map_err(db_err)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
     let exists: bool = tx
         .query_row(
             "SELECT 1 FROM sessions WHERE id = ? AND state = 'live'",
@@ -357,10 +419,15 @@ pub fn update(
 }
 
 /// Hide a session everywhere at once: one transaction marks it `deleting`,
-/// drops its turns (and their FTS rows) and records a tombstone. Idempotent.
-/// Removing the session row itself and cascading to other plugins is later work.
+/// blanks its title/summary/tags, drops its turns (and their FTS rows) and
+/// records a tombstone. Idempotent: `deleted` is true only for the call that
+/// did the work; an unknown or already deleted id returns the current /
+/// tombstone revision with `deleted: false`. Removing the session row itself
+/// and cascading to other plugins is later work.
 pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
-    let tx = conn.transaction().map_err(db_err)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
     let existing: Option<i64> = tx
         .query_row("SELECT rev FROM tombstones WHERE id = ?", [id], |r| {
             r.get(0)
@@ -368,7 +435,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         .optional()
         .map_err(db_err)?;
     if let Some(rev) = existing {
-        return Ok(json!({"rev": rev}));
+        return Ok(json!({"rev": rev, "deleted": false}));
     }
     let live: bool = tx
         .query_row(
@@ -380,11 +447,14 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         .map_err(db_err)?
         .unwrap_or(false);
     if !live {
-        return Err(format!("unknown session {id}"));
+        let rev: i64 = tx
+            .query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))
+            .map_err(db_err)?;
+        return Ok(json!({"rev": rev, "deleted": false}));
     }
     let rev = next_rev(&tx).map_err(db_err)?;
     tx.execute(
-        "UPDATE sessions SET state = 'deleting', rev = ? WHERE id = ?",
+        "UPDATE sessions SET state = 'deleting', title = '', summary = '', tags = '[]', rev = ? WHERE id = ?",
         params![rev, id],
     )
     .map_err(db_err)?;
@@ -396,7 +466,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
     )
     .map_err(db_err)?;
     tx.commit().map_err(db_err)?;
-    Ok(json!({"rev": rev}))
+    Ok(json!({"rev": rev, "deleted": true}))
 }
 
 #[cfg(test)]
@@ -511,9 +581,21 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(b["created"], false);
         assert_eq!(sid(&a), sid(&b));
-        // without an id a chat still starts fresh only after the pause
-        let n = resolve(&mut c, &cfg, &rp("lap", "chat", None), T0 + 100 * PAUSE_MS).unwrap();
-        assert_eq!(n["created"], true);
+    }
+
+    #[test]
+    fn chat_without_id_never_splits_by_pause() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let a = resolve(&mut c, &cfg, &rp("lap", "chat", None), T0).unwrap();
+        let b = resolve(&mut c, &cfg, &rp("lap", "chat", None), T0 + 100 * PAUSE_MS).unwrap();
+        assert_eq!(b["created"], false);
+        assert_eq!(sid(&a), sid(&b));
+        // voice still splits
+        let v = resolve(&mut c, &cfg, &rp("lap", "voice", None), T0).unwrap();
+        let v2 = resolve(&mut c, &cfg, &rp("lap", "voice", None), T0 + 100 * PAUSE_MS).unwrap();
+        assert_eq!(v2["created"], true);
+        assert_ne!(sid(&v), sid(&v2));
     }
 
     #[test]
@@ -764,7 +846,7 @@ pub(crate) mod tests {
             &c,
             &ListParams {
                 limit: Some(2),
-                before: Some(before),
+                before: Some(json!(before)),
                 ..Default::default()
             },
         )
@@ -911,7 +993,49 @@ pub(crate) mod tests {
                 .len(),
             1
         );
-        assert_eq!(delete(&mut c, "nope").unwrap_err(), "unknown session nope");
+        assert_eq!(r["deleted"], true);
+    }
+
+    #[test]
+    fn delete_unknown_is_ok_and_not_deleted() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        mk(&mut c, &cfg, "lap", "chat", "x", 100);
+        let cur: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
+        let r = delete(&mut c, "nope").unwrap();
+        assert_eq!(r, json!({"rev": cur, "deleted": false}));
+        let after: i64 = c
+            .query_row("SELECT value FROM meta WHERE key='rev'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, cur);
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM tombstones", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn delete_blanks_title_summary_tags() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
+        update(&mut c, &s, Some("private title".into()), None).unwrap();
+        c.execute(
+            "UPDATE sessions SET summary='private summary', tags='[\"secret\"]' WHERE id=?",
+            [&s],
+        )
+        .unwrap();
+        delete(&mut c, &s).unwrap();
+        let (t, sm, tg): (String, String, String) = c
+            .query_row(
+                "SELECT title, summary, tags FROM sessions WHERE id=?",
+                [&s],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((t.as_str(), sm.as_str(), tg.as_str()), ("", "", "[]"));
     }
 
     #[test]
@@ -921,7 +1045,8 @@ pub(crate) mod tests {
         let s = mk(&mut c, &cfg, "lap", "chat", "x", 100);
         let a = delete(&mut c, &s).unwrap();
         let b = delete(&mut c, &s).unwrap();
-        assert_eq!(a, b);
+        assert_eq!(a["deleted"], true);
+        assert_eq!(b, json!({"rev": a["rev"], "deleted": false}));
         let n: i64 = c
             .query_row("SELECT count(*) FROM tombstones", [], |r| r.get(0))
             .unwrap();
@@ -982,5 +1107,188 @@ pub(crate) mod tests {
         assert!(ch
             .iter()
             .any(|e| e["op"] == "delete" && e["id"] == s.as_str() && e["rev"] == del["rev"]));
+    }
+
+    #[test]
+    fn list_hides_empty_sessions_but_sync_sees_them() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let empty = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 100).unwrap());
+        let full = mk(&mut c, &cfg, "phone", "chat", "x", 200);
+        let l = list(&c, &ListParams::default()).unwrap();
+        let ids: Vec<&str> = l["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec![full.as_str()]);
+        let sy = crate::sync::sync(&c, 0, 500, 500).unwrap();
+        assert!(sy["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["session"]["id"] == empty.as_str()));
+    }
+
+    #[test]
+    fn changed_event_only_when_resolve_created() {
+        use crate::request::is_mutation;
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let a = resolve(&mut c, &cfg, &rp("lap", "chat", None), 100).unwrap();
+        let b = resolve(&mut c, &cfg, &rp("lap", "chat", None), 101).unwrap();
+        assert!(is_mutation("chat_session_resolve", &a));
+        assert!(!is_mutation("chat_session_resolve", &b));
+        assert!(!is_mutation(
+            "chat_delete",
+            &json!({"rev": 1, "deleted": false})
+        ));
+        assert!(is_mutation(
+            "chat_delete",
+            &json!({"rev": 1, "deleted": true})
+        ));
+        assert!(!is_mutation("chat_search", &json!({})));
+    }
+
+    #[test]
+    fn trace_whitelist_and_bounds() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 100).unwrap());
+        let big = "z".repeat(10 * 1024 * 1024);
+        let mut p = ap(&s, "q", "a");
+        p.tool_trace = json!([
+            {"tool": big, "ms": 5, "x_extra": big, "args": {"k": 1}},
+            "not an object",
+            42,
+            {"tool": "ok", "result": null, "evil": {"deep": [1,2,3]}}
+        ]);
+        append(&mut c, &cfg, p, 101).unwrap();
+        let raw: String = c
+            .query_row("SELECT tool_trace FROM turns", [], |r| r.get(0))
+            .unwrap();
+        assert!(raw.len() < 2000, "stored trace is {} bytes", raw.len());
+        let t: Vec<Value> = serde_json::from_str(&raw).unwrap();
+        assert_eq!(t.len(), 2, "non-object entries must be dropped");
+        assert_eq!(t[0]["tool"].as_str().unwrap().chars().count(), 200);
+        assert!(t[0].get("x_extra").is_none());
+        assert_eq!(t[0]["ms"], 5);
+        assert_eq!(t[1], json!({"tool": "ok"}));
+        let mut bad = ap(&s, "q", "a");
+        bad.tool_trace = json!({"tool": "x"});
+        assert_eq!(
+            append(&mut c, &cfg, bad, 102).unwrap_err(),
+            "tool_trace must be an array"
+        );
+        let mut bad = ap(&s, "q", "a");
+        bad.tool_trace = json!("str");
+        assert!(append(&mut c, &cfg, bad, 102).is_err());
+    }
+
+    #[test]
+    fn list_cursor_handles_shared_last_at() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        // five sessions with identical last_at, plus one older
+        let mut ids: Vec<String> = (0..5)
+            .map(|i| mk(&mut c, &cfg, &format!("d{i}"), "chat", "x", 500))
+            .collect();
+        let old = mk(&mut c, &cfg, "old", "chat", "x", 100);
+        ids.sort();
+        ids.reverse(); // ORDER BY last_at DESC, id DESC
+        ids.push(old);
+        let mut seen = Vec::new();
+        let mut before: Option<Value> = None;
+        for _ in 0..10 {
+            let r = list(
+                &c,
+                &ListParams {
+                    limit: Some(2),
+                    before: before.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            seen.extend(
+                r["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["id"].as_str().unwrap().to_string()),
+            );
+            match r.get("next_before") {
+                Some(n) => before = Some(n.clone()),
+                None => break,
+            }
+        }
+        assert_eq!(seen, ids, "pages must cover every session once, in order");
+        let last = list(
+            &c,
+            &ListParams {
+                limit: Some(50),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(last.get("next_before").is_none());
+        // a bare integer still works (compat)
+        let r = list(
+            &c,
+            &ListParams {
+                before: Some(json!(500)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r["sessions"].as_array().unwrap().len(), 1);
+        let r = list(
+            &c,
+            &ListParams {
+                before: Some(json!("500")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r["sessions"].as_array().unwrap().len(), 1);
+        assert!(list(
+            &c,
+            &ListParams {
+                before: Some(json!("junk:")),
+                ..Default::default()
+            }
+        )
+        .is_err());
+        assert!(list(
+            &c,
+            &ListParams {
+                before: Some(json!("x:y")),
+                ..Default::default()
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn read_defaults_to_200_newest_and_caps_last() {
+        let (_d, mut c) = open_temp();
+        let cfg = test_config();
+        let s = sid(&resolve(&mut c, &cfg, &rp("lap", "chat", None), 10).unwrap());
+        for i in 0..1100 {
+            append(&mut c, &cfg, ap(&s, &format!("q{i}"), "a"), 10 + i).unwrap();
+        }
+        let seqs = |v: Value| -> Vec<i64> {
+            v["turns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["seq"].as_i64().unwrap())
+                .collect()
+        };
+        let d = seqs(read(&c, &s, None).unwrap());
+        assert_eq!((d.len(), d[0], *d.last().unwrap()), (200, 901, 1100));
+        assert!(d.windows(2).all(|w| w[0] < w[1]));
+        let m = seqs(read(&c, &s, Some(5000)).unwrap());
+        assert_eq!((m.len(), m[0]), (1000, 101));
     }
 }

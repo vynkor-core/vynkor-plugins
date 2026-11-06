@@ -128,7 +128,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                                 Ok(val) => {
                                     let data = serde_json::to_vec(&val).unwrap_or_default();
                                     let _ = out.send(action_response(req.action_id, ActionStatus::ActionOk, data, String::new())).await;
-                                    if request::is_mutation(&req.action) {
+                                    if request::is_mutation(&req.action, &val) {
                                         let payload = serde_json::json!({"action": req.action});
                                         let _ = out.send(event_envelope("changed", &payload)).await;
                                     }
