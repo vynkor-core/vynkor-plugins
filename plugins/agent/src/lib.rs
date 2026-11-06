@@ -26,6 +26,7 @@ pub mod engine;
 pub mod llm;
 pub mod memory;
 pub mod request;
+pub mod sessions;
 pub mod store;
 pub mod tools;
 
@@ -233,7 +234,13 @@ fn default_title(goal: &str) -> String {
     t
 }
 
-async fn start_goal(db: &Db, rpc: &Rpc, params: GoalStartParams) -> Result<ActionResult, String> {
+async fn start_goal(
+    db: &Db,
+    rpc: &Rpc,
+    _config: &Config,
+    _caller: &str,
+    params: GoalStartParams,
+) -> Result<ActionResult, String> {
     let catalog = Catalog::load_with_discovery(rpc).await?;
     let id = db.next_id().await?.to_string();
     let now = store::now_ms();
@@ -335,13 +342,14 @@ fn summary(doc: &GoalDoc) -> Value {
 pub async fn handle_action(
     rpc: Rpc,
     config: &Config,
+    caller: &str,
     action: &str,
     params_json: &[u8],
 ) -> Result<ActionResult, String> {
     let req = request::parse_request(action, params_json)?;
     let db = Db::new(rpc.clone(), config.db_timeout_ms);
     match req {
-        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, params).await,
+        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, config, caller, params).await,
         AgentRequest::GoalGet { id } => match db.get(&id).await? {
             Some(doc) => ok(json!({"found": true, "goal": doc}), None),
             None => ok(json!({"found": false, "goal": null}), None),

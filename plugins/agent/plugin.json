@@ -1,6 +1,6 @@
 {
   "plugin_id": "agent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -69,6 +69,25 @@
           "max_tokens": {
             "type": "integer",
             "description": "Per-completion token cap override."
+          },
+          "session_id": {
+            "type": "string",
+            "maxLength": 64,
+            "pattern": "^[0-9A-Za-z_-]+$",
+            "description": "Existing chats session to continue; omitted = resolved from device+kind."
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "chat",
+              "voice"
+            ],
+            "description": "Conversation kind (default voice)."
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Origin label (default: the calling plugin)."
           }
         },
         "required": [
@@ -113,6 +132,13 @@
           },
           "max_steps": {
             "type": "integer"
+          },
+          "session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "chats session the goal belongs to; null when chats is unavailable."
           }
         },
         "required": [

@@ -25,7 +25,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
-const PLUGIN_VERSION: &str = "0.1.4";
+const PLUGIN_VERSION: &str = "0.1.5";
 const ACTIONS: [&str; 8] = [
     "goal_start",
     "goal_get",
@@ -150,7 +150,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                         let out = outbound_tx.clone();
                         let config = Arc::clone(&config);
                         tokio::spawn(async move {
-                            match handle_action(rpc, &config, &req.action, &req.params_json)
+                            match handle_action(rpc, &config, &req.caller_plugin_id, &req.action, &req.params_json)
                                 .await
                             {
                                 Ok(result) => {
