@@ -118,7 +118,12 @@ pub trait Provider: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct EmbeddingResult {
-    pub embedding: Vec<f32>,
+    /// Set for a single-string input (the pre-batch reply shape).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding: Option<Vec<f32>>,
+    /// Set for an array input: one vector per item, in input order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embeddings: Option<Vec<Vec<f32>>>,
     pub dim: usize,
     pub model: String,
     pub usage: Usage,
@@ -131,5 +136,12 @@ pub trait EmbeddingProvider: Send + Sync {
         params: &crate::request::EmbeddingParams,
         api_key: &str,
     ) -> HttpRequestJson;
-    fn parse_embedding_response(&self, body: &[u8]) -> Result<EmbeddingResult, String>;
+    /// `expected`: the number of inputs sent (1 for a single string).
+    /// `many` selects the reply shape (`embeddings` vs `embedding`).
+    fn parse_embedding_response(
+        &self,
+        body: &[u8],
+        expected: usize,
+        many: bool,
+    ) -> Result<EmbeddingResult, String>;
 }

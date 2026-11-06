@@ -1,6 +1,6 @@
 {
   "plugin_id": "ai",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "permissions": [
     "network",
     "secrets"
@@ -225,7 +225,7 @@
     },
     {
       "name": "embedding",
-      "description": "Embed a single text (1..10000 chars) into a vector with the configured embedding model. Sends the text to the provider and spends tokens; this is what vector-db calls to index and query.",
+      "description": "Embed a text (1..10000 chars) or a batch of up to 64 texts into vectors with the configured embedding model. A string input returns {embedding}; an array input returns {embeddings} in input order. Sends the text to the provider and spends tokens; this is what vector-db calls to index and query.",
       "risk": "medium",
       "input": {
         "type": "object",
@@ -251,10 +251,24 @@
             "description": "Name of env var holding the key, must be in AI_PLUGIN_ALLOWED_KEY_ENVS allowlist."
           },
           "input": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 10000,
-            "description": "Text to embed (single input, 1..10000 chars)."
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10000
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 64,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 10000
+                }
+              }
+            ],
+            "description": "Text to embed (1..10000 chars), or an array of 1..64 such texts embedded in one provider request."
           },
           "agent_id": {
             "type": "string",
@@ -296,6 +310,16 @@
             },
             "description": "L2-normalizable embedding vector."
           },
+          "embeddings": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              }
+            },
+            "description": "Present instead of embedding when input was an array: one vector per input, in input order."
+          },
           "dim": {
             "type": "integer",
             "description": "Dimension of the embedding."
@@ -316,7 +340,6 @@
           }
         },
         "required": [
-          "embedding",
           "dim",
           "model",
           "usage"
