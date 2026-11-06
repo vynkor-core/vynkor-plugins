@@ -339,7 +339,7 @@ mod tests {
             r#"{"data": {"api_key": "k", "n": 1}, "cookie": "c"}"#,
         );
         assert!(!a.contains("Bearer abc") && a.contains("\"x\":\"y\""), "{a}");
-        assert!(!r.contains('k') || !r.contains("\"k\""), "{r}");
+        assert!(!r.contains("\"k\""), "{r}");
         assert!(r.contains(r#""n":1"#) && !r.contains(r#""c""#), "{r}");
         // non-JSON result of a normal tool is untouched
         assert_eq!(redact("fs_read", &json!({}), "plain text").1, "plain text");

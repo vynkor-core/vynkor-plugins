@@ -125,6 +125,38 @@ recall failures log loudly and never fail a goal. Memory is **off** by
 default — turning it on is a privacy decision; all state stays in this
 plugin's per-caller namespaces.
 
+### Chat sessions (`chats` integration)
+
+Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
+
+- `goal_start` accepts optional `session_id`, `kind` (`chat` | `voice`, default
+  `voice`) and `source`. The device comes from the kernel-stamped caller:
+  `<device>.<plugin>` (relayed from a device) gives that device and source
+  `<plugin>`; a local plugin gives `AGENT_PLUGIN_LOCAL_DEVICE` (default `host`)
+  and source = the plugin. The reply carries `session_id` (`null` when `chats`
+  is unavailable).
+- The last `AGENT_PLUGIN_HISTORY_TURNS` (6) successful turns of the session go to
+  the model as separate user/assistant messages between the role message and the
+  goal (each text cut to 2000 chars, 8000 bytes total, oldest dropped first).
+  When history exists the caller's `context` is not used.
+- After a finished goal (`completed`, `declined`, `error`, `max_steps_reached`)
+  the turn is appended to `chats` in the background, with a `tool_trace`
+  (`tool`, `args`, `result`, `error?`, `ms`; texts cut to 200 chars). Goals
+  waiting for confirmation write nothing until `goal_resume`. Secrets are redacted
+  before the cut: tools named like `secret`/`password`/`token`/`credential` keep
+  only argument key names and a `[redacted]` result, and values under keys such
+  as `value`, `password`, `token`, `api_key`, `authorization`, `cookie` are
+  masked recursively in args, JSON results and errors.
+- `chats` never breaks a goal: a missing plugin (`... failed: action not found`,
+  logged once per process), an error or a timeout
+  (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`, 2000) just means no session. The model
+  cannot call `chat_turn_append`, `chat_session_resolve`, `chat_sync`,
+  `chat_session_update` or `chat_delete`, even if allowlisted.
+- Facts remembered by long-term memory are tagged with the session.
+- `goal_delete {id}` -> `{deleted}` and `memory_forget_session {session_id}` ->
+  `{deleted}` (facts removed) exist for the history delete cascade; both are
+  idempotent. Facts stored before sessions existed are not matched.
+
 ## Tool catalog (operator-gated, manifest-discovered)
 
 The catalog is built from three layers, merged per allowlisted action name
@@ -181,6 +213,9 @@ Env vars set in the kernel's config under this plugin's `env:` list — see
 | `AGENT_PLUGIN_AI_MAX_TOKENS` | `1024` | Per-completion token cap. |
 | `AGENT_PLUGIN_MAX_STEPS` | `6` | Default loop budget (1..=16). |
 | `AGENT_PLUGIN_DB_TIMEOUT_MS` | `5000` | Per-call timeout for `database` round-trips. |
+| `AGENT_PLUGIN_LOCAL_DEVICE` | `host` | Device name recorded for goals started by local plugins. |
+| `AGENT_PLUGIN_HISTORY_TURNS` | `6` | Recent session turns fed to the model; `0` disables history. |
+| `AGENT_PLUGIN_CHATS_TIMEOUT_MS` | `2000` | Per-call timeout for `chats` round-trips. |
 | `AGENT_PLUGIN_PROMPTS_DIR` | *(unset)* | Directory of prompt files. Group prompts at `<dir>/<group>.md` (`/` in a group name becomes `-`, so `audio/voice` → `audio-voice.md`). Reserved stems: `_identity.md`, `_personality.md`, `_channel.md` override the built-in persona constants; `_facts.md` supplies the facts block. A missing or blank file falls through to the next layer, never to an empty prompt. |
 | `AGENT_PLUGIN_FACTS` | *(unset)* | Literal facts text; overrides `_facts.md`. |
 | `AGENT_PLUGIN_GOAL_RETENTION_LIMIT` | *(unset = unlimited)* | Max goal docs kept in the store. Checked (best-effort, never fails `goal_start`) after each new goal; when the store exceeds the limit, the oldest-by-`updated_at_ms` goals beyond it are deleted — but a goal still `running` or `needs_confirmation` is never pruned, even past the limit, so the store can stay above the cap while goals are in flight. Unset or empty is a true no-op: no keys are even listed. |
