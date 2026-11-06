@@ -295,7 +295,7 @@ mod tests {
             std::env::set_var("AGENT_PLUGIN_AI_BASE_URL", "http://llm.test/v1");
             std::env::set_var("AGENT_PLUGIN_AI_MODEL", "test-model");
             std::env::set_var("AGENT_PLUGIN_AI_API_KEY_ENV", "TEST_LLM_KEY");
-            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read");
+            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read,secret_get");
             let dir = std::env::temp_dir().join(format!("vynkor-agent-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("tools.json");
@@ -335,6 +335,14 @@ mod tests {
                     {"name": "fs_read", "description": "Read a file",
                      "params_schema": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}",
                      "risk": "medium", "requires_confirmation": true}
+                ]
+            },
+            "secrets": {
+                "actions": ["secret_get"],
+                "action_specs": [
+                    {"name": "secret_get", "description": "Read a secret",
+                     "params_schema": "{\"type\":\"object\"}", "risk": "low",
+                     "requires_confirmation": false}
                 ]
             }
         })
@@ -769,9 +777,12 @@ mod tests {
                                     None => Err("no scripted ai reply".to_string()),
                                 }
                             } else {
+                                let action_is_secret = req.action == "secret_get";
                                 let big = params.get("big").and_then(Value::as_bool) == Some(true);
                                 dispatched.lock().await.push((req.action.clone(), params));
-                                if big {
+                                if action_is_secret {
+                                    Ok(serde_json::json!({"secret": "hunter2", "note": "hunter2"}))
+                                } else if big {
                                     Ok(serde_json::json!({"blob": "x".repeat(1_000_000)}))
                                 } else {
                                     Ok(serde_json::json!({"ok": true}))
@@ -1166,6 +1177,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn secret_tool_trace_is_redacted() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // secret_get must be a known tool: allow it via the kernel manifest fixture.
+        shim.push_ai_reply(r#"{"tool": "secret_get", "params": {"name": "db_pass"}}"#).await;
+        shim.push_ai_reply("fetched").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "get it"})).await.unwrap();
+        assert_eq!(shim.dispatched().await[0].0, "secret_get", "tool must really run");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert!(!a.to_string().contains("hunter2"), "secret leaked to chats: {a}");
+        assert_eq!(a["tool_trace"][0]["result"], "[redacted]");
+        assert_eq!(a["tool_trace"][0]["args"], r#"{"name":"[redacted]"}"#);
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert!(!got["goal"]["tool_trace"].to_string().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn sensitive_keys_masked_in_args_and_result() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(
+            r#"{"tool": "notify_send", "params": {"title": "t", "api_key": "KEY-123", "nested": {"Authorization": "Bearer ZZZ"}}}"#,
+        )
+        .await;
+        shim.push_ai_reply("done").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        let t = &a["tool_trace"][0];
+        let args = t["args"].as_str().unwrap();
+        assert!(!args.contains("KEY-123") && !args.contains("ZZZ"), "{args}");
+        assert!(args.contains(r#""title":"t""#), "non-sensitive keys stay: {args}");
+        assert!(args.contains("[redacted]"));
+    }
+
+    #[tokio::test]
     async fn failed_tool_and_unknown_tool_are_traced_with_error() {
         let shim = start_plugin(Config::default()).await;
         shim.chats_normal("S1", true, vec![]).await;
@@ -1335,7 +1381,7 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let tools = requests[0]["tools"].as_array().expect("tools param missing");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read"]);
+        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get"]);
         assert_eq!(tools[0]["input_schema"]["type"], "object");
     }
 
@@ -1483,7 +1529,7 @@ mod tests {
         assert_eq!(res["tools_file_set"], true);
         let names: Vec<&str> = res["tools"].as_array().unwrap()
             .iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read"]);
+        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get"]);
 
         // notify_send has an operator entry, so its description and schema
         // stay exactly as written — but the entry left `risk` empty, and

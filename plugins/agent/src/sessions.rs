@@ -77,14 +77,93 @@ pub fn trace_text(s: &str) -> String {
     }
 }
 
-impl TraceRec {
-    /// A call that ran (or failed) after `ms` milliseconds.
-    pub fn new(tool: &str, args: &Value, outcome: Result<&str, &str>, ms: u64) -> Self {
-        let (result, error) = match outcome {
-            Ok(body) => (trace_text(body), None),
-            Err(e) => (String::new(), Some(trace_text(e))),
+const REDACTED: &str = "[redacted]";
+
+/// Tool names whose arguments and results are secret by nature.
+const SENSITIVE_TOOL_WORDS: [&str; 4] = ["secret", "password", "token", "credential"];
+/// Substrings (lowercase) of JSON keys whose values are masked everywhere.
+const SENSITIVE_KEY_WORDS: [&str; 11] = [
+    "value", "password", "passwd", "token", "secret", "api_key", "apikey", "authorization", "auth",
+    "cookie", "private_key",
+];
+
+fn is_sensitive_tool(tool: &str) -> bool {
+    let t = tool.to_lowercase();
+    SENSITIVE_TOOL_WORDS.iter().any(|w| t.contains(w))
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let k = key.to_lowercase();
+    SENSITIVE_KEY_WORDS.iter().any(|w| k.contains(w))
+}
+
+/// Recursively replace the value of every sensitive key with `[redacted]`.
+fn mask_keys(v: &mut Value) {
+    match v {
+        Value::Object(map) => {
+            for (k, val) in map.iter_mut() {
+                if is_sensitive_key(k) {
+                    *val = Value::String(REDACTED.to_string());
+                } else {
+                    mask_keys(val);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mask_keys),
+        _ => {}
+    }
+}
+
+/// Mask sensitive keys when `text` is JSON; other text is returned as is.
+fn mask_json_text(text: &str) -> String {
+    match serde_json::from_str::<Value>(text) {
+        Ok(mut v) => {
+            mask_keys(&mut v);
+            v.to_string()
+        }
+        Err(_) => text.to_string(),
+    }
+}
+
+/// Strip secrets from a tool call before it enters the trace (the trace is
+/// synced to every client device). Returns `(args, result)` as text, NOT yet
+/// truncated: redaction must run on the whole value, then the cut.
+///
+/// - secret-like tool (`secret_*`, contains secret/password/token/credential):
+///   args keep only their key names, every value `[redacted]`; result `[redacted]`;
+/// - every tool: values of sensitive keys are masked recursively in args and,
+///   when it parses as JSON, in the result.
+pub fn redact(tool: &str, args: &Value, result: &str) -> (String, String) {
+    if is_sensitive_tool(tool) {
+        let keys_only = match args {
+            Value::Object(map) => Value::Object(
+                map.keys().map(|k| (k.clone(), Value::String(REDACTED.to_string()))).collect(),
+            ),
+            Value::Null => Value::Null,
+            _ => Value::String(REDACTED.to_string()),
         };
-        Self { tool: tool.to_string(), args: trace_text(&args.to_string()), result, error, ms }
+        return (keys_only.to_string(), REDACTED.to_string());
+    }
+    let mut masked = args.clone();
+    mask_keys(&mut masked);
+    (masked.to_string(), mask_json_text(result))
+}
+
+impl TraceRec {
+    /// A call that ran (or failed) after `ms` milliseconds. Secrets are
+    /// redacted first, then every text is cut to [`TRACE_TEXT_MAX_CHARS`].
+    pub fn new(tool: &str, args: &Value, outcome: Result<&str, &str>, ms: u64) -> Self {
+        let (args_text, result, error) = match outcome {
+            Ok(body) => {
+                let (a, r) = redact(tool, args, body);
+                (a, trace_text(&r), None)
+            }
+            Err(e) => {
+                let (a, e) = redact(tool, args, e);
+                (a, String::new(), Some(trace_text(&e)))
+            }
+        };
+        Self { tool: tool.to_string(), args: trace_text(&args_text), result, error, ms }
     }
 }
 
@@ -243,6 +322,39 @@ mod tests {
 
     fn o(device: &str, kind: &str, source: &str) -> Origin {
         Origin { device: device.into(), kind: kind.into(), source: source.into() }
+    }
+
+    #[test]
+    fn redact_masks_sensitive_tools_and_keys() {
+        let args = json!({"name": "db_pass", "opts": {"Password": "p1", "keep": "ok"}});
+        let (a, r) = redact("secret_get", &args, "hunter2");
+        assert_eq!(a, r#"{"name":"[redacted]","opts":"[redacted]"}"#);
+        assert_eq!(r, "[redacted]");
+        for tool in ["vault_TOKEN_read", "get_Credentials", "set_password"] {
+            assert_eq!(redact(tool, &args, "x").1, "[redacted]", "{tool}");
+        }
+        let (a, r) = redact(
+            "http_get",
+            &json!({"url": "u", "headers": [{"Authorization": "Bearer abc", "x": "y"}]}),
+            r#"{"data": {"api_key": "k", "n": 1}, "cookie": "c"}"#,
+        );
+        assert!(!a.contains("Bearer abc") && a.contains("\"x\":\"y\""), "{a}");
+        assert!(!r.contains('k') || !r.contains("\"k\""), "{r}");
+        assert!(r.contains(r#""n":1"#) && !r.contains(r#""c""#), "{r}");
+        // non-JSON result of a normal tool is untouched
+        assert_eq!(redact("fs_read", &json!({}), "plain text").1, "plain text");
+    }
+
+    #[test]
+    fn redaction_runs_before_truncation() {
+        // The secret sits past the 200-char cut in a JSON value under a
+        // sensitive key: masking first must still remove it entirely.
+        let long = format!(r#"{{"pad": "{}", "token": "SECRET-TAIL"}}"#, "p".repeat(300));
+        let rec = TraceRec::new("http_get", &json!({}), Ok(&long), 1);
+        assert!(!rec.result.contains("SECRET-TAIL"));
+        let rec = TraceRec::new("http_get", &json!({"token": "T0P"}), Err(r#"{"auth":"A1"}"#), 1);
+        assert!(!rec.args.contains("T0P"));
+        assert!(!rec.error.unwrap().contains("A1"));
     }
 
     #[test]
