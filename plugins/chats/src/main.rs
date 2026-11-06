@@ -8,6 +8,8 @@
 use std::sync::{Arc, Mutex};
 
 use chats_plugin::config::Config;
+use chats_plugin::rpc::{Router, Rpc, RpcCall};
+use chats_plugin::worker::Worker;
 use chats_plugin::{request, schema};
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -87,6 +89,17 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     println!("[{PLUGIN_ID}] registered with kernel");
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(64);
+    let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
+    let mut router = Router::default();
+
+    let worker = Worker::new(Arc::clone(&conn), Rpc::new(rpc_tx), Arc::clone(&config), {
+        let out = outbound_tx.clone();
+        Arc::new(move || {
+            let payload = serde_json::json!({"action": "worker"});
+            let _ = out.try_send(event_envelope("changed", &payload));
+        })
+    });
+    let worker_task = worker.spawn();
 
     loop {
         tokio::select! {
@@ -115,6 +128,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                         let conn = Arc::clone(&conn);
                         let config = Arc::clone(&config);
                         let out = outbound_tx.clone();
+                        let worker = Arc::clone(&worker);
                         tokio::spawn(async move {
                             let action = req.action.clone();
                             let params = req.params_json.clone();
@@ -129,6 +143,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                                     let data = serde_json::to_vec(&val).unwrap_or_default();
                                     let _ = out.send(action_response(req.action_id, ActionStatus::ActionOk, data, String::new())).await;
                                     if request::is_mutation(&req.action, &val) {
+                                        worker.kick();
                                         let payload = serde_json::json!({"action": req.action});
                                         let _ = out.send(event_envelope("changed", &payload)).await;
                                     }
@@ -139,6 +154,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                             }
                         });
                     }
+                    Some(envelope::Payload::ActionResponse(resp)) => router.incoming(resp),
                     other => {
                         println!("[{PLUGIN_ID}] unhandled message: {other:?}");
                     }
@@ -147,9 +163,17 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
             Some(env) = outbound_rx.recv() => {
                 let _ = client.send("kernel", env).await;
             }
+            Some(call) = rpc_rx.recv() => {
+                router.prune();
+                let env = router.outgoing(call);
+                let _ = client.send("kernel", env).await;
+            }
         }
     }
 
+    if let Some(t) = worker_task {
+        t.abort();
+    }
     println!("[{PLUGIN_ID}] shutting down");
     Ok(())
 }

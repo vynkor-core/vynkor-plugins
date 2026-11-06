@@ -410,7 +410,9 @@ pub fn update(
     }
     let rev = next_rev(&tx).map_err(db_err)?;
     tx.execute(
-        "UPDATE sessions SET title = COALESCE(?1, title), pinned = COALESCE(?2, pinned), rev = ?3 WHERE id = ?4",
+        "UPDATE sessions SET title = COALESCE(?1, title),
+                title_manual = CASE WHEN ?1 IS NOT NULL THEN 1 ELSE title_manual END,
+                pinned = COALESCE(?2, pinned), rev = ?3 WHERE id = ?4",
         params![title, pinned.map(i64::from), rev, id],
     )
     .map_err(db_err)?;
@@ -422,8 +424,9 @@ pub fn update(
 /// blanks its title/summary/tags, drops its turns (and their FTS rows) and
 /// records a tombstone. Idempotent: `deleted` is true only for the call that
 /// did the work; an unknown or already deleted id returns the current /
-/// tombstone revision with `deleted: false`. Removing the session row itself
-/// and cascading to other plugins is later work.
+/// tombstone revision with `deleted: false`. The same transaction queues a
+/// `cascade` job; the worker removes vectors, agent goals and facts and then
+/// the session row itself (see `cascade.rs`).
 pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -456,6 +459,31 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
     tx.execute(
         "UPDATE sessions SET state = 'deleting', title = '', summary = '', tags = '[]', rev = ? WHERE id = ?",
         params![rev, id],
+    )
+    .map_err(db_err)?;
+    // Queue the cascade (vectors, agent goals and facts) in the same
+    // transaction, while the turn and goal ids are still known.
+    let turn_ids: Vec<String> = tx
+        .prepare("SELECT id FROM turns WHERE session_id = ? ORDER BY seq")
+        .map_err(db_err)?
+        .query_map([id], |r| r.get(0))
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    let goal_ids: Vec<String> = tx
+        .prepare(
+            "SELECT DISTINCT goal_id FROM turns
+             WHERE session_id = ? AND goal_id IS NOT NULL AND goal_id != ''",
+        )
+        .map_err(db_err)?
+        .query_map([id], |r| r.get(0))
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
+         VALUES (?, ?, ?, 0, 0, '[]')",
+        params![id, json!(turn_ids).to_string(), json!(goal_ids).to_string()],
     )
     .map_err(db_err)?;
     tx.execute("DELETE FROM turns WHERE session_id = ?", [id])

@@ -61,7 +61,53 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 INSERT OR IGNORE INTO meta(key, value) VALUES ('rev', 0);
 ";
 
-pub const USER_VERSION: i64 = 1;
+/// v2 (semantic layer): worker bookkeeping columns plus the delete-cascade
+/// queue (`cascade`) and the late-vector sweep list (`swept`).
+const SCHEMA_V2_COLUMNS: [(&str, &str, &str); 4] = [
+    ("sessions", "summarized_rev", "INTEGER NOT NULL DEFAULT 0"),
+    ("sessions", "title_manual", "INTEGER NOT NULL DEFAULT 0"),
+    ("sessions", "embedded_rev", "INTEGER NOT NULL DEFAULT 0"),
+    ("turns", "embedded", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+const SCHEMA_V2_TABLES: &str = "
+CREATE TABLE IF NOT EXISTS cascade(
+  session_id TEXT PRIMARY KEY,
+  turn_ids TEXT NOT NULL DEFAULT '[]',
+  goal_ids TEXT NOT NULL DEFAULT '[]',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_at INTEGER NOT NULL DEFAULT 0,
+  done TEXT NOT NULL DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS swept(
+  session_id TEXT PRIMARY KEY,
+  turn_ids TEXT NOT NULL DEFAULT '[]',
+  until INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS turns_embedded ON turns(embedded, session_id);
+";
+
+pub const USER_VERSION: i64 = 2;
+
+fn has_column(conn: &Connection, table: &str, col: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for n in names {
+        if n? == col {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
+    for (table, col, decl) in SCHEMA_V2_COLUMNS {
+        if !has_column(conn, table, col)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"))?;
+        }
+    }
+    conn.execute_batch(SCHEMA_V2_TABLES)
+}
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     let conn = Connection::open(path)?;
@@ -76,6 +122,11 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         ));
     }
     conn.execute_batch(SCHEMA_V1)?;
+    if v < 2 {
+        let tx = conn.unchecked_transaction()?;
+        migrate_v2(&tx)?;
+        tx.commit()?;
+    }
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     Ok(conn)
 }
@@ -99,13 +150,21 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_schema_v1() {
+    fn open_creates_schema_v2() {
         let (_d, c) = open_temp();
         let v: i64 = c
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1);
-        for t in ["sessions", "turns", "turns_fts", "tombstones", "meta"] {
+        assert_eq!(v, 2);
+        for t in [
+            "sessions",
+            "turns",
+            "turns_fts",
+            "tombstones",
+            "meta",
+            "cascade",
+            "swept",
+        ] {
             let n: i64 = c
                 .query_row(
                     "SELECT count(*) FROM sqlite_master WHERE name=?",
@@ -127,6 +186,59 @@ mod tests {
             .pragma_query_value(None, "journal_mode", |r| r.get(0))
             .unwrap();
         assert_eq!(jm, "wal");
+    }
+
+    /// A database written by C1 (schema v1, no semantic columns) opens, keeps
+    /// every row and gains the v2 columns with their defaults.
+    #[test]
+    fn migrates_v1_to_v2_keeps_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("chats.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(SCHEMA_V1).unwrap();
+            c.execute_batch(
+                "INSERT INTO sessions(id, kind, device, started_at, last_at, rev, turns, title, summary)
+                   VALUES('s1','chat','lap',1,2,5,1,'T','S');
+                 INSERT INTO turns(id, session_id, seq, at, user_text, answer_text, status, rev)
+                   VALUES('t1','s1',1,2,'weather today','sunny','ok',5);
+                 UPDATE meta SET value=5 WHERE key='rev';",
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let c = open(&p).unwrap();
+        let v: i64 = c
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 2);
+        let (title, sum_rev, manual, emb_rev): (String, i64, i64, i64) = c
+            .query_row(
+                "SELECT title, summarized_rev, title_manual, embedded_rev FROM sessions WHERE id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!((title.as_str(), sum_rev, manual, emb_rev), ("T", 0, 0, 0));
+        let embedded: i64 = c
+            .query_row("SELECT embedded FROM turns WHERE id='t1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(embedded, 0);
+        // FTS still works over the migrated row
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM turns_fts WHERE turns_fts MATCH 'weather'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        for t in ["cascade", "swept"] {
+            assert!(c.prepare(&format!("SELECT * FROM {t}")).is_ok());
+        }
+        // reopening a v2 file is a no-op
+        drop(c);
+        assert!(open(&p).is_ok());
     }
 
     #[test]
