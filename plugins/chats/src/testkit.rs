@@ -357,6 +357,8 @@ pub struct Fixture {
     pub fake: FakeKernel,
     pub rpc: Rpc,
     pub worker: Arc<Worker>,
+    /// `changed` events the worker emitted (their `action`).
+    pub events: Arc<Mutex<Vec<String>>>,
 }
 
 pub const T0: i64 = 1_000_000_000_000;
@@ -375,12 +377,11 @@ impl Fixture {
         let cfg = Arc::new(cfg);
         let fake = FakeKernel::new();
         let rpc = fake.rpc();
-        let worker = Worker::new(
-            Arc::clone(&db),
-            rpc.clone(),
-            Arc::clone(&cfg),
-            Arc::new(|_| {}),
-        );
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let worker = Worker::new(Arc::clone(&db), rpc.clone(), Arc::clone(&cfg), {
+            let events = Arc::clone(&events);
+            Arc::new(move |a: &str| events.lock().unwrap().push(a.to_string()))
+        });
         Fixture {
             _dir: dir,
             db,
@@ -388,6 +389,7 @@ impl Fixture {
             fake,
             rpc,
             worker,
+            events,
         }
     }
 

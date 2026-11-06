@@ -6,7 +6,7 @@
 //! (which runs the maintenance pass first) performs the calls to other plugins.
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::cascade::MODE_COMPACT;
 use crate::config::Config;
@@ -159,10 +159,258 @@ pub fn compact(conn: &mut Connection, session_id: &str) -> Result<bool, String> 
     Ok(true)
 }
 
+// ---------------------------------------------------------------------------
+// Monthly review
+
+/// Group keys of a review.
+pub const GROUP_JUNK: &str = "junk";
+pub const GROUP_COMPRESS: &str = "compress";
+const REVIEW_GROUP_LIMIT: i64 = 200;
+
+/// Sessions of group `key` that qualify at `now`; `only` narrows the query to
+/// one session (the re-check at apply time). Pinned and non-live sessions
+/// never qualify.
+fn group_sessions(
+    conn: &Connection,
+    key: &str,
+    cfg: &Config,
+    now: i64,
+    only: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let (cond, cutoff) = match key {
+        // low-value voice sessions: at most one useful exchange, never recalled
+        GROUP_JUNK => (
+            "s.kind = 'voice' AND s.tier != 'summary' AND s.recall_count = 0
+             AND s.last_at < ?1
+             AND (SELECT count(*) FROM turns t WHERE t.session_id = s.id AND t.status = 'ok') <= 1",
+            now - cfg.review_lowvalue_age_secs.saturating_mul(1000),
+        ),
+        // compact sessions nobody has looked at for a long time
+        GROUP_COMPRESS => (
+            "s.tier = 'compact' AND MAX(s.last_used_at, s.last_at) < ?1",
+            now - cfg.review_summary_age_secs.saturating_mul(1000),
+        ),
+        other => return Err(format!("unknown group {other}")),
+    };
+    conn.prepare(&format!(
+        "SELECT s.id FROM sessions s
+         WHERE s.state = 'live' AND s.pinned = 0 AND {cond} AND (?2 IS NULL OR s.id = ?2)
+         ORDER BY s.last_at LIMIT ?3"
+    ))
+    .map_err(db_err)?
+    .query_map(params![cutoff, only, REVIEW_GROUP_LIMIT], |r| r.get(0))
+    .map_err(db_err)?
+    .collect::<rusqlite::Result<_>>()
+    .map_err(db_err)
+}
+
+fn session_card(conn: &Connection, id: &str) -> Result<Value, String> {
+    conn.query_row(
+        "SELECT id, title, last_at, turns, tier FROM sessions WHERE id = ?",
+        [id],
+        |r| {
+            Ok(json!({
+                "id": r.get::<_, String>(0)?,
+                "title": r.get::<_, String>(1)?,
+                "last_at": r.get::<_, i64>(2)?,
+                "turns": r.get::<_, i64>(3)?,
+                "tier": r.get::<_, String>(4)?,
+            }))
+        },
+    )
+    .map_err(db_err)
+}
+
+/// Prepare the monthly review if one is due (`meta.last_review`). Without
+/// candidates nothing is created; a still-pending older review is replaced
+/// (and marked `dismissed`). Returns true if a review was created.
+pub fn prepare_review(conn: &mut Connection, cfg: &Config, now: i64) -> Result<bool, String> {
+    if meta_get(conn, "last_review")?
+        .is_some_and(|l| now - l < cfg.review_interval_secs.saturating_mul(1000))
+    {
+        return Ok(false);
+    }
+    meta_set(conn, "last_review", now)?;
+    let mut groups = Vec::new();
+    for (key, action) in [(GROUP_JUNK, "delete"), (GROUP_COMPRESS, "summary")] {
+        let ids = group_sessions(conn, key, cfg, now, None)?;
+        if ids.is_empty() {
+            continue;
+        }
+        let sessions = ids
+            .iter()
+            .map(|id| session_card(conn, id))
+            .collect::<Result<Vec<_>, _>>()?;
+        groups.push(json!({"key": key, "action": action, "sessions": sessions}));
+    }
+    if groups.is_empty() {
+        return Ok(false);
+    }
+    let tx = conn.transaction().map_err(db_err)?;
+    tx.execute(
+        "UPDATE reviews SET status = 'dismissed' WHERE status = 'pending'",
+        [],
+    )
+    .map_err(db_err)?;
+    tx.execute(
+        "INSERT INTO reviews(id, created_at, status, groups) VALUES (?, ?, 'pending', ?)",
+        params![
+            ulid::Ulid::new().to_string(),
+            now,
+            json!(groups).to_string()
+        ],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(true)
+}
+
+/// `chat_review_get`: the pending review, if any.
+pub fn review_get(conn: &Connection) -> Result<Value, String> {
+    let row: Option<(String, i64, String)> = conn
+        .query_row(
+            "SELECT id, created_at, groups FROM reviews WHERE status = 'pending'
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    Ok(match row {
+        None => json!({"review": null}),
+        Some((id, created_at, groups)) => json!({"review": {
+            "id": id,
+            "created_at": created_at,
+            "groups": serde_json::from_str::<Value>(&groups).unwrap_or_else(|_| json!([])),
+        }}),
+    })
+}
+
+/// `compact -> summary`: drop the turns of the session (FTS rows go with them
+/// by trigger); the session keeps its summary, tags and summary vector. No
+/// tombstones: devices drop their local turns when they see `tier = summary`.
+/// Returns false if the session no longer is a live, unpinned `compact` one.
+pub fn summarize_tier(conn: &mut Connection, session_id: &str) -> Result<bool, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let ok: bool = tx
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ? AND state = 'live' AND pinned = 0 AND tier = 'compact'",
+            [session_id],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(db_err)?
+        .unwrap_or(false);
+    if !ok {
+        return Ok(false);
+    }
+    let turn_ids: Vec<String> = tx
+        .prepare("SELECT id FROM turns WHERE session_id = ? ORDER BY seq")
+        .map_err(db_err)?
+        .query_map([session_id], |r| r.get(0))
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    let rev = next_rev(&tx).map_err(db_err)?;
+    tx.execute("DELETE FROM turns WHERE session_id = ?", [session_id])
+        .map_err(db_err)?;
+    tx.execute(
+        "UPDATE sessions SET tier = 'summary', rev = ?1 WHERE id = ?2",
+        params![rev, session_id],
+    )
+    .map_err(db_err)?;
+    // belt and braces: make sure no turn vector survives (a no-op when the
+    // compaction already removed them; skipped if a job is still pending)
+    tx.execute(
+        "INSERT OR IGNORE INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done, mode)
+         VALUES (?1, ?2, '[]', 0, 0, '[]', ?3)",
+        params![session_id, json!(turn_ids).to_string(), MODE_COMPACT],
+    )
+    .map_err(db_err)?;
+    tx.commit().map_err(db_err)?;
+    Ok(true)
+}
+
+/// `chat_review_apply`: carry out the accepted groups of the pending review
+/// `id`. Each session is re-checked first (it may have been pinned, used or
+/// deleted since the review was made) and counted in `skipped` if it no longer
+/// qualifies. Groups not in `accept` and sessions in `exclude` are untouched.
+pub fn review_apply(
+    conn: &mut Connection,
+    cfg: &Config,
+    id: &str,
+    accept: &[String],
+    exclude: &[String],
+    now: i64,
+) -> Result<Value, String> {
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT status, groups FROM reviews WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(db_err)?;
+    let Some((status, groups)) = row else {
+        return Err("review not found".into());
+    };
+    if status != "pending" {
+        return Err("review already applied".into());
+    }
+    let groups: Vec<Value> = serde_json::from_str(&groups).unwrap_or_default();
+    for key in accept {
+        if !groups.iter().any(|g| g["key"] == key.as_str()) {
+            return Err(format!("unknown group {key} in review {id}"));
+        }
+    }
+    let (mut deleted, mut compressed, mut skipped) = (0, 0, 0);
+    for g in &groups {
+        let key = g["key"].as_str().unwrap_or("");
+        if !accept.iter().any(|a| a == key) {
+            continue;
+        }
+        for sid in g["sessions"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["id"].as_str())
+        {
+            if exclude.iter().any(|e| e == sid) {
+                continue;
+            }
+            // re-check: still live, unpinned and still matching the rule
+            if group_sessions(conn, key, cfg, now, Some(sid))?.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            let done = match key {
+                GROUP_JUNK => store::delete(conn, sid)?["deleted"] == true,
+                GROUP_COMPRESS => summarize_tier(conn, sid)?,
+                _ => false,
+            };
+            match (done, key) {
+                (true, GROUP_JUNK) => deleted += 1,
+                (true, _) => compressed += 1,
+                (false, _) => skipped += 1,
+            }
+        }
+    }
+    conn.execute("UPDATE reviews SET status = 'applied' WHERE id = ?", [id])
+        .map_err(db_err)?;
+    let rev: i64 = conn
+        .query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))
+        .map_err(db_err)?;
+    Ok(json!({"deleted": deleted, "compressed": compressed, "skipped": skipped, "rev": rev}))
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub deleted: usize,
     pub compacted: usize,
+    /// A new monthly review was prepared.
+    pub review: bool,
 }
 
 impl Outcome {
@@ -209,6 +457,7 @@ pub fn maintenance(conn: &mut Connection, cfg: &Config, now: i64) -> Result<Outc
             out.compacted += 1;
         }
     }
+    out.review = prepare_review(conn, cfg, now)?;
     Ok(out)
 }
 
@@ -218,7 +467,12 @@ impl Worker {
     pub(crate) async fn maintenance_pass(&self, now: i64) -> bool {
         let cfg = std::sync::Arc::clone(&self.cfg);
         match with_db(&self.db, move |c| maintenance(c, &cfg, now)).await {
-            Ok(Ok(o)) => o.changed(),
+            Ok(Ok(o)) => {
+                if o.review {
+                    (self.changed)("review");
+                }
+                o.changed()
+            }
             Ok(Err(e)) | Err(e) => {
                 self.warn("db", &e);
                 false
@@ -570,5 +824,369 @@ mod tests {
         assert_eq!(f.fake.calls("memory_forget_session").len(), 1);
         let rows: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]);
         assert_eq!(rows, 0);
+    }
+
+    // ----- monthly review -------------------------------------------------
+
+    const REVIEW_NOW: i64 = T0 + 200 * DAY;
+
+    /// V1 low-value voice (reviewable), V2 voice with two useful turns, V3 voice
+    /// that was recalled, C1 old compact session, C2 recently used compact one.
+    struct ReviewSet {
+        v1: String,
+        v2: String,
+        v3: String,
+        c1: String,
+        c2: String,
+    }
+
+    async fn review_set(f: &Fixture) -> ReviewSet {
+        let v1 = f.session("v1", "voice", T0);
+        turn_status(f, &v1, "turn on the light", "done", "ok", T0);
+        let v2 = f.session("v2", "voice", T0);
+        turn_status(f, &v2, "q1", "a1", "ok", T0);
+        turn_status(f, &v2, "q2", "a2", "ok", T0 + 1);
+        let v3 = f.session("v3", "voice", T0);
+        turn_status(f, &v3, "q", "a", "ok", T0);
+        mark_used(&f.lock(), std::slice::from_ref(&v3), T0 + 5, true).unwrap();
+        let compact = |dev: &str, used: i64| {
+            let sid = f.session(dev, "chat", T0);
+            turn_status(f, &sid, "plan", "trip", "ok", T0);
+            f.lock()
+                .execute(
+                    "UPDATE sessions SET tier='compact', title='Trip', summary='a trip', summarized_rev=rev, last_used_at=?1 WHERE id=?2",
+                    params![used, sid],
+                )
+                .unwrap();
+            sid
+        };
+        let c1 = compact("c1", 0);
+        let c2 = compact("c2", REVIEW_NOW - 10 * DAY);
+        ReviewSet { v1, v2, v3, c1, c2 }
+    }
+
+    fn make_review(f: &Fixture) -> Value {
+        assert!(prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW).unwrap());
+        review_get(&f.lock()).unwrap()["review"].clone()
+    }
+
+    fn group_ids(review: &Value, key: &str) -> Vec<String> {
+        review["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|g| g["key"] == key)
+            .map(|g| {
+                g["sessions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["id"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn monthly_review_builds_groups() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        assert_eq!(group_ids(&r, "junk"), vec![set.v1.clone()]);
+        assert_eq!(group_ids(&r, "compress"), vec![set.c1.clone()]);
+        let g = &r["groups"][0];
+        assert_eq!(
+            (g["key"].as_str(), g["action"].as_str()),
+            (Some("junk"), Some("delete"))
+        );
+        assert_eq!(g["sessions"][0]["tier"], "full");
+        assert_eq!(r["groups"][1]["action"], "summary");
+        for not_listed in [&set.v2, &set.v3, &set.c2] {
+            assert!(!r.to_string().contains(not_listed.as_str()));
+        }
+        // not due again before the interval
+        assert!(!prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW + DAY).unwrap());
+        // a newer review replaces a pending one
+        let first = r["id"].as_str().unwrap().to_string();
+        assert!(prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW + 31 * DAY).unwrap());
+        let second = review_get(&f.lock()).unwrap()["review"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(first, second);
+        let st: String = f.q("SELECT status FROM reviews WHERE id=?", [&first]);
+        assert_eq!(st, "dismissed");
+    }
+
+    #[tokio::test]
+    async fn worker_prepares_the_review_and_announces_it() {
+        let f = Fixture::new();
+        review_set(&f).await;
+        f.worker.run_cleanup(REVIEW_NOW).await;
+        assert!(f.events.lock().unwrap().iter().any(|e| e == "review"));
+        assert!(review_get(&f.lock()).unwrap()["review"].is_object());
+    }
+
+    #[tokio::test]
+    async fn no_candidates_no_review() {
+        let f = Fixture::new();
+        let v = f.session("v", "voice", T0);
+        turn_status(&f, &v, "a", "b", "ok", T0 + 1);
+        turn_status(&f, &v, "c", "d", "ok", T0 + 2);
+        assert!(!prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW).unwrap());
+        assert_eq!(
+            review_get(&f.lock()).unwrap(),
+            serde_json::json!({"review": null})
+        );
+        let n: i64 = f.q("SELECT count(*) FROM reviews", []);
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn sync_reports_review_pending() {
+        let f = Fixture::new();
+        review_set(&f).await;
+        let pending = |f: &Fixture| {
+            crate::sync::sync(&f.lock(), 0, 100, 500).unwrap()["review_pending"].clone()
+        };
+        assert_eq!(pending(&f), false);
+        let r = make_review(&f);
+        assert_eq!(pending(&f), true);
+        let since = crate::sync::sync(&f.lock(), 0, 1000, 1000).unwrap()["rev"]
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            crate::sync::sync(&f.lock(), since, 100, 500).unwrap()["review_pending"],
+            true
+        );
+        review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            r["id"].as_str().unwrap(),
+            &["junk".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap();
+        assert_eq!(pending(&f), false);
+    }
+
+    #[tokio::test]
+    async fn apply_deletes_and_compresses_accepted_groups_only() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        let id = r["id"].as_str().unwrap();
+        let out = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            id,
+            &["junk".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                out["deleted"].as_i64(),
+                out["compressed"].as_i64(),
+                out["skipped"].as_i64()
+            ),
+            (Some(1), Some(0), Some(0))
+        );
+        assert_eq!(state(&f, &set.v1), "deleting");
+        let tier: String = f.q("SELECT tier FROM sessions WHERE id=?", [&set.c1]);
+        assert_eq!(tier, "compact", "compress group was not accepted");
+        let st: String = f.q("SELECT status FROM reviews WHERE id=?", [id]);
+        assert_eq!(st, "applied");
+        // the deletion goes through the cascade
+        f.worker.run_cleanup(REVIEW_NOW + 1).await;
+        let rows: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&set.v1]);
+        assert_eq!(rows, 0);
+        assert!(request_changed("chat_review_apply", &out));
+    }
+
+    #[tokio::test]
+    async fn apply_both_groups_and_exclude_a_session() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        let out = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            r["id"].as_str().unwrap(),
+            &["junk".to_string(), "compress".to_string()],
+            std::slice::from_ref(&set.v1),
+            REVIEW_NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            (out["deleted"].as_i64(), out["compressed"].as_i64()),
+            (Some(0), Some(1))
+        );
+        assert_eq!(state(&f, &set.v1), "live", "excluded by the owner");
+        let tier: String = f.q("SELECT tier FROM sessions WHERE id=?", [&set.c1]);
+        assert_eq!(tier, "summary");
+    }
+
+    #[tokio::test]
+    async fn apply_skips_pinned_since_review() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        store::update(&mut f.lock(), &set.v1, None, Some(true)).unwrap();
+        store::update(&mut f.lock(), &set.c1, None, Some(true)).unwrap();
+        let out = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            r["id"].as_str().unwrap(),
+            &["junk".to_string(), "compress".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                out["deleted"].as_i64(),
+                out["compressed"].as_i64(),
+                out["skipped"].as_i64()
+            ),
+            (Some(0), Some(0), Some(2))
+        );
+        assert_eq!(state(&f, &set.v1), "live");
+        let (tier, n): (String, i64) = f.q2(
+            "SELECT s.tier, (SELECT count(*) FROM turns t WHERE t.session_id = s.id) FROM sessions s WHERE s.id=?",
+            &set.c1,
+        );
+        assert_eq!((tier.as_str(), n), ("compact", 1));
+        assert!(!request_changed("chat_review_apply", &out));
+    }
+
+    #[tokio::test]
+    async fn apply_skips_sessions_used_since_review() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        mark_used(
+            &f.lock(),
+            std::slice::from_ref(&set.c1),
+            REVIEW_NOW - DAY,
+            true,
+        )
+        .unwrap();
+        mark_used(
+            &f.lock(),
+            std::slice::from_ref(&set.v1),
+            REVIEW_NOW - DAY,
+            true,
+        )
+        .unwrap();
+        let out = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            r["id"].as_str().unwrap(),
+            &["junk".to_string(), "compress".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap();
+        assert_eq!(out["skipped"], 2);
+    }
+
+    #[tokio::test]
+    async fn apply_rejects_unknown_and_repeated() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        let r = make_review(&f);
+        let id = r["id"].as_str().unwrap().to_string();
+        let junk = vec!["junk".to_string()];
+        let e = review_apply(&mut f.lock(), &f.cfg, "nope", &junk, &[], REVIEW_NOW).unwrap_err();
+        assert_eq!(e, "review not found");
+        let e = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            &id,
+            &["bogus".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap_err();
+        assert!(e.contains("unknown group"), "{e}");
+        assert_eq!(state(&f, &set.v1), "live", "errors change nothing");
+        review_apply(&mut f.lock(), &f.cfg, &id, &junk, &[], REVIEW_NOW).unwrap();
+        let rev: i64 = f.q("SELECT value FROM meta WHERE key='rev'", []);
+        let e = review_apply(&mut f.lock(), &f.cfg, &id, &junk, &[], REVIEW_NOW).unwrap_err();
+        assert_eq!(e, "review already applied");
+        assert_eq!(
+            f.q::<i64>("SELECT value FROM meta WHERE key='rev'", []),
+            rev
+        );
+    }
+
+    fn request_changed(action: &str, result: &Value) -> bool {
+        crate::request::is_mutation(action, result)
+    }
+
+    #[tokio::test]
+    async fn summary_tier_drops_turns_and_fts() {
+        let f = Fixture::new();
+        f.fake.synonym("forecast", "weather");
+        let sid = f.session("c", "chat", T0);
+        turn_status(&f, &sid, "zebra stripes", "african animal", "ok", T0);
+        f.lock()
+            .execute(
+                "UPDATE sessions SET tier='compact', title='Trip', summary='forecast', summarized_rev=rev WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
+        f.worker.run_work(T0 + 10).await; // turn + summary vectors
+        let since: i64 = f.q("SELECT value FROM meta WHERE key='rev'", []);
+        let r = make_review(&f);
+        review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            r["id"].as_str().unwrap(),
+            &["compress".to_string()],
+            &[],
+            REVIEW_NOW,
+        )
+        .unwrap();
+        f.worker.run_cleanup(REVIEW_NOW + 1).await;
+        // the turn text is gone from search
+        let sp = |q: &str| crate::search::SearchParams {
+            query: q.into(),
+            ..Default::default()
+        };
+        assert!(
+            crate::search::search(&f.lock(), &sp("zebra")).unwrap()["hits"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            f.fake.doc_ids("chats-turns").is_empty(),
+            "turn vectors removed"
+        );
+        // the summary is still found (vector hit on the session)
+        let svc = crate::service::Service::new(
+            std::sync::Arc::clone(&f.db),
+            f.rpc.clone(),
+            std::sync::Arc::clone(&f.cfg),
+        );
+        let hits = svc
+            .handle("chat_search", br#"{"query":"weather"}"#, REVIEW_NOW + 2)
+            .await
+            .unwrap();
+        assert_eq!(hits["hits"][0]["session_id"], sid.as_str());
+        assert!(hits["hits"][0]["turn_id"].is_null());
+        // sync: the session carries tier=summary, no turn tombstones exist
+        let out = crate::sync::sync(&f.lock(), since, 100, 500).unwrap();
+        let ch = out["changes"].as_array().unwrap();
+        assert!(ch
+            .iter()
+            .any(|c| c["op"] == "session" && c["session"]["tier"] == "summary"));
+        assert!(ch.iter().all(|c| c["op"] != "delete"));
+        let n: i64 = f.q("SELECT count(*) FROM turns WHERE session_id=?", [&sid]);
+        assert_eq!(n, 0);
     }
 }

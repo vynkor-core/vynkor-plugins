@@ -1,6 +1,6 @@
 {
   "plugin_id": "chats",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -550,6 +550,155 @@
           "hits"
         ]
       }
+    },
+    {
+      "name": "chat_review_get",
+      "description": "Get the monthly retention review prepared for the owner, if one is pending: groups of sessions proposed for deletion (low-value voice sessions) or for compression to a summary (old compact sessions nobody used). Read-only; returns {review: null} when nothing is pending. Act on it only with chat_review_apply after the owner decided.",
+      "risk": "low",
+      "input": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "review": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "created_at": {
+                    "type": "integer"
+                  },
+                  "groups": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "enum": [
+                            "junk",
+                            "compress"
+                          ]
+                        },
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "delete",
+                            "summary"
+                          ]
+                        },
+                        "sessions": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "title": {
+                                "type": "string"
+                              },
+                              "last_at": {
+                                "type": "integer"
+                              },
+                              "turns": {
+                                "type": "integer"
+                              },
+                              "tier": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "required": [
+                  "id",
+                  "created_at",
+                  "groups"
+                ]
+              }
+            ]
+          }
+        },
+        "required": [
+          "review"
+        ]
+      }
+    },
+    {
+      "name": "chat_review_apply",
+      "description": "Carry out the owner's decision on the pending monthly review: accept whole groups by key (junk = delete the sessions, compress = keep only title/summary/tags and drop the turns) and optionally exclude single sessions. Pinned or meanwhile used sessions are skipped and counted. Irreversible. Ask the owner first; a review id can be applied only once.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Review id from chat_review_get."
+          },
+          "accept": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "junk",
+                "compress"
+              ]
+            },
+            "description": "Group keys to carry out; groups not listed are left alone."
+          },
+          "exclude": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Session ids to leave untouched."
+          }
+        },
+        "required": [
+          "id",
+          "accept"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer"
+          },
+          "compressed": {
+            "type": "integer"
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "Sessions that no longer qualified (pinned, used, deleted)."
+          },
+          "rev": {
+            "type": "integer",
+            "description": "Host revision after the change."
+          }
+        },
+        "required": [
+          "deleted",
+          "compressed",
+          "skipped",
+          "rev"
+        ]
+      }
     }
   ],
   "$defs": {
@@ -718,6 +867,57 @@
         "type": "number",
         "default": 0.72,
         "description": "Default min_score of chat_recall."
+      },
+      "CHATS_RETENTION": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "on",
+        "description": "Automatic junk cleanup, compaction of old unused sessions and the monthly review. Needs CHATS_SEMANTIC=on (the worker runs the cleanup)."
+      },
+      "CHATS_MAINT_INTERVAL_SECS": {
+        "type": "integer",
+        "default": 3600,
+        "minimum": 1,
+        "description": "How often the maintenance pass runs."
+      },
+      "CHATS_JUNK_AGE_SECS": {
+        "type": "integer",
+        "default": 86400,
+        "minimum": 1,
+        "description": "A session of only failed/empty turns is deleted once this old."
+      },
+      "CHATS_COMPACT_AGE_SECS": {
+        "type": "integer",
+        "default": 7776000,
+        "minimum": 1,
+        "description": "Sessions older than this (and summarized) may be compacted (tool traces and turn vectors dropped)."
+      },
+      "CHATS_COMPACT_UNUSED_SECS": {
+        "type": "integer",
+        "default": 5184000,
+        "minimum": 1,
+        "description": "...and only if not found by search or recall for this long."
+      },
+      "CHATS_REVIEW_INTERVAL_SECS": {
+        "type": "integer",
+        "default": 2592000,
+        "minimum": 1,
+        "description": "How often a review for the owner is prepared."
+      },
+      "CHATS_REVIEW_LOWVALUE_AGE_SECS": {
+        "type": "integer",
+        "default": 2592000,
+        "minimum": 1,
+        "description": "Review group junk: low-value voice sessions older than this."
+      },
+      "CHATS_REVIEW_SUMMARY_AGE_SECS": {
+        "type": "integer",
+        "default": 15552000,
+        "minimum": 1,
+        "description": "Review group compress: compact sessions unused for this long."
       }
     },
     "required": [

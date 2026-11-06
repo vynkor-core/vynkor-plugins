@@ -4,9 +4,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::{search, store, sync};
+use crate::{retention, search, store, sync};
 
-pub const ACTIONS: [&str; 9] = [
+pub const ACTIONS: [&str; 11] = [
     "chat_session_resolve",
     "chat_turn_append",
     "chat_sessions_list",
@@ -16,6 +16,8 @@ pub const ACTIONS: [&str; 9] = [
     "chat_search",
     "chat_sync",
     "chat_recall",
+    "chat_review_get",
+    "chat_review_apply",
 ];
 
 /// Whether a successful `action` with this `result` changed stored state and
@@ -26,6 +28,9 @@ pub fn is_mutation(action: &str, result: &Value) -> bool {
         "chat_session_resolve" => result["created"] == true,
         "chat_delete" => result["deleted"] == true,
         "chat_turn_append" | "chat_session_update" => true,
+        "chat_review_apply" => {
+            result["deleted"].as_i64().unwrap_or(0) + result["compressed"].as_i64().unwrap_or(0) > 0
+        }
         _ => false,
     }
 }
@@ -46,6 +51,19 @@ struct UpdateParams {
     title: Option<String>,
     #[serde(default)]
     pinned: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoParams {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewApplyParams {
+    id: String,
+    accept: Vec<String>,
+    #[serde(default)]
+    exclude: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -101,6 +119,21 @@ pub fn handle(
             let p: SyncParams = parse(action, params)?;
             let limit = p.limit.unwrap_or(cfg.sync_max as i64).max(1) as usize;
             sync::sync(conn, p.since_rev.max(0), limit, cfg.sync_max)
+        }
+        "chat_review_get" => {
+            let _: NoParams = parse(action, params)?;
+            retention::review_get(conn)
+        }
+        "chat_review_apply" => {
+            let p: ReviewApplyParams = parse(action, params)?;
+            retention::review_apply(
+                conn,
+                cfg,
+                &p.id,
+                &p.accept,
+                p.exclude.as_deref().unwrap_or(&[]),
+                now,
+            )
         }
         "chat_recall" => Err("internal error: chat_recall is served by the async service".into()),
         other => Err(format!("unknown action {other}")),
