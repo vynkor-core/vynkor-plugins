@@ -36,6 +36,9 @@ pub enum VectorRequest {
     Stats {
         collection: String,
     },
+    Embed {
+        texts: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +113,11 @@ struct BatchDocRaw {
 struct BatchUpsertParams {
     collection: String,
     docs: Vec<BatchDocRaw>,
+}
+
+#[derive(Deserialize)]
+struct EmbedParams {
+    texts: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +230,22 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<VectorRequest, 
                 collection: require_nonempty(p.collection, "collection")?,
             })
         }
+        "vec_embed" => {
+            let p: EmbedParams = serde_json::from_slice(params_json)
+                .map_err(|e| format!("invalid params for vec_embed: {e}"))?;
+            if p.texts.is_empty() || p.texts.len() > 64 {
+                return Err("params.texts must have 1..=64 items".to_string());
+            }
+            for (i, t) in p.texts.iter().enumerate() {
+                if t.trim().is_empty() {
+                    return Err(format!("params.texts[{i}] must not be empty"));
+                }
+                if t.len() > 10000 {
+                    return Err(format!("params.texts[{i}] too long (max 10000)"));
+                }
+            }
+            Ok(VectorRequest::Embed { texts: p.texts })
+        }
         "vec_upsert_batch" => {
             let p: BatchUpsertParams = serde_json::from_slice(params_json)
                 .map_err(|e| format!("invalid params for vec_upsert_batch: {e}"))?;
@@ -244,7 +268,10 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<VectorRequest, 
                 let has_text = raw.text.as_ref().map_or(false, |t| !t.trim().is_empty());
                 let has_vector = raw.vector.as_ref().map_or(false, |v| !v.is_empty());
                 if !has_text && !has_vector {
-                    return Err(format!("docs[{}] requires at least one of text or vector", docs.len()));
+                    return Err(format!(
+                        "docs[{}] requires at least one of text or vector",
+                        docs.len()
+                    ));
                 }
                 if let Some(t) = &raw.text {
                     if t.len() > 10000 {
@@ -256,7 +283,10 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<VectorRequest, 
                         return Err("params.docs[].vector must be non-empty".to_string());
                     }
                     if v.len() > 4096 {
-                        return Err(format!("params.docs[].vector dim too large: {} > 4096", v.len()));
+                        return Err(format!(
+                            "params.docs[].vector dim too large: {} > 4096",
+                            v.len()
+                        ));
                     }
                 }
                 docs.push(BatchDoc {

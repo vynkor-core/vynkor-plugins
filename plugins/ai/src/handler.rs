@@ -363,7 +363,11 @@ pub async fn handle_embedding(
         _ => net_resp.body.into_bytes(),
     };
 
-    let result = provider.parse_embedding_response(&body_bytes)?;
+    let (expected, many) = match &params.input {
+        request::EmbedInput::One(_) => (1, false),
+        request::EmbedInput::Many(v) => (v.len(), true),
+    };
+    let result = provider.parse_embedding_response(&body_bytes, expected, many)?;
 
     let model_id = params.model.clone();
     if let Err(e) = db.record_usage(&UsageRow {
@@ -711,5 +715,92 @@ mod tests {
             serde_json::from_slice(&handle_usage_stats(&db).unwrap()).unwrap();
         assert_eq!(stats.totals.requests, 1);
         assert_eq!(stats.totals.input_tokens, 3);
+    }
+
+    /// Fake outbound: `secret_get` -> not found (env var wins), `http_request`
+    /// -> canned `/embeddings` reply built from the posted `input`.
+    struct FakeNet {
+        http_bodies: Vec<serde_json::Value>,
+    }
+
+    impl ActionCaller for FakeNet {
+        fn call_action(
+            &mut self,
+            action: &str,
+            params_json: &[u8],
+            _timeout_ms: u32,
+        ) -> impl std::future::Future<
+            Output = Result<vynkor_sdk::proto::ActionResponse, vynkor_sdk::VynkorError>,
+        > + Send {
+            let data = if action == "secret_get" {
+                serde_json::json!({"found": false})
+            } else {
+                let req: serde_json::Value = serde_json::from_slice(params_json).unwrap();
+                let body: serde_json::Value =
+                    serde_json::from_str(req["body"].as_str().unwrap()).unwrap();
+                self.http_bodies.push(body.clone());
+                let n = match &body["input"] {
+                    serde_json::Value::Array(a) => a.len(),
+                    _ => 1,
+                };
+                // provider answers in REVERSE order, tagged with `index`
+                let data: Vec<_> = (0..n)
+                    .rev()
+                    .map(|i| serde_json::json!({"index": i, "embedding": [i as f32, 1.0]}))
+                    .collect();
+                let provider_body = serde_json::json!({
+                    "data": data, "model": "m", "usage": {"prompt_tokens": 3, "total_tokens": 3}
+                });
+                serde_json::json!({"status": 200, "body": provider_body.to_string(), "body_encoding": "utf8"})
+            };
+            let resp = vynkor_sdk::proto::ActionResponse {
+                status: vynkor_sdk::proto::ActionStatus::ActionOk as i32,
+                data_json: data.to_string().into_bytes(),
+                ..Default::default()
+            };
+            async move { Ok(resp) }
+        }
+    }
+
+    async fn run_embedding(input: serde_json::Value) -> (serde_json::Value, FakeNet) {
+        std::env::set_var(request::ALLOWED_KEY_ENVS_ENV, "EMBED_TEST_KEY");
+        std::env::set_var("EMBED_TEST_KEY", "k");
+        let db = db_with_fixtures();
+        let mut net = FakeNet {
+            http_bodies: Vec::new(),
+        };
+        let params = serde_json::json!({
+            "provider": "openai", "base_url": "http://x/v1", "model": "m",
+            "api_key_env": "EMBED_TEST_KEY", "input": input,
+        });
+        let out = handle_embedding(&mut net, params.to_string().as_bytes(), &db)
+            .await
+            .unwrap();
+        (serde_json::from_slice(&out).unwrap(), net)
+    }
+
+    #[tokio::test]
+    async fn embedding_single_input_unchanged() {
+        let (out, net) = run_embedding(serde_json::json!("hello")).await;
+        assert!(out.get("embedding").is_some());
+        assert!(out.get("embeddings").is_none());
+        assert_eq!(out["dim"], 2);
+        assert_eq!(net.http_bodies[0]["input"], "hello");
+    }
+
+    #[tokio::test]
+    async fn embedding_array_input_one_request() {
+        let (out, net) = run_embedding(serde_json::json!(["a", "b", "c"])).await;
+        assert_eq!(net.http_bodies.len(), 1, "exactly one POST");
+        assert_eq!(
+            net.http_bodies[0]["input"],
+            serde_json::json!(["a", "b", "c"])
+        );
+        assert!(out.get("embedding").is_none());
+        let e = out["embeddings"].as_array().unwrap();
+        assert_eq!(e.len(), 3);
+        // ordered by provider `index`, not by arrival
+        assert_eq!(e[0][0], 0.0);
+        assert_eq!(e[2][0], 2.0);
     }
 }
