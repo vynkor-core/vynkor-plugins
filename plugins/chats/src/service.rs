@@ -64,10 +64,13 @@ impl Service {
                 self.hybrid_search(request::parse(action, params)?).await
             }
             "chat_recall" => {
+                // validate first: a malformed call is an error with or without
+                // the semantic layer
+                let p: RecallParams = request::parse(action, params)?;
                 if !self.cfg.semantic {
                     return Ok(json!({"hits": []}));
                 }
-                self.recall(request::parse(action, params)?).await
+                self.recall(p).await
             }
             _ => {
                 let (action, params, cfg) =
@@ -165,13 +168,36 @@ impl Service {
         if let Some(k) = &p.kind {
             filter.insert("kind".into(), json!(k));
         }
+        // One embedding for both collections, all inside the vector budget.
+        // If embedding is unavailable the vector store embeds the text itself.
+        let started = Instant::now();
+        let budget = Duration::from_millis(self.cfg.search_vec_timeout_ms as u64);
+        let vector: Option<Vec<f32>> = self
+            .rpc
+            .call(
+                "vec_embed",
+                json!({"texts": [clip(&p.query, 2000)]}),
+                self.cfg.search_vec_timeout_ms,
+            )
+            .await
+            .ok()
+            .filter(|v| v["model"] != "fake")
+            .and_then(|v| {
+                v["vectors"][0]
+                    .as_array()
+                    .map(|a| a.iter().map(|x| x.as_f64().unwrap_or(0.0) as f32).collect())
+            });
+        let remaining = budget.saturating_sub(started.elapsed()).as_millis().max(1) as u32;
         let q = |coll: &str| {
-            let mut params = json!({"collection": coll, "text": p.query, "top_k": POOL});
+            let mut params = json!({"collection": coll, "top_k": POOL});
+            match &vector {
+                Some(v) => params["vector"] = json!(v),
+                None => params["text"] = json!(p.query),
+            }
             if !filter.is_empty() {
                 params["filter"] = Value::Object(filter.clone());
             }
-            self.rpc
-                .call("vec_query", params, self.cfg.search_vec_timeout_ms)
+            self.rpc.call("vec_query", params, remaining)
         };
         let (t, s) = tokio::join!(q(TURNS), q(SESSIONS));
         let (from, to, kind) = (p.from, p.to, p.kind.clone());
@@ -213,6 +239,8 @@ impl Service {
         .unwrap_or_default()
     }
 
+    /// Model of the `chats-sessions` collection (`Some("")` = empty collection),
+    /// cached for [`MODEL_TTL`]; `None` if `vector-db` could not say.
     async fn recall_model(&self) -> Option<String> {
         if let Some((at, m)) = &*self.model.lock().unwrap() {
             if at.elapsed() < MODEL_TTL {
@@ -229,9 +257,6 @@ impl Service {
             .await
             .ok()?;
         let m = v["model"].as_str().unwrap_or("").to_string();
-        if m.is_empty() {
-            return None; // empty collection / unknown model: nothing to compare
-        }
         *self.model.lock().unwrap() = Some((Instant::now(), m.clone()));
         Some(m)
     }
@@ -245,7 +270,7 @@ impl Service {
             return empty;
         }
         match self.recall_model().await {
-            Some(m) if m == p.model => {}
+            Some(m) if !m.is_empty() && m == p.model => {}
             _ => return empty,
         }
         let top_k = p.top_k.unwrap_or(3).clamp(1, 10);
@@ -258,7 +283,11 @@ impl Service {
                 self.cfg.search_vec_timeout_ms.max(2000),
             )
             .await;
-        let Ok(r) = r else { return empty };
+        let Ok(r) = r else {
+            // the collection may have been re-embedded or vector-db restarted
+            *self.model.lock().unwrap() = None;
+            return empty;
+        };
         let cands: Vec<(String, f64)> = r["results"]
             .as_array()
             .map(|a| {
@@ -579,6 +608,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(r, json!({"hits": []}));
+    }
+
+    #[tokio::test]
+    async fn search_embeds_the_query_once_and_falls_back_to_text() {
+        let f = Fixture::new();
+        f.fake.synonym("forecast", "weather");
+        let s1 = f.session("lap", "chat", T0);
+        f.turn(&s1, "forecast", "rain", T0);
+        f.worker.run_once(T0 + 1).await;
+        let s = svc(&f);
+        assert_eq!(search(&s, "weather").await.len(), 1);
+        assert_eq!(f.fake.calls("vec_embed").len(), 1);
+        let q = f.fake.calls("vec_query");
+        assert_eq!(q.len(), 2);
+        assert!(q
+            .iter()
+            .all(|p| p["vector"].is_array() && p.get("text").is_none()));
+        // embedding unavailable: the text goes to vec_query instead
+        f.fake.set_action_failing("vec_embed", true);
+        assert_eq!(search(&s, "weather").await.len(), 1, "still found via text");
+        let q = f.fake.calls("vec_query");
+        assert_eq!(q.len(), 4);
+        assert!(q[2..]
+            .iter()
+            .all(|p| p["text"] == "weather" && p.get("vector").is_none()));
+    }
+
+    #[tokio::test]
+    async fn recall_params_are_validated_even_when_semantic_is_off() {
+        let f = Fixture::with_config(|c| c.semantic = false);
+        let s = svc(&f);
+        let e = s
+            .handle(
+                "chat_recall",
+                br#"{"vector":[1.0],"model":"m","bogus":1}"#,
+                T0,
+            )
+            .await
+            .unwrap_err();
+        assert!(e.contains("invalid params"), "{e}");
+        let e = s.handle("chat_recall", b"{}", T0).await.unwrap_err();
+        assert!(e.contains("invalid params"), "{e}");
+        let ok = s
+            .handle("chat_recall", br#"{"vector":[1.0],"model":"m"}"#, T0)
+            .await
+            .unwrap();
+        assert_eq!(ok, json!({"hits": []}));
+        assert_eq!(f.fake.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn recall_model_cache_hits_once_and_resets_on_vec_query_error() {
+        let (f, _s1, _s2) = recall_fixture().await;
+        let s = svc(&f);
+        let p = recall_params(&f, "weather sunny today", json!({}));
+        for _ in 0..3 {
+            s.handle("chat_recall", &p, T0).await.unwrap();
+        }
+        assert_eq!(f.fake.calls("vec_stats").len(), 1, "model cached");
+        f.fake.set_action_failing("vec_query", true);
+        let r = s.handle("chat_recall", &p, T0).await.unwrap();
+        assert_eq!(r, json!({"hits": []}));
+        f.fake.set_action_failing("vec_query", false);
+        let r = s.handle("chat_recall", &p, T0).await.unwrap();
+        assert_eq!(r["hits"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            f.fake.calls("vec_stats").len(),
+            2,
+            "cache dropped after the error"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_collection_model_is_cached_too() {
+        let f = Fixture::new();
+        let s = svc(&f);
+        let p = serde_json::to_vec(&json!({"vector": [1.0, 0.0], "model": EMBED_MODEL})).unwrap();
+        for _ in 0..3 {
+            let r = s.handle("chat_recall", &p, T0).await.unwrap();
+            assert_eq!(r, json!({"hits": []}));
+        }
+        assert_eq!(f.fake.calls("vec_stats").len(), 1);
+        assert!(f.fake.calls("vec_query").is_empty());
     }
 
     /// Run with: cargo test --release --manifest-path plugins/chats/Cargo.toml -- --ignored --nocapture hybrid_search_20k

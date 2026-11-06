@@ -5,6 +5,7 @@ use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
 use crate::db::with_db;
+use crate::rpc::is_missing_plugin;
 use crate::worker::Worker;
 
 pub const TURNS: &str = "chats-turns";
@@ -147,44 +148,121 @@ fn mark_sessions(conn: &mut Connection, docs: &[SessionDoc]) -> Result<Vec<Strin
     Ok(dead)
 }
 
+/// After this many individual failures a turn is given up (`embedded = -1`).
+const MAX_DOC_ATTEMPTS: i64 = 3;
+
+fn payload(docs: &[TurnDoc]) -> Vec<Value> {
+    docs.iter()
+        .map(|d| json!({"id": d.id, "text": d.text, "metadata": d.meta}))
+        .collect()
+}
+
+/// A document the vector store rejected on its own: count the attempt and
+/// stop retrying it after [`MAX_DOC_ATTEMPTS`] so it cannot block the queue.
+fn bump_attempts(conn: &mut Connection, docs: &[TurnDoc]) -> Result<(), String> {
+    let tx = conn.transaction().map_err(db_err)?;
+    for d in docs {
+        tx.execute(
+            "UPDATE turns SET embed_attempts = embed_attempts + 1,
+                 embedded = CASE WHEN embed_attempts + 1 >= ?1 THEN -1 ELSE embedded END
+             WHERE id = ?2",
+            params![MAX_DOC_ATTEMPTS, d.id],
+        )
+        .map_err(db_err)?;
+    }
+    tx.commit().map_err(db_err)
+}
+
 impl Worker {
-    /// Embed pending turns and session summaries. A missing `vector-db`
-    /// leaves everything pending for the next pass.
+    /// Embed pending turns and session summaries. The two halves are
+    /// independent: a failing turn batch never skips the summaries.
     pub(crate) async fn embed_pass(&self) {
+        self.embed_turns().await;
+        self.embed_sessions().await;
+    }
+
+    async fn embed_turns(&self) {
         let docs = match with_db(&self.db, |c| pending_turns(c)).await {
             Ok(Ok(d)) => d,
-            Ok(Err(e)) | Err(e) => return self.warn_once("embed-db", &e),
+            Ok(Err(e)) | Err(e) => {
+                self.warn("db", &e);
+                return;
+            }
         };
-        if !docs.is_empty() {
-            let payload: Vec<Value> = docs
-                .iter()
-                .map(|d| json!({"id": d.id, "text": d.text, "metadata": d.meta}))
-                .collect();
-            let r = self
-                .rpc
-                .call(
-                    "vec_upsert_batch",
-                    json!({"collection": TURNS, "docs": payload}),
-                    60_000,
-                )
-                .await;
-            if let Err(e) = r {
-                return self.warn_once("embed-vector-db", &e);
-            }
-            let dead = with_db(&self.db, move |c| match mark_turns(c, &docs) {
-                Ok(dead) => dead
-                    .into_iter()
-                    .try_for_each(|(sid, ids)| crate::cascade::requeue(c, &sid, &ids)),
-                Err(e) => Err(e),
-            })
-            .await;
-            if let Ok(Err(e)) | Err(e) = dead {
-                return self.warn_once("embed-db", &e);
-            }
+        if docs.is_empty() {
+            return;
         }
+        let batch = self
+            .rpc
+            .call(
+                "vec_upsert_batch",
+                json!({"collection": TURNS, "docs": payload(&docs)}),
+                60_000,
+            )
+            .await;
+        let (good, bad) = match batch {
+            Ok(_) => {
+                self.ok("vector-db");
+                (docs, Vec::new())
+            }
+            Err(e) if is_missing_plugin(&e) => {
+                self.warn("vector-db", &e);
+                return;
+            }
+            Err(e) => {
+                // One bad document fails the whole batch. If vector-db answers a
+                // cheap probe the backend is fine: retry document by document.
+                self.warn("vector-db", &e);
+                if self
+                    .rpc
+                    .call("vec_stats", json!({"collection": TURNS}), 5_000)
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                let mut good = Vec::new();
+                let mut bad = Vec::new();
+                for d in docs {
+                    let one = self
+                        .rpc
+                        .call(
+                            "vec_upsert_batch",
+                            json!({"collection": TURNS, "docs": payload(std::slice::from_ref(&d))}),
+                            30_000,
+                        )
+                        .await;
+                    match one {
+                        Ok(_) => good.push(d),
+                        Err(e) => {
+                            self.warn("vector-db-doc", &format!("document {} rejected: {e}", d.id));
+                            bad.push(d);
+                        }
+                    }
+                }
+                (good, bad)
+            }
+        };
+        let r = with_db(&self.db, move |c| {
+            bump_attempts(c, &bad)?;
+            let dead = mark_turns(c, &good)?;
+            dead.into_iter()
+                .try_for_each(|(sid, ids)| crate::cascade::requeue(c, &sid, &ids))
+        })
+        .await;
+        if let Ok(Err(e)) | Err(e) = r {
+            self.warn("db", &e);
+        }
+        self.kick_cleanup(); // a session may have died meanwhile
+    }
+
+    async fn embed_sessions(&self) {
         let sdocs = match with_db(&self.db, |c| pending_sessions(c)).await {
             Ok(Ok(d)) => d,
-            Ok(Err(e)) | Err(e) => return self.warn_once("embed-db", &e),
+            Ok(Err(e)) | Err(e) => {
+                self.warn("db", &e);
+                return;
+            }
         };
         if sdocs.is_empty() {
             return;
@@ -202,8 +280,10 @@ impl Worker {
             )
             .await
         {
-            return self.warn_once("embed-vector-db", &e);
+            self.warn("vector-db", &e);
+            return;
         }
+        self.ok("vector-db");
         let dead = with_db(&self.db, move |c| {
             let dead = mark_sessions(c, &sdocs)?;
             for sid in dead {
@@ -213,7 +293,7 @@ impl Worker {
         })
         .await;
         if let Ok(Err(e)) | Err(e) = dead {
-            self.warn_once("embed-db", &e);
+            self.warn("db", &e);
         }
     }
 }
@@ -277,5 +357,79 @@ mod tests {
         f.worker.run_once(T0).await;
         let n: i64 = f.q("SELECT count(*) FROM turns WHERE embedded=0", []);
         assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn poison_document_does_not_block_the_queue() {
+        let f = Fixture::new();
+        let sid = f.session("lap", "chat", T0);
+        let a = f.turn(&sid, "first", "ok", T0);
+        let bad = f.turn(&sid, "poison", "doc", T0 + 1);
+        let c = f.turn(&sid, "third", "ok", T0 + 2);
+        f.fake.poison_doc(&bad);
+        f.worker.run_work(T0 + 10).await;
+        let mut good = vec![a, c.clone()];
+        good.sort();
+        assert_eq!(
+            f.fake.doc_ids("chats-turns"),
+            good,
+            "good docs stored one by one"
+        );
+        let (emb, att): (i64, i64) = f.q2(
+            "SELECT embedded, embed_attempts FROM turns WHERE id=?",
+            &bad,
+        );
+        assert_eq!((emb, att), (0, 1));
+        // newer turns are not held up behind it
+        let d = f.turn(&sid, "fourth", "ok", T0 + 3);
+        f.worker.run_work(T0 + 10).await;
+        assert!(f.fake.doc_ids("chats-turns").contains(&d));
+        // after three rejections it is given up
+        f.worker.run_work(T0 + 10).await;
+        let (emb, att): (i64, i64) = f.q2(
+            "SELECT embedded, embed_attempts FROM turns WHERE id=?",
+            &bad,
+        );
+        assert_eq!((emb, att), (-1, 3));
+        let calls = f.fake.calls("vec_upsert_batch").len();
+        f.worker.run_work(T0 + 10).await;
+        assert_eq!(
+            f.fake.calls("vec_upsert_batch").len(),
+            calls,
+            "nothing left to try"
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_outage_does_not_burn_document_attempts() {
+        let f = Fixture::new();
+        let sid = f.session("lap", "chat", T0);
+        let t = f.turn(&sid, "hello", "world", T0);
+        f.fake.set_failing("vector-db", true);
+        for _ in 0..5 {
+            f.worker.run_work(T0 + 10).await;
+        }
+        let (emb, att): (i64, i64) =
+            f.q2("SELECT embedded, embed_attempts FROM turns WHERE id=?", &t);
+        assert_eq!((emb, att), (0, 0));
+        f.fake.set_failing("vector-db", false);
+        f.worker.run_work(T0 + 10).await;
+        assert_eq!(f.fake.doc_ids("chats-turns"), vec![t]);
+    }
+
+    #[tokio::test]
+    async fn failing_turn_batch_does_not_skip_session_summaries() {
+        let f = Fixture::new();
+        let sid = f.session("lap", "chat", T0);
+        let bad = f.turn(&sid, "poison", "doc", T0);
+        f.lock()
+            .execute(
+                "UPDATE sessions SET title='T', summary='weather talk', summarized_rev=rev WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
+        f.fake.poison_doc(&bad);
+        f.worker.run_work(T0 + 10).await;
+        assert_eq!(f.fake.doc_ids("chats-sessions"), vec![sid]);
     }
 }

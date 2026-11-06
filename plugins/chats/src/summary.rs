@@ -13,6 +13,8 @@ pub const PROMPT: &str = "Summarize this conversation for later search. Reply wi
 /// Sessions summarized per worker pass.
 const BATCH: usize = 5;
 const TRANSCRIPT_MAX_CHARS: usize = 12_000;
+/// A session whose summary call failed is not retried for this long.
+const SESSION_RETRY_MS: i64 = 5 * 60 * 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Summary {
@@ -88,7 +90,11 @@ struct Candidate {
     transcript: String,
 }
 
-fn candidates(conn: &Connection, idle_before: i64) -> Result<Vec<Candidate>, String> {
+fn candidates(
+    conn: &Connection,
+    idle_before: i64,
+    skip: &std::collections::HashSet<String>,
+) -> Result<Vec<Candidate>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, rev FROM sessions
@@ -97,12 +103,17 @@ fn candidates(conn: &Connection, idle_before: i64) -> Result<Vec<Candidate>, Str
         )
         .map_err(db_err)?;
     let rows: Vec<(String, i64)> = stmt
-        .query_map(params![idle_before, BATCH as i64], |r| {
+        .query_map(params![idle_before, (BATCH + skip.len()) as i64], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()
         .map_err(db_err)?;
+    let rows: Vec<(String, i64)> = rows
+        .into_iter()
+        .filter(|(id, _)| !skip.contains(id))
+        .take(BATCH)
+        .collect();
     let mut out = Vec::new();
     for (id, rev) in rows {
         let turns: Vec<(String, String)> = conn
@@ -195,14 +206,20 @@ impl Worker {
     /// synced changed.
     pub(crate) async fn summarize_pass(&self, now: i64) -> bool {
         let idle_before = now - self.cfg.summary_idle_secs.saturating_mul(1000);
-        let cands = match with_db(&self.db, move |c| candidates(c, idle_before)).await {
+        let skip: std::collections::HashSet<String> = {
+            let mut m = self.summary_retry_at.lock().unwrap();
+            m.retain(|_, until| *until > now);
+            m.keys().cloned().collect()
+        };
+        let cands = match with_db(&self.db, move |c| candidates(c, idle_before, &skip)).await {
             Ok(Ok(c)) => c,
             Ok(Err(e)) | Err(e) => {
-                self.warn_once("summary-db", &e);
+                self.warn("db", &e);
                 return false;
             }
         };
         let mut changed = false;
+        let mut consecutive_errors = 0;
         for cand in cands {
             let mut params = json!({
                 "messages": [{"role": "user", "content": format!("{PROMPT}\n\n{}", cand.transcript)}],
@@ -214,19 +231,29 @@ impl Worker {
             let reply = self.rpc.call("chat_completion", params, 60_000).await;
             let parsed = match reply {
                 Ok(v) => {
+                    self.ok("ai");
+                    consecutive_errors = 0;
                     let p = v["content"].as_str().and_then(parse_summary);
                     if p.is_none() {
-                        self.warn_once("summary-parse", "ai reply was not a usable summary");
+                        self.warn("ai-reply", "ai reply was not a usable summary");
                     }
                     p
                 }
                 Err(e) => {
-                    self.warn_once("summary-ai", &e);
-                    if crate::rpc::is_missing_plugin(&e) {
-                        // no `ai` installed: stop for this pass, retry next tick
+                    // Timeout, 429, 5xx, plugin missing: nothing is recorded, the
+                    // session stays a candidate. Only an unusable *reply* counts
+                    // as processed. Back off this session and give up on the
+                    // pass once `ai` fails twice in a row.
+                    self.warn("ai", &e);
+                    self.summary_retry_at
+                        .lock()
+                        .unwrap()
+                        .insert(cand.id.clone(), now + SESSION_RETRY_MS);
+                    consecutive_errors += 1;
+                    if consecutive_errors >= 2 || crate::rpc::is_missing_plugin(&e) {
                         return changed;
                     }
-                    None
+                    continue;
                 }
             };
             let id = cand.id.clone();
@@ -234,7 +261,9 @@ impl Worker {
             match with_db(&self.db, move |c| apply(c, &id, rev, parsed.as_ref())).await {
                 Ok(Ok(true)) => changed = true,
                 Ok(Ok(false)) => {}
-                Ok(Err(e)) | Err(e) => self.warn_once("summary-db", &e),
+                Ok(Err(e)) | Err(e) => {
+                    self.warn("db", &e);
+                }
             }
         }
         changed
@@ -410,6 +439,47 @@ mod tests {
         let (rev, sum_rev): (i64, i64) =
             f.q2("SELECT rev, summarized_rev FROM sessions WHERE id=?", &sid);
         assert!(sum_rev < rev, "new turn must trigger another summary");
+    }
+
+    #[tokio::test]
+    async fn ai_transport_error_is_retried_not_marked_processed() {
+        let f = Fixture::new();
+        let (sid, later) = setup(&f);
+        f.fake.script_completion(Err("429 rate limited"));
+        f.worker.run_once(later).await;
+        let (rev, sum_rev, summary): (i64, i64, String) = f.q2(
+            "SELECT rev, summarized_rev, summary FROM sessions WHERE id=?",
+            &sid,
+        );
+        assert_eq!(
+            (sum_rev, summary.as_str()),
+            (0, ""),
+            "rev {rev} must stay pending"
+        );
+        // next tick (after the short per-session backoff) summarizes it
+        f.fake.script_completion(Ok(REPLY));
+        f.worker.run_once(later + SESSION_RETRY_MS + 1).await;
+        let (title, sum_rev, rev): (String, i64, i64) = f.q2(
+            "SELECT title, summarized_rev, rev FROM sessions WHERE id=?",
+            &sid,
+        );
+        assert_eq!(title, "Weather in Tashkent");
+        assert_eq!(sum_rev, rev);
+    }
+
+    #[tokio::test]
+    async fn failing_session_does_not_starve_others() {
+        let f = Fixture::new();
+        let (a, later) = setup(&f);
+        let b = f.session("pc", "chat", T0);
+        f.turn(&b, "second", "chat", T0 + 1);
+        f.fake.script_completion(Err("500"));
+        f.fake.script_completion(Ok(REPLY));
+        f.worker.run_once(later).await;
+        let sa: i64 = f.q("SELECT summarized_rev FROM sessions WHERE id=?", [&a]);
+        let sb: i64 = f.q("SELECT summarized_rev FROM sessions WHERE id=?", [&b]);
+        assert_eq!(sa, 0);
+        assert!(sb > 0, "the next session is still summarized");
     }
 
     #[tokio::test]

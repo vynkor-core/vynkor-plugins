@@ -43,6 +43,10 @@ pub struct St {
     pub model: String,
     pub synonyms: HashMap<String, String>,
     pub hooks: HashMap<String, Hook>,
+    /// Document ids `vec_upsert_batch` rejects (the whole batch fails).
+    pub poison: HashSet<String>,
+    /// Single actions that answer with an error.
+    pub failing_actions: HashSet<String>,
 }
 
 #[derive(Clone)]
@@ -111,6 +115,22 @@ impl FakeKernel {
                 s.failing.insert(plugin);
             } else {
                 s.failing.remove(plugin);
+            }
+        });
+    }
+
+    pub fn poison_doc(&self, id: &str) {
+        self.with(|s| {
+            s.poison.insert(id.to_string());
+        });
+    }
+
+    pub fn set_action_failing(&self, action: &str, on: bool) {
+        self.with(|s| {
+            if on {
+                s.failing_actions.insert(action.to_string());
+            } else {
+                s.failing_actions.remove(action);
             }
         });
     }
@@ -201,7 +221,7 @@ impl FakeKernel {
         if missing {
             return Err("action not found".into());
         }
-        if failing {
+        if failing || self.with(|s| s.failing_actions.contains(action)) {
             return Err(format!("{plugin} backend unavailable"));
         }
         match action {
@@ -214,6 +234,14 @@ impl FakeKernel {
                 let coll = params["collection"].as_str().unwrap_or("").to_string();
                 let docs = params["docs"].as_array().cloned().unwrap_or_default();
                 let n = docs.len();
+                let bad = self.with(|s| {
+                    docs.iter()
+                        .find(|d| s.poison.contains(d["id"].as_str().unwrap_or("")))
+                        .map(|d| d["id"].as_str().unwrap_or("").to_string())
+                });
+                if let Some(id) = bad {
+                    return Err(format!("invalid document {id}"));
+                }
                 for d in docs {
                     let id = d["id"].as_str().unwrap_or("").to_string();
                     let text = d["text"].as_str().unwrap_or("").to_string();
@@ -231,6 +259,14 @@ impl FakeKernel {
                     });
                 }
                 Ok(json!({"ok": true, "count": n, "dim": DIM}))
+            }
+            "vec_embed" => {
+                let texts = params["texts"].as_array().cloned().unwrap_or_default();
+                let vectors: Vec<Vec<f32>> = texts
+                    .iter()
+                    .map(|t| self.embed(t.as_str().unwrap_or("")))
+                    .collect();
+                Ok(json!({"vectors": vectors, "model": self.with(|s| s.model.clone()), "dim": DIM}))
             }
             "vec_query" => {
                 let coll = params["collection"].as_str().unwrap_or("");

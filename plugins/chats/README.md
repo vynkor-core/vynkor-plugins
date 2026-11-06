@@ -78,11 +78,18 @@ restarting, so its steps stay queued and are retried indefinitely.
 - **Vectors.** Turns of `tier = full` sessions go to `chats-turns`
   (`"Q: ...\nA: ..."`, <= 2000 chars), summaries to `chats-sessions`
   (`title\nsummary`), metadata `{session_id, kind, at}`.
-- **Hybrid `chat_search`.** FTS top 50 plus vector top 50 over turns and
+- **Worker lanes.** Summaries and embeddings run in one lane, the delete
+  cascade and sweep in another, so a hung `ai` never delays deletions. A cascade
+  or sweep pass has a 60 s budget and stops calling a plugin after its first
+  failure. A turn that `vector-db` rejects on its own is retried 3 times and
+  then skipped.
+- **Hybrid `chat_search`.** The query is embedded once (`vec_embed`, falling
+  back to text). FTS top 50 plus vector top 50 over turns and
   summaries, merged by reciprocal rank fusion (`score = sum 1/(60+rank)`).
   Vector hits of deleted sessions are dropped; a slow or failing
   `vector-db` degrades to the FTS result inside `CHATS_SEARCH_VEC_TIMEOUT_MS`.
-  A hit on a session summary has `turn_id: null`. With `CHATS_SEMANTIC=off`
+  A hit on a session summary has `turn_id: null`. Known limit: `from`/`to`
+  are applied after the vector query, so a narrow range can return fewer vector hits. With `CHATS_SEMANTIC=off`
   the C1 scoring (`-bm25`) is used.
 - **`chat_recall`.** Similar past sessions for a ready-made vector (used by
   the agent). `model` must equal the model of the `chats-sessions` collection

@@ -38,20 +38,28 @@ impl Rpc {
     ) -> Result<Value, String> {
         let params_json = serde_json::to_vec(&params)
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(RpcCall {
-                action: action.to_string(),
-                params_json,
-                timeout_ms,
-                reply,
-            })
-            .await
-            .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
-        match tokio::time::timeout(Duration::from_millis(effective as u64), rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err(format!("{action} aborted: serve loop is shutting down")),
+        let (reply, rx) = oneshot::channel();
+        let call = RpcCall {
+            action: action.to_string(),
+            params_json,
+            timeout_ms,
+            reply,
+        };
+        // Handing the call to the serve loop (its channel can be full while the
+        // loop is busy) is part of the same deadline as waiting for the answer.
+        let round_trip = async {
+            self.tx
+                .send(call)
+                .await
+                .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
+            match rx.await {
+                Ok(result) => result,
+                Err(_) => Err(format!("{action} aborted: serve loop is shutting down")),
+            }
+        };
+        match tokio::time::timeout(Duration::from_millis(effective as u64), round_trip).await {
+            Ok(result) => result,
             Err(_) => Err(format!("{action} timed out after {effective} ms")),
         }
     }
@@ -203,6 +211,22 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e, "vec_stats timed out after 100 ms");
+        assert!(t.elapsed() < Duration::from_millis(1000));
+    }
+
+    #[tokio::test]
+    async fn rpc_send_is_within_the_deadline() {
+        // nobody drains the channel: the second call cannot even be handed over
+        let (tx, _rx) = mpsc::channel::<RpcCall>(1);
+        let rpc = Rpc::new(tx);
+        let first = rpc.clone();
+        tokio::spawn(async move {
+            let _ = first.call("a", serde_json::json!({}), 5_000).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let t = std::time::Instant::now();
+        let e = rpc.call("b", serde_json::json!({}), 100).await.unwrap_err();
+        assert_eq!(e, "b timed out after 100 ms");
         assert!(t.elapsed() < Duration::from_millis(1000));
     }
 }

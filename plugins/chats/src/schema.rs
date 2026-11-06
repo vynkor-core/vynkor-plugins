@@ -63,11 +63,13 @@ INSERT OR IGNORE INTO meta(key, value) VALUES ('rev', 0);
 
 /// v2 (semantic layer): worker bookkeeping columns plus the delete-cascade
 /// queue (`cascade`) and the late-vector sweep list (`swept`).
-const SCHEMA_V2_COLUMNS: [(&str, &str, &str); 4] = [
+const SCHEMA_V2_COLUMNS: [(&str, &str, &str); 5] = [
     ("sessions", "summarized_rev", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "title_manual", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "embedded_rev", "INTEGER NOT NULL DEFAULT 0"),
+    // 0 = pending, 1 = done, -1 = given up after repeated rejections
     ("turns", "embedded", "INTEGER NOT NULL DEFAULT 0"),
+    ("turns", "embed_attempts", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 const SCHEMA_V2_TABLES: &str = "
@@ -106,7 +108,19 @@ fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"))?;
         }
     }
-    conn.execute_batch(SCHEMA_V2_TABLES)
+    conn.execute_batch(SCHEMA_V2_TABLES)?;
+    // C1 only hid deleted sessions; nothing cleaned up after them. Queue
+    // their cleanup now (turns are normally gone already, so the vector and
+    // fact steps are what matter).
+    conn.execute_batch(
+        "INSERT OR IGNORE INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
+         SELECT s.id,
+                COALESCE((SELECT json_group_array(t.id) FROM turns t WHERE t.session_id = s.id), '[]'),
+                COALESCE((SELECT json_group_array(DISTINCT t.goal_id) FROM turns t
+                           WHERE t.session_id = s.id AND t.goal_id IS NOT NULL AND t.goal_id != ''), '[]'),
+                0, 0, '[]'
+         FROM sessions s WHERE s.state = 'deleting'",
+    )
 }
 
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -239,6 +253,52 @@ mod tests {
         // reopening a v2 file is a no-op
         drop(c);
         assert!(open(&p).is_ok());
+    }
+
+    /// Sessions that C1 already deleted (state `deleting`) get their cleanup
+    /// queued by the migration; live ones do not.
+    #[test]
+    fn migration_queues_cascade_for_deleting_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("chats.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(SCHEMA_V1).unwrap();
+            c.execute_batch(
+                "INSERT INTO sessions(id, kind, device, started_at, last_at, rev, turns, state)
+                   VALUES('dead','chat','lap',1,2,5,0,'deleting'),
+                         ('dead2','chat','lap',1,2,6,1,'deleting'),
+                         ('alive','chat','lap',1,2,7,1,'live');
+                 INSERT INTO turns(id, session_id, seq, at, user_text, answer_text, status, goal_id, rev)
+                   VALUES('t1','dead2',1,2,'a','b','ok','g9',6),
+                         ('t2','alive',1,2,'a','b','ok','g1',7);",
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", 1).unwrap();
+        }
+        let c = open(&p).unwrap();
+        let rows: Vec<(String, String, String, i64)> = c
+            .prepare(
+                "SELECT session_id, turn_ids, goal_ids, next_at FROM cascade ORDER BY session_id",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("dead".into(), "[]".into(), "[]".into(), 0),
+                ("dead2".into(), r#"["t1"]"#.into(), r#"["g9"]"#.into(), 0),
+            ]
+        );
+        drop(c);
+        let c = open(&p).unwrap();
+        let n: i64 = c
+            .query_row("SELECT count(*) FROM cascade", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "reopening does not requeue");
     }
 
     #[test]

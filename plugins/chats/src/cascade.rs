@@ -7,7 +7,6 @@ use serde_json::json;
 
 use crate::db::with_db;
 use crate::embed::{SESSIONS, TURNS};
-use crate::rpc::is_missing_plugin;
 use crate::worker::Worker;
 
 const SWEEP_EVERY_MS: i64 = 24 * 3600 * 1000;
@@ -131,113 +130,139 @@ fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<(), String> {
     tx.commit().map_err(db_err)
 }
 
+/// Remember finished steps. `backoff` = a step failed: count the attempt and
+/// schedule the retry; otherwise (pass ran out of budget) the job stays due.
 fn save_progress(
     conn: &Connection,
     job: &Job,
     done: &HashSet<String>,
     now: i64,
+    backoff: bool,
 ) -> Result<(), String> {
     let mut d: Vec<&String> = done.iter().collect();
     d.sort();
+    let (attempts, next_at) = if backoff {
+        (job.attempts + 1, now + backoff_ms(job.attempts + 1))
+    } else {
+        (job.attempts, 0)
+    };
     conn.execute(
         "UPDATE cascade SET attempts = ?, next_at = ?, done = ? WHERE session_id = ?",
-        params![
-            job.attempts + 1,
-            now + backoff_ms(job.attempts + 1),
-            json!(d).to_string(),
-            job.session_id
-        ],
+        params![attempts, next_at, json!(d).to_string(), job.session_id],
     )
     .map_err(db_err)?;
     Ok(())
+}
+
+type Step = (String, &'static str, &'static str, serde_json::Value);
+
+fn steps_of(job: &Job) -> Vec<Step> {
+    let mut steps: Vec<Step> = Vec::new();
+    for t in &job.turn_ids {
+        steps.push((
+            format!("t:{t}"),
+            "vector-db",
+            "vec_delete",
+            json!({"collection": TURNS, "id": t}),
+        ));
+    }
+    steps.push((
+        "s".into(),
+        "vector-db",
+        "vec_delete",
+        json!({"collection": SESSIONS, "id": job.session_id}),
+    ));
+    for g in &job.goal_ids {
+        steps.push((format!("g:{g}"), "agent", "goal_delete", json!({"id": g})));
+    }
+    steps.push((
+        "m".into(),
+        "agent",
+        "memory_forget_session",
+        json!({"session_id": job.session_id}),
+    ));
+    steps
 }
 
 impl Worker {
     /// Run due cascade jobs. Every step is idempotent and remembered in
     /// `done`; a step whose plugin is missing or failing stays open and the
     /// job is retried with backoff, indefinitely (a restarting plugin must not
-    /// make the deletion get dropped). Returns true if a session row went away.
+    /// make the deletion get dropped). A plugin that fails once is not called
+    /// again in this pass, and the pass stops after its wall-clock budget, so
+    /// a sick plugin costs one timeout, not one per id. Returns true if a
+    /// session row went away.
     pub(crate) async fn cascade_pass(&self, now: i64) -> bool {
         let jobs = match with_db(&self.db, move |c| due_jobs(c, now)).await {
             Ok(Ok(j)) => j,
             Ok(Err(e)) | Err(e) => {
-                self.warn_once("cascade-db", &e);
+                self.warn("db", &e);
                 return false;
             }
         };
+        let started = std::time::Instant::now();
+        let budget = self.pass_budget();
+        let mut down: HashSet<&'static str> = HashSet::new();
         let mut finished = false;
+        // at least one call per pass, whatever the budget: progress is guaranteed
+        let mut calls = 0u32;
         for job in jobs {
+            if calls > 0 && started.elapsed() >= budget {
+                break; // the rest stays due for the next pass
+            }
             let mut done = job.done.clone();
             let mut failed = false;
-            let mut down: HashSet<&'static str> = HashSet::new();
-            let mut steps: Vec<(String, &'static str, &'static str, serde_json::Value)> =
-                Vec::new();
-            for t in &job.turn_ids {
-                steps.push((
-                    format!("t:{t}"),
-                    "vector-db",
-                    "vec_delete",
-                    json!({"collection": TURNS, "id": t}),
-                ));
-            }
-            steps.push((
-                "s".into(),
-                "vector-db",
-                "vec_delete",
-                json!({"collection": SESSIONS, "id": job.session_id}),
-            ));
-            for g in &job.goal_ids {
-                steps.push((format!("g:{g}"), "agent", "goal_delete", json!({"id": g})));
-            }
-            steps.push((
-                "m".into(),
-                "agent",
-                "memory_forget_session",
-                json!({"session_id": job.session_id}),
-            ));
-            for (key, plugin, action, params) in steps {
-                if done.contains(&key) || down.contains(plugin) {
-                    if !done.contains(&key) {
-                        failed = true;
-                    }
+            let mut out_of_budget = false;
+            for (key, plugin, action, params) in steps_of(&job) {
+                if done.contains(&key) {
                     continue;
                 }
+                if down.contains(plugin) {
+                    failed = true;
+                    continue;
+                }
+                if calls > 0 && started.elapsed() >= budget {
+                    out_of_budget = true;
+                    continue;
+                }
+                calls += 1;
                 match self.rpc.call(action, params, 30_000).await {
                     Ok(_) => {
+                        self.ok(plugin);
                         done.insert(key);
                     }
                     // A missing plugin may only be restarting: its data is not
                     // known to be gone, so the step stays open (fail closed).
-                    Err(e) if is_missing_plugin(&e) => {
-                        self.warn_once(plugin, &e);
-                        down.insert(plugin);
-                        failed = true;
-                    }
                     Err(e) => {
-                        self.warn_once("cascade-step", &e);
+                        self.warn(plugin, &e);
                         down.insert(plugin);
                         failed = true;
                     }
                 }
             }
+            let incomplete = failed || out_of_budget;
             let r = with_db(&self.db, move |c| {
-                if failed {
-                    save_progress(c, &job, &done, now)
+                if incomplete {
+                    save_progress(c, &job, &done, now, failed)
                 } else {
                     finish(c, &job, now)
                 }
-                .map(|_| !failed)
+                .map(|_| !incomplete)
             })
             .await;
             match r {
                 Ok(Ok(ok)) => finished |= ok,
-                Ok(Err(e)) | Err(e) => self.warn_once("cascade-db", &e),
+                Ok(Err(e)) | Err(e) => {
+                    self.warn("db", &e);
+                }
             }
         }
         finished
     }
 
     /// Once a day repeat the vector deletes of recently finished cascades.
+    /// Stops at the first failure or when the budget is spent; the rows stay
+    /// and the next tick starts again.
     pub(crate) async fn sweep_pass(&self, now: i64) {
         let due = with_db(&self.db, move |c| {
             let last: Option<i64> = c
@@ -250,16 +275,10 @@ impl Worker {
                 return Ok(None);
             }
             let mut stmt = c
-                .prepare("SELECT session_id, turn_ids, until FROM swept")
+                .prepare("SELECT session_id, turn_ids FROM swept")
                 .map_err(db_err)?;
             let rows = stmt
-                .query_map([], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, i64>(2)?,
-                    ))
-                })
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .map_err(db_err)?
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .map_err(db_err)?;
@@ -269,35 +288,35 @@ impl Worker {
         let rows = match due {
             Ok(Ok(Some(r))) => r,
             Ok(Ok(None)) => return,
-            Ok(Err(e)) | Err(e) => return self.warn_once("sweep-db", &e),
+            Ok(Err(e)) | Err(e) => {
+                self.warn("db", &e);
+                return;
+            }
         };
-        let mut ok = true;
-        for (sid, turn_ids, _) in &rows {
+        let started = std::time::Instant::now();
+        let budget = self.pass_budget();
+        let mut swept_calls = 0u32;
+        for (sid, turn_ids) in &rows {
             let ids: Vec<String> = serde_json::from_str(turn_ids).unwrap_or_default();
             let mut calls = vec![(SESSIONS, sid.clone())];
             calls.extend(ids.into_iter().map(|t| (TURNS, t)));
             for (coll, id) in calls {
+                if swept_calls > 0 && started.elapsed() >= budget {
+                    return;
+                }
+                swept_calls += 1;
                 match self
                     .rpc
                     .call("vec_delete", json!({"collection": coll, "id": id}), 30_000)
                     .await
                 {
-                    Ok(_) => {}
+                    Ok(_) => self.ok("vector-db"),
                     Err(e) => {
-                        let key = if is_missing_plugin(&e) {
-                            "vector-db"
-                        } else {
-                            "sweep-step"
-                        };
-                        self.warn_once(key, &e);
-                        ok = false;
-                        break;
+                        self.warn("vector-db", &e);
+                        return;
                     }
                 }
             }
-        }
-        if !ok {
-            return; // keep rows and retry on the next tick
         }
         let r = with_db(&self.db, move |c| {
             c.execute("DELETE FROM swept WHERE until < ?", [now])
@@ -310,7 +329,7 @@ impl Worker {
         })
         .await;
         if let Ok(Err(e)) | Err(e) = r {
-            self.warn_once("sweep-db", &e);
+            self.warn("db", &e);
         }
     }
 }
@@ -320,6 +339,7 @@ mod tests {
     use super::*;
     use crate::testkit::{Fixture, T0};
     use serde_json::Value;
+    use std::time::Duration;
 
     fn names(v: &[Value]) -> Vec<String> {
         v.iter()
@@ -558,5 +578,102 @@ mod tests {
         f.worker.run_once(T0 + 3 + 9 * day).await;
         let swept: i64 = f.q("SELECT count(*) FROM swept WHERE session_id=?", [&sid]);
         assert_eq!(swept, 0);
+    }
+
+    /// `n` deleted sessions, each with one turn and a goal, vectors embedded.
+    async fn deleted_sessions(f: &Fixture, n: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        for i in 0..n {
+            let sid = f.session(&format!("dev{i}"), "chat", T0);
+            f.turn_with_goal(&sid, "weather", "sunny", &format!("g{i}"), T0);
+            out.push(sid);
+        }
+        f.worker.run_once(T0 + 2).await;
+        for sid in &out {
+            f.delete(sid).await;
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn cleanup_lane_is_not_blocked_by_a_hung_ai() {
+        let f = Fixture::new();
+        let (sid, _) = deleted_session(&f).await;
+        // another idle session makes the work lane call a very slow `ai`
+        let other = f.session("pc", "chat", T0);
+        f.turn(&other, "hello", "world", T0);
+        f.fake.set_delay("ai", 3_000);
+        f.fake.script_completion(Ok("{}"));
+        let w = std::sync::Arc::clone(&f.worker);
+        let work = tokio::spawn(async move { w.run_work(T0 + 1_000_000).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            f.fake.calls("chat_completion").len(),
+            1,
+            "work lane is inside the ai call"
+        );
+        let t = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(1), f.worker.run_cleanup(T0 + 10))
+            .await
+            .expect("cascade must not wait for the work lane");
+        assert!(t.elapsed() < Duration::from_secs(1));
+        let rows: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]);
+        assert_eq!(rows, 0, "cascade finished while ai was still hanging");
+        assert!(!work.is_finished());
+        work.abort();
+    }
+
+    #[tokio::test]
+    async fn failing_plugin_is_called_once_per_pass() {
+        let f = Fixture::new();
+        deleted_sessions(&f, 3).await;
+        f.fake.set_failing("agent", true);
+        f.worker.run_cleanup(T0 + 10).await;
+        assert_eq!(f.fake.calls("goal_delete").len(), 1, "no call per id");
+        assert!(f.fake.calls("memory_forget_session").is_empty());
+        // vector-db was healthy: its steps are done for all three sessions
+        assert_eq!(f.fake.calls("vec_delete").len(), 6);
+        let queue: i64 = f.q("SELECT count(*) FROM cascade", []);
+        assert_eq!(queue, 3);
+    }
+
+    #[tokio::test]
+    async fn pass_stops_at_its_wall_clock_budget() {
+        let f = Fixture::new();
+        deleted_sessions(&f, 3).await;
+        f.worker.set_pass_budget_ms(0);
+        let before = f.fake.call_count();
+        f.worker.run_cleanup(T0 + 10).await;
+        assert_eq!(
+            f.fake.call_count() - before,
+            1,
+            "budget 0 = one call per pass"
+        );
+        let queue: i64 = f.q("SELECT count(*) FROM cascade", []);
+        assert_eq!(queue, 3);
+        // the cut jobs stay due (no backoff): enough passes finish everything
+        for _ in 0..20 {
+            f.worker.run_cleanup(T0 + 10).await;
+        }
+        let queue: i64 = f.q("SELECT count(*) FROM cascade", []);
+        assert_eq!(queue, 0);
+    }
+
+    #[tokio::test]
+    async fn sweep_stops_at_the_first_failure() {
+        let f = Fixture::new();
+        deleted_sessions(&f, 3).await;
+        f.worker.run_cleanup(T0 + 3).await; // cascades done, sweep marks the day
+        let day = 24 * 3600 * 1000;
+        f.fake.set_failing("vector-db", true);
+        let before = f.fake.calls("vec_delete").len();
+        f.worker.run_cleanup(T0 + 3 + day + 10).await;
+        assert_eq!(
+            f.fake.calls("vec_delete").len(),
+            before + 1,
+            "stops after one failure"
+        );
+        let swept: i64 = f.q("SELECT count(*) FROM swept", []);
+        assert_eq!(swept, 3, "rows kept for the next try");
     }
 }
