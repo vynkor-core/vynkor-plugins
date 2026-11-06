@@ -99,8 +99,11 @@ restarting, so its steps stay queued and are retried indefinitely.
   `goal_id` and `memory_forget_session` on `agent`, retrying with backoff
   (1 min, doubled, max 1 h, no attempt limit; finished steps are not repeated;
   a plugin that is missing counts as a failed step, never as done). When done the
-  session row is removed (the tombstone stays). A daily sweep repeats the
-  vector deletes for sessions finished in the last 7 days to catch late writes.
+  session row is removed (the tombstone stays). A daily sweep cycle repeats the
+  vector deletes for sessions finished in the last 7 days to catch late writes;
+  it keeps its place across partial passes. A requeue (late vector found by the
+  worker) bumps the job's generation so a concurrently finishing cascade cannot
+  drop it.
 
 ## Events
 

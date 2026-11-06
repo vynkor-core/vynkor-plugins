@@ -79,12 +79,16 @@ CREATE TABLE IF NOT EXISTS cascade(
   goal_ids TEXT NOT NULL DEFAULT '[]',
   attempts INTEGER NOT NULL DEFAULT 0,
   next_at INTEGER NOT NULL DEFAULT 0,
-  done TEXT NOT NULL DEFAULT '[]'
+  done TEXT NOT NULL DEFAULT '[]',
+  -- bumped by every requeue; a job is only finished/updated at the generation it read
+  gen INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS swept(
   session_id TEXT PRIMARY KEY,
   turn_ids TEXT NOT NULL DEFAULT '[]',
-  until INTEGER NOT NULL
+  until INTEGER NOT NULL,
+  -- sweep cycle (start time) in which this row was last swept
+  swept_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS turns_embedded ON turns(embedded, session_id);
 ";

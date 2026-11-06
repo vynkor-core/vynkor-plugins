@@ -60,36 +60,50 @@ fn pending_turns(conn: &Connection) -> Result<Vec<TurnDoc>, String> {
     Ok(rows)
 }
 
-/// Mark turns embedded; returns the distinct sessions among `ids` that are
-/// no longer live (they must be cleaned from the vector store again).
-fn mark_turns(
-    conn: &mut Connection,
-    docs: &[TurnDoc],
-) -> Result<Vec<(String, Vec<String>)>, String> {
+/// Mark turns embedded.
+fn set_embedded(conn: &mut Connection, docs: &[TurnDoc]) -> Result<(), String> {
     let tx = conn.transaction().map_err(db_err)?;
     for d in docs {
         tx.execute("UPDATE turns SET embedded = 1 WHERE id = ?", [&d.id])
             .map_err(db_err)?;
     }
+    tx.commit().map_err(db_err)
+}
+
+/// (session, turn) pairs a vector write was attempted for.
+type Attempted = Vec<(String, String)>;
+
+/// Sessions among `attempted` that are no longer live, with their turn ids.
+/// Whatever reached vector-db for them (also by a call that timed out or
+/// failed half way) must be deleted again.
+fn dead_sessions(
+    conn: &Connection,
+    attempted: &Attempted,
+) -> Result<Vec<(String, Vec<String>)>, String> {
     let mut dead: Vec<(String, Vec<String>)> = Vec::new();
-    for d in docs {
-        let live: bool = tx
+    for (sid, tid) in attempted {
+        let live: bool = conn
             .query_row(
                 "SELECT count(*) FROM sessions WHERE id = ? AND state = 'live'",
-                [&d.session_id],
+                [sid],
                 |r| r.get::<_, i64>(0),
             )
             .map_err(db_err)?
             > 0;
         if !live {
-            match dead.iter_mut().find(|(s, _)| *s == d.session_id) {
-                Some((_, ids)) => ids.push(d.id.clone()),
-                None => dead.push((d.session_id.clone(), vec![d.id.clone()])),
+            match dead.iter_mut().find(|(s, _)| s == sid) {
+                Some((_, ids)) => ids.push(tid.clone()),
+                None => dead.push((sid.clone(), vec![tid.clone()])),
             }
         }
     }
-    tx.commit().map_err(db_err)?;
     Ok(dead)
+}
+
+fn requeue_dead(conn: &mut Connection, attempted: &Attempted) -> Result<(), String> {
+    dead_sessions(conn, attempted)?
+        .into_iter()
+        .try_for_each(|(sid, ids)| crate::cascade::requeue(conn, &sid, &ids))
 }
 
 struct SessionDoc {
@@ -192,6 +206,10 @@ impl Worker {
         if docs.is_empty() {
             return;
         }
+        let attempted: Attempted = docs
+            .iter()
+            .map(|d| (d.session_id.clone(), d.id.clone()))
+            .collect();
         let batch = self
             .rpc
             .call(
@@ -219,6 +237,13 @@ impl Worker {
                     .await
                     .is_err()
                 {
+                    // Backend trouble. The batch may still have been written
+                    // (a timeout says nothing): clean up for dead sessions.
+                    let r = with_db(&self.db, move |c| requeue_dead(c, &attempted)).await;
+                    if let Ok(Err(e)) | Err(e) = r {
+                        self.warn("db", &e);
+                    }
+                    self.kick_cleanup();
                     return;
                 }
                 let mut good = Vec::new();
@@ -245,9 +270,9 @@ impl Worker {
         };
         let r = with_db(&self.db, move |c| {
             bump_attempts(c, &bad)?;
-            let dead = mark_turns(c, &good)?;
-            dead.into_iter()
-                .try_for_each(|(sid, ids)| crate::cascade::requeue(c, &sid, &ids))
+            set_embedded(c, &good)?;
+            // rejected or timed-out documents count as possibly written too
+            requeue_dead(c, &attempted)
         })
         .await;
         if let Ok(Err(e)) | Err(e) = r {
@@ -431,5 +456,51 @@ mod tests {
         f.fake.poison_doc(&bad);
         f.worker.run_work(T0 + 10).await;
         assert_eq!(f.fake.doc_ids("chats-sessions"), vec![sid]);
+    }
+
+    /// The session dies while vector-db is being written and its cleanup
+    /// already finished: whatever may have reached vector-db must be queued
+    /// for deletion again, also if the write was rejected or never answered.
+    fn kill_session_and_finish_cleanup_once(f: &Fixture, sid: &str) {
+        let (db, sid) = (std::sync::Arc::clone(&f.db), sid.to_string());
+        let once = std::sync::atomic::AtomicBool::new(false);
+        f.fake.on_call("vec_upsert_batch", move |_| {
+            if once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            let mut c = db.lock().unwrap();
+            crate::store::delete(&mut c, &sid).unwrap();
+            c.execute("DELETE FROM cascade WHERE session_id = ?", [&sid])
+                .unwrap();
+            c.execute("DELETE FROM sessions WHERE id = ?", [&sid])
+                .unwrap();
+        });
+    }
+
+    #[tokio::test]
+    async fn dead_session_is_requeued_after_a_rejected_document() {
+        let f = Fixture::new();
+        let sid = f.session("lap", "chat", T0);
+        let bad = f.turn(&sid, "poison", "doc", T0);
+        f.fake.poison_doc(&bad);
+        kill_session_and_finish_cleanup_once(&f, &sid);
+        f.worker.run_work(T0 + 10).await;
+        let ids: String = f.q("SELECT turn_ids FROM cascade WHERE session_id=?", [&sid]);
+        assert!(ids.contains(&bad), "requeued for vector deletion: {ids}");
+    }
+
+    #[tokio::test]
+    async fn dead_session_is_requeued_when_the_backend_is_unreachable() {
+        let f = Fixture::new();
+        let sid = f.session("lap", "chat", T0);
+        let t = f.turn(&sid, "hello", "world", T0);
+        f.fake.set_failing("vector-db", true);
+        kill_session_and_finish_cleanup_once(&f, &sid);
+        f.worker.run_work(T0 + 10).await;
+        let ids: String = f.q("SELECT turn_ids FROM cascade WHERE session_id=?", [&sid]);
+        assert!(
+            ids.contains(&t),
+            "a timed-out write counts as maybe written: {ids}"
+        );
     }
 }

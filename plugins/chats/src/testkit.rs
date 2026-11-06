@@ -296,6 +296,9 @@ impl FakeKernel {
             "vec_delete" => {
                 let coll = params["collection"].as_str().unwrap_or("").to_string();
                 let id = params["id"].as_str().unwrap_or("").to_string();
+                if self.with(|s| s.poison.contains(&id)) {
+                    return Err(format!("cannot delete {id}"));
+                }
                 let deleted = self.with(|s| {
                     let list = s.vectors.entry(coll).or_default();
                     let before = list.len();

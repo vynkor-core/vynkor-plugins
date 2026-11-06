@@ -45,7 +45,8 @@ pub fn requeue(conn: &mut Connection, session_id: &str, turn_ids: &[String]) -> 
     tx.execute(
         "INSERT INTO cascade(session_id, turn_ids, goal_ids, attempts, next_at, done)
          VALUES (?1, ?2, '[]', 0, 0, '[]')
-         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, attempts = 0, next_at = 0, done = '[]'",
+         ON CONFLICT(session_id) DO UPDATE SET turn_ids = ?2, attempts = 0, next_at = 0, done = '[]',
+                                               gen = gen + 1",
         params![session_id, json!(ids).to_string()],
     )
     .map_err(db_err)?;
@@ -58,12 +59,13 @@ struct Job {
     goal_ids: Vec<String>,
     attempts: i64,
     done: HashSet<String>,
+    gen: i64,
 }
 
 fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT session_id, turn_ids, goal_ids, attempts, done FROM cascade
+            "SELECT session_id, turn_ids, goal_ids, attempts, done, gen FROM cascade
              WHERE next_at <= ? ORDER BY next_at LIMIT ?",
         )
         .map_err(db_err)?;
@@ -76,6 +78,7 @@ fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
                 goal_ids: list(r.get(2)?),
                 attempts: r.get(3)?,
                 done: list(r.get(4)?).into_iter().collect(),
+                gen: r.get(5)?,
             })
         })
         .map_err(db_err)?
@@ -92,15 +95,22 @@ pub fn backoff_ms(attempts: i64) -> i64 {
 
 /// All steps done: drop the job and the session row, remember the vector ids
 /// for the daily sweep (a worker write may still land after the cascade).
-fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<(), String> {
+///
+/// Returns false (and changes nothing) if the job was requeued since it was
+/// read: its `gen` moved, so the new vector ids still need deleting.
+fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<bool, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db_err)?;
-    tx.execute(
-        "DELETE FROM cascade WHERE session_id = ?",
-        [&job.session_id],
-    )
-    .map_err(db_err)?;
+    let removed = tx
+        .execute(
+            "DELETE FROM cascade WHERE session_id = ? AND gen = ?",
+            params![job.session_id, job.gen],
+        )
+        .map_err(db_err)?;
+    if removed == 0 {
+        return Ok(false);
+    }
     tx.execute(
         "DELETE FROM sessions WHERE id = ? AND state = 'deleting'",
         [&job.session_id],
@@ -123,11 +133,12 @@ fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<(), String> {
         }
     }
     tx.execute(
-        "INSERT OR REPLACE INTO swept(session_id, turn_ids, until) VALUES (?, ?, ?)",
+        "INSERT OR REPLACE INTO swept(session_id, turn_ids, until, swept_at) VALUES (?, ?, ?, 0)",
         params![job.session_id, json!(ids).to_string(), now + SWEEP_KEEP_MS],
     )
     .map_err(db_err)?;
-    tx.commit().map_err(db_err)
+    tx.commit().map_err(db_err)?;
+    Ok(true)
 }
 
 /// Remember finished steps. `backoff` = a step failed: count the attempt and
@@ -147,8 +158,14 @@ fn save_progress(
         (job.attempts, 0)
     };
     conn.execute(
-        "UPDATE cascade SET attempts = ?, next_at = ?, done = ? WHERE session_id = ?",
-        params![attempts, next_at, json!(d).to_string(), job.session_id],
+        "UPDATE cascade SET attempts = ?, next_at = ?, done = ? WHERE session_id = ? AND gen = ?",
+        params![
+            attempts,
+            next_at,
+            json!(d).to_string(),
+            job.session_id,
+            job.gen
+        ],
     )
     .map_err(db_err)?;
     Ok(())
@@ -243,11 +260,10 @@ impl Worker {
             let incomplete = failed || out_of_budget;
             let r = with_db(&self.db, move |c| {
                 if incomplete {
-                    save_progress(c, &job, &done, now, failed)
+                    save_progress(c, &job, &done, now, failed).map(|_| false)
                 } else {
                     finish(c, &job, now)
                 }
-                .map(|_| !incomplete)
             })
             .await;
             match r {
@@ -261,32 +277,17 @@ impl Worker {
     }
 
     /// Once a day repeat the vector deletes of recently finished cascades.
-    /// Stops at the first failure or when the budget is spent; the rows stay
-    /// and the next tick starts again.
+    ///
+    /// A sweep *cycle* (start time kept in `meta.sweep_cycle`) visits every
+    /// `swept` row once: a row is stamped `swept_at = cycle` when all its
+    /// deletes worked, so a partial pass (budget, failure) resumes where it
+    /// stopped instead of starting over. A failing row is skipped and retried
+    /// next pass; three failures in a row end the pass (backend down). Expired
+    /// rows are pruned on every pass.
     pub(crate) async fn sweep_pass(&self, now: i64) {
-        let due = with_db(&self.db, move |c| {
-            let last: Option<i64> = c
-                .query_row("SELECT value FROM meta WHERE key = 'last_sweep'", [], |r| {
-                    r.get(0)
-                })
-                .optional()
-                .map_err(db_err)?;
-            if last.is_some_and(|l| now - l < SWEEP_EVERY_MS) {
-                return Ok(None);
-            }
-            let mut stmt = c
-                .prepare("SELECT session_id, turn_ids FROM swept")
-                .map_err(db_err)?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
-                .map_err(db_err)?
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(db_err)?;
-            Ok::<_, String>(Some(rows))
-        })
-        .await;
-        let rows = match due {
-            Ok(Ok(Some(r))) => r,
+        let plan = with_db(&self.db, move |c| sweep_plan(c, now)).await;
+        let (cycle, rows) = match plan {
+            Ok(Ok(Some(p))) => p,
             Ok(Ok(None)) => return,
             Ok(Err(e)) | Err(e) => {
                 self.warn("db", &e);
@@ -295,16 +296,16 @@ impl Worker {
         };
         let started = std::time::Instant::now();
         let budget = self.pass_budget();
-        let mut swept_calls = 0u32;
-        for (sid, turn_ids) in &rows {
+        let mut swept: Vec<(String, String)> = Vec::new();
+        let mut failures = 0;
+        'rows: for (n, (sid, turn_ids)) in rows.iter().enumerate() {
+            if n > 0 && started.elapsed() >= budget {
+                break;
+            }
             let ids: Vec<String> = serde_json::from_str(turn_ids).unwrap_or_default();
             let mut calls = vec![(SESSIONS, sid.clone())];
             calls.extend(ids.into_iter().map(|t| (TURNS, t)));
             for (coll, id) in calls {
-                if swept_calls > 0 && started.elapsed() >= budget {
-                    return;
-                }
-                swept_calls += 1;
                 match self
                     .rpc
                     .call("vec_delete", json!({"collection": coll, "id": id}), 30_000)
@@ -313,25 +314,86 @@ impl Worker {
                     Ok(_) => self.ok("vector-db"),
                     Err(e) => {
                         self.warn("vector-db", &e);
-                        return;
+                        failures += 1;
+                        if failures >= 3 {
+                            break 'rows;
+                        }
+                        continue 'rows; // retried in a later pass
                     }
                 }
             }
+            failures = 0;
+            swept.push((sid.clone(), turn_ids.clone()));
+        }
+        if swept.is_empty() {
+            return;
         }
         let r = with_db(&self.db, move |c| {
-            c.execute("DELETE FROM swept WHERE until < ?", [now])
+            let tx = c.transaction().map_err(db_err)?;
+            for (sid, turn_ids) in &swept {
+                // only if the row was not rewritten (new late ids) meanwhile
+                tx.execute(
+                    "UPDATE swept SET swept_at = ?1 WHERE session_id = ?2 AND turn_ids = ?3",
+                    params![cycle, sid, turn_ids],
+                )
                 .map_err(db_err)?;
-            c.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_sweep', ?)",
-                [now],
-            )
-            .map_err(db_err)
+            }
+            tx.commit().map_err(db_err)
         })
         .await;
         if let Ok(Err(e)) | Err(e) = r {
             self.warn("db", &e);
         }
     }
+}
+
+type SweepRows = Vec<(String, String)>;
+
+/// Prune expired rows, open or continue a cycle and pick the rows still to
+/// visit; closes the cycle when none is left.
+fn sweep_plan(c: &Connection, now: i64) -> Result<Option<(i64, SweepRows)>, String> {
+    let meta = |key: &str| -> Result<Option<i64>, String> {
+        c.query_row("SELECT value FROM meta WHERE key = ?", [key], |r| r.get(0))
+            .optional()
+            .map_err(db_err)
+    };
+    c.execute("DELETE FROM swept WHERE until < ?", [now])
+        .map_err(db_err)?;
+    let cycle = match meta("sweep_cycle")? {
+        Some(cy) => cy,
+        None => {
+            if meta("last_sweep")?.is_some_and(|l| now - l < SWEEP_EVERY_MS) {
+                return Ok(None);
+            }
+            c.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('sweep_cycle', ?)",
+                [now],
+            )
+            .map_err(db_err)?;
+            now
+        }
+    };
+    let rows: SweepRows = c
+        .prepare(
+            "SELECT session_id, turn_ids FROM swept WHERE swept_at < ?
+             ORDER BY swept_at, session_id LIMIT 200",
+        )
+        .map_err(db_err)?
+        .query_map([cycle], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(db_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(db_err)?;
+    if rows.is_empty() {
+        c.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_sweep', ?)",
+            [cycle],
+        )
+        .map_err(db_err)?;
+        c.execute("DELETE FROM meta WHERE key = 'sweep_cycle'", [])
+            .map_err(db_err)?;
+        return Ok(None);
+    }
+    Ok(Some((cycle, rows)))
 }
 
 #[cfg(test)]
@@ -659,21 +721,115 @@ mod tests {
         assert_eq!(queue, 0);
     }
 
+    fn swept_turns(f: &Fixture, sid: &str) -> Vec<String> {
+        let t: String = f.q("SELECT turn_ids FROM swept WHERE session_id=?", [sid]);
+        serde_json::from_str(&t).unwrap()
+    }
+
+    async fn put_late_vector(f: &Fixture, id: &str) {
+        f.fake
+            .handle(
+                "vec_upsert_batch",
+                json!({"collection": "chats-turns", "docs": [{"id": id, "text": "late", "metadata": {}}]}),
+            )
+            .await
+            .unwrap();
+    }
+
+    const DAY: i64 = 24 * 3600 * 1000;
+
     #[tokio::test]
-    async fn sweep_stops_at_the_first_failure() {
+    async fn sweep_skips_a_failing_row_and_resumes_next_pass() {
+        let f = Fixture::new();
+        let sids = deleted_sessions(&f, 3).await;
+        f.worker.run_cleanup(T0 + 3).await; // cascades done, first cycle complete
+        let mut late = Vec::new();
+        for sid in &sids {
+            let id = swept_turns(&f, sid)[0].clone();
+            put_late_vector(&f, &id).await;
+            late.push(id);
+        }
+        let last0: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
+        f.fake.poison_doc(&late[0]); // vec_delete of this one fails
+        let day2 = T0 + 3 + DAY + 10;
+        f.worker.run_cleanup(day2).await;
+        let left = f.fake.doc_ids("chats-turns");
+        assert_eq!(
+            left,
+            vec![late[0].clone()],
+            "the other rows were swept past the failing one"
+        );
+        let cycle: i64 = f.q("SELECT value FROM meta WHERE key='sweep_cycle'", []);
+        let last: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
+        assert_eq!((cycle, last), (day2, last0), "cycle stays open");
+        // backend fine again: the next pass finishes the row, one more closes the cycle
+        f.fake.with(|s| s.poison.clear());
+        f.worker.run_cleanup(day2 + 1000).await;
+        assert!(f.fake.doc_ids("chats-turns").is_empty());
+        f.worker.run_cleanup(day2 + 2000).await;
+        let last: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
+        let open: i64 = f.q("SELECT count(*) FROM meta WHERE key='sweep_cycle'", []);
+        assert_eq!((last, open), (day2, 0));
+    }
+
+    #[tokio::test]
+    async fn sweep_partial_pass_keeps_its_place_and_prunes_expired_rows() {
         let f = Fixture::new();
         deleted_sessions(&f, 3).await;
-        f.worker.run_cleanup(T0 + 3).await; // cascades done, sweep marks the day
-        let day = 24 * 3600 * 1000;
-        f.fake.set_failing("vector-db", true);
+        f.worker.run_cleanup(T0 + 3).await;
+        f.lock()
+            .execute(
+                "INSERT INTO swept(session_id, turn_ids, until) VALUES('old','[]',1)",
+                [],
+            )
+            .unwrap();
+        f.worker.set_pass_budget_ms(0); // one row per pass
+        let day2 = T0 + 3 + DAY + 10;
         let before = f.fake.calls("vec_delete").len();
-        f.worker.run_cleanup(T0 + 3 + day + 10).await;
+        f.worker.run_cleanup(day2).await;
+        let old: i64 = f.q("SELECT count(*) FROM swept WHERE session_id='old'", []);
+        let stamped: i64 = f.q("SELECT count(*) FROM swept WHERE swept_at = ?", [day2]);
+        assert_eq!((old, stamped), (0, 1), "expired row pruned, one row swept");
+        for _ in 0..3 {
+            f.worker.run_cleanup(day2 + 1).await;
+        }
+        let stamped: i64 = f.q("SELECT count(*) FROM swept WHERE swept_at = ?", [day2]);
+        assert_eq!(stamped, 3);
+        // every row visited exactly once (2 deletes each): no restarts from the top
+        assert_eq!(f.fake.calls("vec_delete").len() - before, 6);
+        let last: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
+        assert_eq!(last, day2);
+    }
+
+    #[tokio::test]
+    async fn job_requeued_while_cascade_runs_is_not_finished() {
+        let f = Fixture::new();
+        let (sid, _) = deleted_session(&f).await;
+        let (db, s2) = (std::sync::Arc::clone(&f.db), sid.clone());
+        let once = std::sync::atomic::AtomicBool::new(false);
+        // the work lane discovers a late vector exactly while cleanup runs
+        f.fake.on_call("memory_forget_session", move |_| {
+            if !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                requeue(&mut db.lock().unwrap(), &s2, &["late".to_string()]).unwrap();
+            }
+        });
+        f.worker.run_cleanup(T0 + 3).await;
+        let queue: i64 = f.q("SELECT count(*) FROM cascade WHERE session_id=?", [&sid]);
+        let sessions: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]);
+        let (done, gen): (String, i64) =
+            f.q2("SELECT done, gen FROM cascade WHERE session_id=?", &sid);
         assert_eq!(
-            f.fake.calls("vec_delete").len(),
-            before + 1,
-            "stops after one failure"
+            (queue, sessions, done.as_str(), gen),
+            (1, 1, "[]", 1),
+            "job kept for another round"
         );
-        let swept: i64 = f.q("SELECT count(*) FROM swept", []);
-        assert_eq!(swept, 3, "rows kept for the next try");
+        f.worker.run_cleanup(T0 + 4).await;
+        let queue: i64 = f.q("SELECT count(*) FROM cascade", []);
+        assert_eq!(queue, 0);
+        let ids = names(&f.fake.calls("vec_delete"));
+        assert!(
+            ids.contains(&"late".to_string()),
+            "the late id was deleted: {ids:?}"
+        );
     }
 }
