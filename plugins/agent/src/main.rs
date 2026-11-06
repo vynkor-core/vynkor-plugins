@@ -25,7 +25,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
-const PLUGIN_VERSION: &str = "0.1.5";
+const PLUGIN_VERSION: &str = "0.1.6";
 const ACTIONS: [&str; 10] = [
     "goal_start",
     "goal_get",
@@ -381,13 +381,21 @@ mod tests {
         created: bool,
         turns: Vec<Value>,
         calls: Vec<(String, Value)>,
+        /// `chat_recall` answer (`hits`), scripted by tests.
+        recall_hits: Vec<Value>,
+        /// `chat_recall` never answers (a lookup slower than any budget).
+        recall_silent: bool,
     }
 
-    const CHATS_ACTIONS: [&str; 3] = ["chat_session_resolve", "chat_session_read", "chat_turn_append"];
+    const CHATS_ACTIONS: [&str; 4] =
+        ["chat_session_resolve", "chat_session_read", "chat_turn_append", "chat_recall"];
 
     impl FakeChats {
         fn handle(&mut self, action: &str, params: Value) -> Option<Result<Value, String>> {
             self.calls.push((action.to_string(), params));
+            if action == "chat_recall" && self.mode == ChatsMode::Normal && self.recall_silent {
+                return None;
+            }
             match self.mode {
                 ChatsMode::Missing => Some(Err("action not found".to_string())),
                 ChatsMode::Silent => None,
@@ -398,6 +406,7 @@ mod tests {
                     "chat_session_read" => serde_json::json!({
                         "session": {"id": self.session_id}, "turns": self.turns
                     }),
+                    "chat_recall" => serde_json::json!({"hits": self.recall_hits}),
                     _ => serde_json::json!({"turn_id": "T1", "seq": 1, "rev": 1}),
                 })),
             }
@@ -661,6 +670,25 @@ mod tests {
                 .collect()
         }
 
+        /// Make `vec_embed` answer with this model (`"fake"` = the placeholder).
+        async fn embed_model(&self, model: &str) {
+            self.seed_fact("__embed__", model, "").await;
+        }
+
+        /// Journal of `vec_embed` / `vec_query` calls (params), in order.
+        async fn vec_calls(&self, action: &str) -> Vec<Value> {
+            self.vec_facts("__vec_log__")
+                .await
+                .into_iter()
+                .filter(|e| e["action"] == action)
+                .map(|e| e["params"].clone())
+                .collect()
+        }
+
+        async fn chats_recall_hits(&self, hits: Vec<Value>) {
+            self.chats.lock().await.recall_hits = hits;
+        }
+
         async fn vec_facts(&self, collection: &str) -> Vec<Value> {
             self.vec_store
                 .lock()
@@ -769,6 +797,8 @@ mod tests {
                                 handle_vec_upsert(&vec_store, params).await
                             } else if req.action == "vec_delete" {
                                 handle_vec_delete(&vec_store, params).await
+                            } else if req.action == "vec_embed" {
+                                handle_vec_embed(&vec_store, params).await
                             } else if req.action == "vec_query" {
                                 handle_vec_query(&vec_store, params).await
                             } else if CHATS_ACTIONS.contains(&req.action.as_str()) {
@@ -1758,9 +1788,51 @@ mod tests {
         Ok(serde_json::json!({"deleted": docs.len() != before}))
     }
 
+    /// Test hooks live in pseudo-collections: `__embed__` (a doc whose id is
+    /// the model name; absent = `vec_embed` unavailable), `__fail_vector__`
+    /// (docs whose id is a collection whose vector queries fail),
+    /// `__vec_log__` (journal of `vec_embed`/`vec_query` calls).
+    async fn vec_log(store: &VecStore, action: &str, params: &Value) {
+        store
+            .lock()
+            .await
+            .entry("__vec_log__".to_string())
+            .or_default()
+            .push(serde_json::json!({"action": action, "params": params}));
+    }
+
+    async fn handle_vec_embed(store: &VecStore, params: Value) -> Result<Value, String> {
+        vec_log(store, "vec_embed", &params).await;
+        let model = store
+            .lock()
+            .await
+            .get("__embed__")
+            .and_then(|d| d.first())
+            .and_then(|d| d["id"].as_str().map(str::to_string));
+        match model {
+            None => Err("action not found".to_string()),
+            Some(m) => {
+                let n = params["texts"].as_array().map_or(1, Vec::len);
+                Ok(serde_json::json!({
+                    "vectors": vec![vec![1.0, 0.0, 0.5, 0.0]; n], "model": m, "dim": 4
+                }))
+            }
+        }
+    }
+
     async fn handle_vec_query(store: &VecStore, params: Value) -> Result<Value, String> {
+        vec_log(store, "vec_query", &params).await;
         let collection =
             params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
+        if params.get("vector").is_some()
+            && store
+                .lock()
+                .await
+                .get("__fail_vector__")
+                .is_some_and(|d| d.iter().any(|x| x["id"].as_str() == Some(&collection)))
+        {
+            return Err("dimension mismatch".to_string());
+        }
         let facts = {
             let store = store.lock().await;
             store.get(&collection).cloned().unwrap_or_default()
@@ -1977,6 +2049,218 @@ mod tests {
         let again = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap();
         assert_eq!(again["deleted"], false);
     }
+    /// Scoped `AGENT_PLUGIN_EMBEDDING_FILTER=on` (restored on drop).
+    struct EmbedFilterGuard(Option<String>);
+
+    impl EmbedFilterGuard {
+        fn enable() -> Self {
+            let g = Self(std::env::var("AGENT_PLUGIN_EMBEDDING_FILTER").ok());
+            std::env::set_var("AGENT_PLUGIN_EMBEDDING_FILTER", "on");
+            g
+        }
+    }
+
+    impl Drop for EmbedFilterGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("AGENT_PLUGIN_EMBEDDING_FILTER", v),
+                None => std::env::remove_var("AGENT_PLUGIN_EMBEDDING_FILTER"),
+            }
+        }
+    }
+
+    async fn seed_tool_hits(shim: &Shim) {
+        for t in ["notify_send", "fs_read", "secret_get"] {
+            shim.seed_fact("agent-tools", t, t).await;
+        }
+    }
+
+    fn text_of(v: &Value) -> bool {
+        v.get("text").is_some() && v.get("vector").is_none()
+    }
+
+    fn vector_of(v: &Value) -> bool {
+        v.get("vector").is_some() && v.get("text").is_none()
+    }
+
+    #[tokio::test]
+    async fn one_embedding_per_goal() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        let _emb = EmbedFilterGuard::enable();
+        shim.embed_model("m1").await;
+        seed_tool_hits(&shim).await;
+        shim.seed_fact("agent-memory-test", "f1", "the user runs Arch Linux").await;
+        shim.seed_index("f1").await;
+        shim.push_ai_reply("ok").await;
+        shim.push_ai_reply("[]").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "which OS"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let embeds = shim.vec_calls("vec_embed").await;
+        assert_eq!(embeds.len(), 1, "{embeds:?}");
+        assert_eq!(embeds[0], serde_json::json!({"texts": ["which OS"]}));
+        let queries = shim.vec_calls("vec_query").await;
+        let on = |c: &str| -> Vec<Value> {
+            queries.iter().filter(|q| q["collection"] == c).cloned().collect()
+        };
+        assert_eq!(on("agent-tools").len(), 1, "{queries:?}");
+        assert_eq!(on("agent-memory-test").len(), 1, "{queries:?}");
+        assert!(queries.iter().all(vector_of), "text query sneaked in: {queries:?}");
+    }
+
+    #[tokio::test]
+    async fn fake_embedding_falls_back_to_text_queries() {
+        let cfg = Config::default();
+        let shim = start_plugin(cfg).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        let _emb = EmbedFilterGuard::enable();
+        shim.embed_model("fake").await;
+        seed_tool_hits(&shim).await;
+        shim.seed_fact("agent-memory-test", "f1", "the user runs Arch Linux").await;
+        shim.seed_index("f1").await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("ok").await;
+        shim.push_ai_reply("[]").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "which OS"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let queries = shim.vec_calls("vec_query").await;
+        assert_eq!(queries.len(), 2, "{queries:?}");
+        assert!(queries.iter().all(text_of), "{queries:?}");
+        assert!(shim.chats_calls("chat_recall").await.is_empty(), "no vector, no recall");
+        let msgs = shim.ai_requests().await[0]["messages"].clone();
+        assert!(msgs.to_string().contains("Arch Linux"), "facts still reach the model");
+    }
+
+    #[tokio::test]
+    async fn vector_query_error_retries_with_text() {
+        let shim = start_plugin(Config::default()).await;
+        let _emb = EmbedFilterGuard::enable();
+        shim.embed_model("m1").await;
+        seed_tool_hits(&shim).await;
+        shim.seed_fact("__fail_vector__", "agent-tools", "").await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "hello"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let q: Vec<Value> = shim
+            .vec_calls("vec_query")
+            .await
+            .into_iter()
+            .filter(|q| q["collection"] == "agent-tools")
+            .collect();
+        assert_eq!(q.len(), 2, "{q:?}");
+        assert!(vector_of(&q[0]) && text_of(&q[1]), "{q:?}");
+    }
+
+    fn past_hit(id: &str, title: &str) -> Value {
+        serde_json::json!({"session_id": id, "title": title, "summary": "sunny in Tashkent",
+            "at": 1_793_880_000_000_i64, "score": 0.9})
+    }
+
+    fn goal_message(req: &Value) -> String {
+        req["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn recall_block_goes_into_goal_message() {
+        // Baseline: recall off.
+        let off = start_plugin(Config { recall: false, ..Config::default() }).await;
+        off.embed_model("m1").await;
+        off.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        off.chats_recall_hits(vec![past_hit("P1", "Weather")]).await;
+        off.push_ai_reply("ok").await;
+        off.call("goal_start", serde_json::json!({"goal": "weather?"})).await.unwrap();
+        let base = off.ai_requests().await[0]["messages"].clone();
+        assert!(off.chats_calls("chat_recall").await.is_empty());
+        drop(off);
+
+        let shim = start_plugin(Config::default()).await;
+        shim.embed_model("m1").await;
+        shim.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        shim.chats_recall_hits(vec![past_hit("P1", "Weather")]).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "weather?"})).await.unwrap();
+        let req = shim.ai_requests().await[0].clone();
+        let msgs = req["messages"].as_array().unwrap();
+        let base = base.as_array().unwrap();
+        assert_eq!(msgs.len(), base.len(), "no extra message");
+        assert_eq!(msgs[0], base[0], "role message untouched");
+        for w in msgs.windows(2) {
+            assert_ne!(w[0]["role"], w[1]["role"], "roles alternate");
+        }
+        let goal = goal_message(&req);
+        assert!(goal.starts_with("weather?\n\n---\n[PAST SESSIONS]"), "{goal}");
+        assert!(
+            goal.contains(r#"{"date":"2026-11-05","summary":"sunny in Tashkent","title":"Weather"}"#),
+            "{goal}"
+        );
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(got["goal"]["recalled_sessions"], serde_json::json!(["P1"]));
+    }
+
+    #[tokio::test]
+    async fn recall_excludes_current_session_and_passes_cfg() {
+        let shim = start_plugin(Config::default()).await;
+        shim.embed_model("m1").await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "weather?"})).await.unwrap();
+        let calls = shim.chats_calls("chat_recall").await;
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        let c = &calls[0];
+        assert_eq!(c["exclude_session_id"], "S1");
+        assert_eq!(c["top_k"], 3);
+        assert_eq!(c["min_score"], 0.72);
+        assert_eq!(c["model"], "m1");
+        assert_eq!(c["vector"].as_array().unwrap().len(), 4);
+        let mut keys: Vec<&String> = c.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["exclude_session_id", "min_score", "model", "top_k", "vector"]);
+    }
+
+    #[tokio::test]
+    async fn slow_recall_is_dropped_within_budget() {
+        let cfg = Config { recall_budget_ms: 150, ..Config::default() };
+        let shim = start_plugin(cfg).await;
+        shim.embed_model("m1").await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.chats.lock().await.recall_silent = true;
+        shim.push_ai_reply("ok").await;
+        let t = std::time::Instant::now();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "weather?"})).await.unwrap();
+        let took = t.elapsed();
+        assert_eq!(res["status"], "completed", "{res}");
+        assert_eq!(shim.chats_calls("chat_recall").await.len(), 1);
+        assert_eq!(goal_message(&shim.ai_requests().await[0]), "weather?");
+        assert!(took < Duration::from_millis(150 + 50 + 400), "turn took {took:?}");
+    }
+
+    #[tokio::test]
+    async fn missing_chats_recall_gives_no_block() {
+        // chats absent entirely: every chat_* call answers `action not found`.
+        let shim = start_plugin(Config::default()).await;
+        shim.embed_model("m1").await;
+        shim.push_ai_reply("ok").await;
+        shim.push_ai_reply("ok").await;
+        for _ in 0..2 {
+            let res = shim.call("goal_start", serde_json::json!({"goal": "hi"})).await.unwrap();
+            assert_eq!(res["status"], "completed", "{res}");
+        }
+        for r in shim.ai_requests().await {
+            assert_eq!(goal_message(&r), "hi");
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_off_makes_no_recall_call() {
+        let shim = start_plugin(Config { recall: false, ..Config::default() }).await;
+        shim.embed_model("m1").await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.chats_recall_hits(vec![past_hit("P1", "Weather")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "weather?"})).await.unwrap();
+        assert!(shim.chats_calls("chat_recall").await.is_empty());
+        assert_eq!(goal_message(&shim.ai_requests().await[0]), "weather?");
+    }
 }
 
 #[cfg(test)]
@@ -2034,4 +2318,5 @@ mod manifest_specs_tests {
         dispatched.sort();
         assert_eq!(documented, dispatched);
     }
+
 }

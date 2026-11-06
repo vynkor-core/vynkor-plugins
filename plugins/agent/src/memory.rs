@@ -137,7 +137,11 @@ async fn write_index(rpc: &Rpc, db_timeout_ms: u32, ids: &[Value]) -> Result<(),
 /// a missed recall. This is deliberately NOT a goal-triviality heuristic —
 /// it never looks at `goal_text` — so it can't skip recall for a goal that
 /// might actually have something to draw from.
-pub async fn recall(rpc: &Rpc, goal_text: &str) -> Option<String> {
+pub async fn recall(
+    rpc: &Rpc,
+    goal_text: &str,
+    query: Option<&crate::recall::QueryVec>,
+) -> Option<String> {
     match read_index(rpc, 5_000).await {
         Ok(index) if index.is_empty() => return None,
         Ok(_) => {}
@@ -147,17 +151,8 @@ pub async fn recall(rpc: &Rpc, goal_text: &str) -> Option<String> {
             eprintln!("[agent] memory index read failed, recall proceeding anyway: {e}");
         }
     }
-    let result = rpc
-        .call(
-            "vec_query",
-            json!({
-                "collection": collection(),
-                "text": goal_text,
-                "top_k": RECALL_TOP_K,
-            }),
-            15_000,
-        )
-        .await;
+    let result =
+        crate::recall::vec_query(rpc, &collection(), query, goal_text, RECALL_TOP_K, 15_000).await;
     match result {
         Ok(v) => {
             let empty = Vec::new();
@@ -417,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn recall_skips_vec_query_when_index_is_empty() {
         let fake = fake_rpc(Vec::new(), Vec::new());
-        let out = recall(&fake.rpc, "who is Sarvar?").await;
+        let out = recall(&fake.rpc, "who is Sarvar?", None).await;
         assert!(out.is_none());
         assert_eq!(
             fake.vec_query_calls.load(Ordering::SeqCst),
@@ -436,7 +431,7 @@ mod tests {
             "metadata": {"fact": "the user runs Arch Linux"}
         })];
         let fake = fake_rpc(index, hits);
-        let out = recall(&fake.rpc, "which OS does the user run?").await;
+        let out = recall(&fake.rpc, "which OS does the user run?", None).await;
         assert_eq!(fake.vec_query_calls.load(Ordering::SeqCst), 1, "non-empty index must still query");
         let block = out.expect("expected a recalled facts block");
         assert!(block.contains("Arch Linux"));
