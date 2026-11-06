@@ -26,7 +26,7 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
 const PLUGIN_VERSION: &str = "0.1.5";
-const ACTIONS: [&str; 8] = [
+const ACTIONS: [&str; 10] = [
     "goal_start",
     "goal_get",
     "goal_list",
@@ -35,6 +35,8 @@ const ACTIONS: [&str; 8] = [
     "memory_forget",
     "memory_clear",
     "memory_list",
+    "memory_forget_session",
+    "goal_delete",
 ];
 
 fn manifest() -> PluginManifest {
@@ -748,6 +750,8 @@ mod tests {
                                 db.lock().await.handle(&req.action, params)
                             } else if req.action == "vec_upsert" {
                                 handle_vec_upsert(&vec_store, params).await
+                            } else if req.action == "vec_delete" {
+                                handle_vec_delete(&vec_store, params).await
                             } else if req.action == "vec_query" {
                                 handle_vec_query(&vec_store, params).await
                             } else if CHATS_ACTIONS.contains(&req.action.as_str()) {
@@ -1571,6 +1575,17 @@ mod tests {
         Ok(serde_json::json!({"ok": true}))
     }
 
+    async fn handle_vec_delete(store: &VecStore, params: Value) -> Result<Value, String> {
+        let collection =
+            params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
+        let id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+        let mut store = store.lock().await;
+        let docs = store.entry(collection).or_default();
+        let before = docs.len();
+        docs.retain(|d| d["id"].as_str() != Some(id));
+        Ok(serde_json::json!({"deleted": docs.len() != before}))
+    }
+
     async fn handle_vec_query(store: &VecStore, params: Value) -> Result<Value, String> {
         let collection =
             params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -1673,6 +1688,90 @@ mod tests {
         let remembered =
             wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await;
         assert!(remembered, "vec_upsert should have stored the remembered fact");
+    }
+
+    async fn seed_session_fact(shim: &Shim, id: &str, session: Option<&str>) {
+        shim.seed_fact("agent-memory-test", id, &format!("fact {id}")).await;
+        let mut db = shim.db.lock().await;
+        let key = agent_plugin::memory::INDEX_KEY.to_string();
+        let mut entries: Vec<Value> =
+            db.kv.get(&key).and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut e = serde_json::json!({"id": id, "ts": 0});
+        if let Some(sid) = session {
+            e["session_id"] = serde_json::json!(sid);
+        }
+        entries.push(e);
+        db.kv.insert(key, Value::Array(entries));
+    }
+
+    #[tokio::test]
+    async fn remember_tags_facts_with_session() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("The user runs Arch Linux.").await;
+        shim.push_ai_reply("[\"the user runs Arch Linux\"]").await;
+        shim.call("goal_start", serde_json::json!({"goal": "which OS"})).await.unwrap();
+        assert!(
+            wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await
+        );
+        let facts = shim.vec_facts("agent-memory-test").await;
+        let f = facts.iter().find(|f| f["metadata"]["goal_id"].is_string()).unwrap();
+        assert_eq!(f["metadata"]["session_id"], "S1");
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        assert_eq!(idx["facts"][0]["session_id"], "S1");
+    }
+
+    #[tokio::test]
+    async fn memory_forget_session_deletes_only_that_session() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        seed_session_fact(&shim, "a1", Some("S1")).await;
+        seed_session_fact(&shim, "a2", Some("S1")).await;
+        seed_session_fact(&shim, "b1", Some("S2")).await;
+        seed_session_fact(&shim, "old", None).await; // pre-sessions entry: no session_id
+        let res = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(res["deleted"], 2);
+        let left: Vec<String> = shim
+            .vec_facts("agent-memory-test")
+            .await
+            .iter()
+            .map(|f| f["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(left, ["b1", "old"]);
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        let ids: Vec<&str> =
+            idx["facts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"b1") && ids.contains(&"old"));
+        // Repeat and unknown session: nothing to do, not an error.
+        let again = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(again["deleted"], 0);
+        let unknown = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "NOPE"}))
+            .await
+            .unwrap();
+        assert_eq!(unknown["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn goal_delete_removes_doc_and_is_idempotent() {
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let id = res["id"].clone();
+        let del = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(del["deleted"], true);
+        let got = shim.call("goal_get", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(got["found"], false);
+        let again = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(again["deleted"], false);
     }
 }
 

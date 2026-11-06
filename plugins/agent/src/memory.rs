@@ -168,7 +168,14 @@ pub async fn recall(rpc: &Rpc, goal_text: &str) -> Option<String> {
 
 /// Extract durable facts from a completed goal and store them. Fire-and-forget
 /// from the caller's perspective: failures log, never surface.
-pub async fn remember(rpc: &Rpc, plan: &LlmPlan, goal_id: &str, goal: &str, final_answer: &str) {
+pub async fn remember(
+    rpc: &Rpc,
+    plan: &LlmPlan,
+    goal_id: &str,
+    session_id: Option<&str>,
+    goal: &str,
+    final_answer: &str,
+) {
     let extraction_prompt = format!(
         "Extract durable, reusable facts from this finished task as a JSON \
          array of short standalone strings (no timestamps, no one-off task \
@@ -209,13 +216,13 @@ pub async fn remember(rpc: &Rpc, plan: &LlmPlan, goal_id: &str, goal: &str, fina
                     "collection": collection(),
                     "id": id,
                     "text": fact,
-                    "metadata": {"fact": fact, "goal_id": goal_id, "ts": now},
+                    "metadata": {"fact": fact, "goal_id": goal_id, "session_id": session_id, "ts": now},
                 }),
                 30_000,
             )
             .await;
         match upsert {
-            Ok(_) => index.push(json!({"id": id, "ts": now})),
+            Ok(_) => index.push(json!({"id": id, "ts": now, "session_id": session_id})),
             Err(e) => eprintln!("[agent] memory store failed for {id}: {e}"),
         }
     }
@@ -290,6 +297,33 @@ pub async fn clear(rpc: &Rpc) -> Result<usize, String> {
         deleted += ok as usize;
     }
     write_index(rpc, db_timeout_ms, &[]).await?;
+    Ok(deleted)
+}
+
+/// Delete every fact learned in `session_id` (found via the id index) and
+/// drop them from the index. Idempotent: an unknown session deletes nothing.
+/// Index entries written before sessions existed carry no `session_id` and
+/// are never matched. Returns how many facts the vector store reported deleted.
+pub async fn forget_session(rpc: &Rpc, session_id: &str) -> Result<usize, String> {
+    let db_timeout_ms = 5_000;
+    let mut index = read_index(rpc, db_timeout_ms).await?;
+    let in_session = |e: &Value| e.get("session_id").and_then(Value::as_str) == Some(session_id);
+    let mut deleted = 0usize;
+    for entry in index.iter().filter(|e| in_session(e)) {
+        let Some(id) = entry.get("id").and_then(Value::as_str) else { continue };
+        let ok = rpc
+            .call("vec_delete", json!({"collection": collection(), "id": id}), 10_000)
+            .await?
+            .get("deleted")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        deleted += ok as usize;
+    }
+    let before = index.len();
+    index.retain(|e| !in_session(e));
+    if index.len() != before {
+        write_index(rpc, db_timeout_ms, &index).await?;
+    }
     Ok(deleted)
 }
 

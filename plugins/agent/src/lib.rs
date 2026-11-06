@@ -442,6 +442,14 @@ pub async fn handle_action(
             let deleted = memory::clear(&rpc).await?;
             ok(json!({"cleared": deleted}), None)
         }
+        AgentRequest::MemoryForgetSession { session_id } => {
+            let deleted = memory::forget_session(&rpc, &session_id).await?;
+            ok(json!({"deleted": deleted}), None)
+        }
+        AgentRequest::GoalDelete { id } => {
+            let deleted = db.delete(&id).await?;
+            ok(json!({"deleted": deleted}), None)
+        }
         AgentRequest::MemoryList => {
             let facts = memory::list(&rpc).await?;
             ok(json!({"total": facts.len(), "facts": facts}), None)

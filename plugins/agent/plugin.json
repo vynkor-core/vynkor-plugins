@@ -414,6 +414,74 @@
         ],
         "additionalProperties": false
       }
+    },
+    {
+      "name": "memory_forget_session",
+      "description": "Delete every long-term fact learned in one chat session (found via the memory index) and drop them from the index. Irreversible and idempotent; used by the history delete cascade. Returns how many facts were deleted.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[0-9A-Za-z_-]+$",
+            "description": "chats session id whose facts to delete."
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "goal_delete",
+      "description": "Delete one stored goal document (transcript, steps, tool trace) by id. Irreversible; deleting an unknown id is not an error (deleted:false), so cascades can be retried.",
+      "risk": "high",
+      "requires_confirmation": true,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Goal id."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "additionalProperties": false
+      }
     }
   ],
   "config_schema": {

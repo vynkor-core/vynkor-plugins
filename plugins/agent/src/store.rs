@@ -300,6 +300,16 @@ impl Db {
             .collect()
     }
 
+    /// Delete one goal document. `false` when it did not exist (not an
+    /// error: the C2 cascade retries).
+    pub async fn delete(&self, id: &str) -> Result<bool, String> {
+        if self.get(id).await?.is_none() {
+            return Ok(false);
+        }
+        self.call("db_delete", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")})).await?;
+        Ok(true)
+    }
+
     /// Delete goal docs beyond `limit` (newest-first), never touching a
     /// goal that is still running or awaiting confirmation. `limit: None`
     /// (env unset/empty) is a no-op — checked before any key is fetched, so

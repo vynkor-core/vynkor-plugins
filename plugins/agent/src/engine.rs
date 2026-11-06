@@ -416,9 +416,10 @@ pub async fn run(
                     let rpc = rpc.clone();
                     let plan = doc.llm.clone();
                     let goal_id = doc.id.clone();
+                    let session_id = doc.session_id.clone();
                     let goal = doc.goal.clone();
                     tokio::spawn(async move {
-                        memory::remember(&rpc, &plan, &goal_id, &goal, &answer).await;
+                        memory::remember(&rpc, &plan, &goal_id, session_id.as_deref(), &goal, &answer).await;
                     });
                 }
                 return Ok(());
