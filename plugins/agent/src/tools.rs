@@ -252,12 +252,14 @@ fn parse_tools_file(raw: &str) -> Result<BTreeMap<String, ToolSpec>, String> {
 /// allowlists them: they write or delete history on the model's behalf
 /// (the agent records its own turns; deletion is the owner's decision).
 /// Reading (`chat_sessions_list`, `chat_session_read`, `chat_search`) stays allowed.
-pub const CHATS_INTERNAL_ACTIONS: [&str; 5] = [
+pub const CHATS_INTERNAL_ACTIONS: [&str; 7] = [
     "chat_turn_append",
     "chat_session_resolve",
     "chat_sync",
     "chat_session_update",
     "chat_delete",
+    "chat_recall",
+    "chat_review_apply",
 ];
 
 /// The agent's own management actions: the model must not start nested
@@ -946,12 +948,13 @@ mod tests {
     #[test]
     fn chats_internal_actions_never_reach_llm_catalog() {
         let allowed = "chat_sessions_list,chat_session_read,chat_search,chat_turn_append,\
-                       chat_session_resolve,chat_sync,chat_session_update,chat_delete,notify_send";
+                       chat_session_resolve,chat_sync,chat_session_update,chat_delete,\
+                       chat_recall,chat_review_apply,chat_review,notify_send";
         let cat = Catalog::build(allowed, None).unwrap();
         let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,
-            ["chat_sessions_list", "chat_session_read", "chat_search", "notify_send"]
+            ["chat_sessions_list", "chat_session_read", "chat_search", "chat_review", "notify_send"]
         );
         for internal in CHATS_INTERNAL_ACTIONS {
             assert!(cat.get(internal).is_none(), "{internal} must not be dispatchable");

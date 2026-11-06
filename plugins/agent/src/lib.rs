@@ -25,6 +25,7 @@ pub mod discovery;
 pub mod engine;
 pub mod llm;
 pub mod memory;
+pub mod recall;
 pub mod request;
 pub mod sessions;
 pub mod store;
@@ -52,6 +53,16 @@ pub struct Config {
     pub history_turns: u32,
     /// Per-call timeout for `chats` round-trips (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`).
     pub chats_timeout_ms: u32,
+    /// Blend related past sessions into the turn (`AGENT_PLUGIN_RECALL`).
+    pub recall: bool,
+    /// Max past sessions blended in (`AGENT_PLUGIN_RECALL_TOP_K`, 1..=10).
+    pub recall_top_k: u32,
+    /// Minimum similarity of a past session (`AGENT_PLUGIN_RECALL_MIN_SCORE`).
+    pub recall_min_score: f64,
+    /// Time budget of the past-session lookup (`AGENT_PLUGIN_RECALL_BUDGET_MS`).
+    pub recall_budget_ms: u64,
+    /// Timeout of the goal's `vec_embed` (`AGENT_PLUGIN_EMBED_TIMEOUT_MS`).
+    pub embed_timeout_ms: u32,
 }
 
 impl Default for Config {
@@ -61,6 +72,11 @@ impl Default for Config {
             local_device: "host".to_string(),
             history_turns: 6,
             chats_timeout_ms: 2000,
+            recall: true,
+            recall_top_k: 3,
+            recall_min_score: 0.72,
+            recall_budget_ms: 150,
+            embed_timeout_ms: 5000,
         }
     }
 }
@@ -86,7 +102,40 @@ impl Config {
             .and_then(|s| s.trim().parse().ok())
             .filter(|n| *n > 0)
             .unwrap_or(d.chats_timeout_ms);
-        Self { db_timeout_ms, local_device, history_turns, chats_timeout_ms }
+        let recall = std::env::var("AGENT_PLUGIN_RECALL")
+            .map(|s| !s.trim().eq_ignore_ascii_case("off"))
+            .unwrap_or(d.recall);
+        let recall_top_k = std::env::var("AGENT_PLUGIN_RECALL_TOP_K")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|n| (1..=10).contains(n))
+            .unwrap_or(d.recall_top_k);
+        let recall_min_score = std::env::var("AGENT_PLUGIN_RECALL_MIN_SCORE")
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .filter(|f| f.is_finite())
+            .unwrap_or(d.recall_min_score);
+        let recall_budget_ms = std::env::var("AGENT_PLUGIN_RECALL_BUDGET_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(d.recall_budget_ms);
+        let embed_timeout_ms = std::env::var("AGENT_PLUGIN_EMBED_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(d.embed_timeout_ms);
+        Self {
+            db_timeout_ms,
+            local_device,
+            history_turns,
+            chats_timeout_ms,
+            recall,
+            recall_top_k,
+            recall_min_score,
+            recall_budget_ms,
+            embed_timeout_ms,
+        }
     }
 }
 
@@ -279,15 +328,27 @@ async fn start_goal(
         params.source.as_deref(),
         &config.local_device,
     );
-    let resolved =
-        sessions::resolve(rpc, config.chats_timeout_ms, &origin, params.session_id.as_deref())
+    // The goal embedding runs in parallel with session resolve + history.
+    let (query, (resolved, history)) = tokio::join!(
+        recall::embed_goal(rpc, &params.goal, config.embed_timeout_ms),
+        async {
+            let resolved = sessions::resolve(
+                rpc,
+                config.chats_timeout_ms,
+                &origin,
+                params.session_id.as_deref(),
+            )
             .await;
-    let history = match &resolved {
-        Some(r) if config.history_turns > 0 && !r.created => {
-            sessions::history(rpc, config.chats_timeout_ms, &r.id, config.history_turns).await
+            let history = match &resolved {
+                Some(r) if config.history_turns > 0 && !r.created => {
+                    sessions::history(rpc, config.chats_timeout_ms, &r.id, config.history_turns)
+                        .await
+                }
+                _ => Vec::new(),
+            };
+            (resolved, history)
         }
-        _ => Vec::new(),
-    };
+    );
 
     let mut doc = GoalDoc {
         id: id.clone(),
@@ -320,9 +381,10 @@ async fn start_goal(
         origin: Some(origin),
         history_hint: String::new(),
         tool_trace: Vec::new(),
+        recalled_sessions: Vec::new(),
     };
 
-    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history, query }).await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -357,7 +419,7 @@ async fn run_and_record(
     doc: &mut GoalDoc,
     entry: engine::Entry,
 ) -> Result<(), String> {
-    let result = engine::run(db, rpc, catalog, doc, entry).await;
+    let result = engine::run(db, rpc, config, catalog, doc, entry).await;
     if let Err(e) = &result {
         doc.status = store::STATUS_ERROR.to_string();
         doc.error = e.clone();

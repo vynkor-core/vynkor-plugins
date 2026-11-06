@@ -151,7 +151,7 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
   logged once per process), an error or a timeout
   (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`, 2000) just means no session. The model
   cannot call `chat_turn_append`, `chat_session_resolve`, `chat_sync`,
-  `chat_session_update` or `chat_delete`, nor the agent's own `goal_start`,
+  `chat_session_update`, `chat_delete`, `chat_recall` or `chat_review_apply`, nor the agent's own `goal_start`,
   `goal_resume`, `goal_delete`, `memory_forget_session` or `memory_clear`, even
   if allowlisted (`memory_forget` / `memory_list` remain allowlistable).
 - Tool filtering by goal keywords also looks at the session history (or the
@@ -162,6 +162,22 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
   with secret-like names, 32+ char token-like runs) and omits the result of
   `fs_*`, `exec*` and `shell*` tools (`[omitted]`).
 - Facts remembered by long-term memory are tagged with the session.
+- One embedding per turn: a fresh goal calls `vec_embed {texts:[goal]}` once (in
+  parallel with session resolve + history, timeout `AGENT_PLUGIN_EMBED_TIMEOUT_MS`).
+  The vector is reused for the tool filter, the facts memory (`vec_query {vector}`)
+  and `chats`' `chat_recall`. If a vector query fails (e.g. the collection has
+  another `dim`) the same collection is queried once more by text. Without a
+  vector (`vec_embed` missing, failing, empty, or model `fake`) everything works
+  as before A2: text `vec_query`, and no `chat_recall`.
+- Past sessions: with a vector and `AGENT_PLUGIN_RECALL=on`, `chat_recall`
+  (top `AGENT_PLUGIN_RECALL_TOP_K`, `AGENT_PLUGIN_RECALL_MIN_SCORE`, the current
+  session excluded) runs in parallel with the facts lookup under
+  `AGENT_PLUGIN_RECALL_BUDGET_MS`. The result is appended to the goal message
+  (the last `user` message) as a `[PAST SESSIONS]` block, after the facts block
+  if there is one; the role message and message alternation are not touched. A
+  timeout, an error or a missing `chat_recall` means no block (a missing one is
+  logged once per process). Blended session ids are stored on the goal as
+  `recalled_sessions`; the log has `[agent] recall: N sessions in M ms`.
 - `goal_delete {id}` -> `{deleted}` and `memory_forget_session {session_id}` ->
   `{deleted}` (facts removed) exist for the history delete cascade; both are
   idempotent. Facts stored before sessions existed are not matched.
@@ -225,6 +241,11 @@ Env vars set in the kernel's config under this plugin's `env:` list — see
 | `AGENT_PLUGIN_LOCAL_DEVICE` | `host` | Device name recorded for goals started by local plugins. |
 | `AGENT_PLUGIN_HISTORY_TURNS` | `6` | Recent session turns fed to the model; `0` disables history. |
 | `AGENT_PLUGIN_CHATS_TIMEOUT_MS` | `2000` | Per-call timeout for `chats` round-trips. |
+| `AGENT_PLUGIN_RECALL` | `on` | `off` skips the past-session lookup (the goal embedding is still computed). |
+| `AGENT_PLUGIN_RECALL_TOP_K` | `3` | Max past sessions blended into a turn (1..=10). |
+| `AGENT_PLUGIN_RECALL_MIN_SCORE` | `0.72` | Minimum similarity of a past session. |
+| `AGENT_PLUGIN_RECALL_BUDGET_MS` | `150` | Time budget of the lookup; over it, the turn runs without the block. |
+| `AGENT_PLUGIN_EMBED_TIMEOUT_MS` | `5000` | Timeout of the goal's `vec_embed`. |
 | `AGENT_PLUGIN_PROMPTS_DIR` | *(unset)* | Directory of prompt files. Group prompts at `<dir>/<group>.md` (`/` in a group name becomes `-`, so `audio/voice` → `audio-voice.md`). Reserved stems: `_identity.md`, `_personality.md`, `_channel.md` override the built-in persona constants; `_facts.md` supplies the facts block. A missing or blank file falls through to the next layer, never to an empty prompt. |
 | `AGENT_PLUGIN_FACTS` | *(unset)* | Literal facts text; overrides `_facts.md`. |
 | `AGENT_PLUGIN_GOAL_RETENTION_LIMIT` | *(unset = unlimited)* | Max goal docs kept in the store. Checked (best-effort, never fails `goal_start`) after each new goal; when the store exceeds the limit, the oldest-by-`updated_at_ms` goals beyond it are deleted — but a goal still `running` or `needs_confirmation` is never pruned, even past the limit, so the store can stay above the cap while goals are in flight. Unset or empty is a true no-op: no keys are even listed. |

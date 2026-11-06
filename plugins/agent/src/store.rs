@@ -100,6 +100,9 @@ pub struct GoalDoc {
     pub history_hint: String,
     #[serde(default)]
     pub tool_trace: Vec<crate::sessions::TraceRec>,
+    /// Ids of past sessions blended into the opening message (debugging).
+    #[serde(default)]
+    pub recalled_sessions: Vec<String>,
 }
 
 impl GoalDoc {
@@ -452,6 +455,7 @@ pub(crate) mod tests {
             origin: None,
             history_hint: String::new(),
             tool_trace: Vec::new(),
+            recalled_sessions: Vec::new(),
         }
     }
 
