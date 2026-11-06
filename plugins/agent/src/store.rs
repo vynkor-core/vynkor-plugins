@@ -88,6 +88,11 @@ pub struct GoalDoc {
     pub tool_counts: std::collections::BTreeMap<String, u32>,
     #[serde(default)]
     pub tool_last_ms: std::collections::BTreeMap<String, i64>,
+    /// `chats` session this goal belongs to (`None`: chats unavailable).
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub origin: Option<crate::sessions::Origin>,
 }
 
 impl GoalDoc {
@@ -426,6 +431,8 @@ mod tests {
             updated_at_ms: 0,
             tool_counts: Default::default(),
             tool_last_ms: Default::default(),
+            session_id: None,
+            origin: None,
         }
     }
 

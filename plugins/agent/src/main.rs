@@ -349,6 +349,50 @@ mod tests {
     /// tests seed keys (e.g. `memory:index`) the same way `vec_store` lets
     /// them seed fake vector-db collections.
     type DbStore = Arc<Mutex<FakeDb>>;
+    type ChatsStore = Arc<Mutex<FakeChats>>;
+
+    /// How the fake kernel answers `chat_*` actions.
+    #[derive(Default, Clone, PartialEq)]
+    enum ChatsMode {
+        /// Plugin not installed: `action not found`.
+        #[default]
+        Missing,
+        /// Installed and healthy.
+        Normal,
+        /// Installed but never answers (exercises the call timeout).
+        Silent,
+    }
+
+    /// In-memory stand-in for the `chats` plugin: scripted reads, recorded calls.
+    #[derive(Default)]
+    struct FakeChats {
+        mode: ChatsMode,
+        session_id: String,
+        created: bool,
+        turns: Vec<Value>,
+        calls: Vec<(String, Value)>,
+    }
+
+    const CHATS_ACTIONS: [&str; 3] = ["chat_session_resolve", "chat_session_read", "chat_turn_append"];
+
+    impl FakeChats {
+        fn handle(&mut self, action: &str, params: Value) -> Option<Result<Value, String>> {
+            self.calls.push((action.to_string(), params));
+            match self.mode {
+                ChatsMode::Missing => Some(Err("action not found".to_string())),
+                ChatsMode::Silent => None,
+                ChatsMode::Normal => Some(Ok(match action {
+                    "chat_session_resolve" => {
+                        serde_json::json!({"session_id": self.session_id, "created": self.created})
+                    }
+                    "chat_session_read" => serde_json::json!({
+                        "session": {"id": self.session_id}, "turns": self.turns
+                    }),
+                    _ => serde_json::json!({"turn_id": "T1", "seq": 1, "rev": 1}),
+                })),
+            }
+        }
+    }
 
     /// In-memory stand-in for the `database` plugin (same KV semantics the
     /// notes/calendar tests use).
@@ -484,6 +528,7 @@ mod tests {
         ai_requests: AiRequests,
         vec_store: VecStore,
         db: DbStore,
+        chats: ChatsStore,
         _serial: tokio::sync::MutexGuard<'static, ()>,
     }
 
@@ -572,6 +617,31 @@ mod tests {
             db.kv.insert(key, Value::Array(entries));
         }
 
+        /// Install a healthy fake `chats` returning this session and history.
+        async fn chats_normal(&self, session_id: &str, created: bool, turns: Vec<Value>) {
+            let mut c = self.chats.lock().await;
+            c.mode = ChatsMode::Normal;
+            c.session_id = session_id.to_string();
+            c.created = created;
+            c.turns = turns;
+        }
+
+        async fn chats_mode(&self, mode: ChatsMode) {
+            self.chats.lock().await.mode = mode;
+        }
+
+        /// `chat_*` calls the plugin made, in order, optionally one action only.
+        async fn chats_calls(&self, action: &str) -> Vec<Value> {
+            self.chats
+                .lock()
+                .await
+                .calls
+                .iter()
+                .filter(|(a, _)| a == action)
+                .map(|(_, p)| p.clone())
+                .collect()
+        }
+
         async fn vec_facts(&self, collection: &str) -> Vec<Value> {
             self.vec_store
                 .lock()
@@ -608,6 +678,7 @@ mod tests {
             ai_requests: Arc::new(Mutex::new(Vec::new())),
             vec_store: vec_store.clone(),
             db: db.clone(),
+            chats: Arc::new(Mutex::new(FakeChats::default())),
             _serial: TEST_SERIAL.lock().await,
         };
         tokio::spawn(run_shim(
@@ -618,6 +689,7 @@ mod tests {
             shim.ai_requests.clone(),
             vec_store,
             db,
+            shim.chats.clone(),
             commands_denied,
         ));
         shim
@@ -632,6 +704,7 @@ mod tests {
         ai_requests: AiRequests,
         vec_store: VecStore,
         db: DbStore,
+        chats: ChatsStore,
         commands_denied: bool,
     ) {
         let mut ai_replies: VecDeque<Value> = VecDeque::new();
@@ -677,6 +750,11 @@ mod tests {
                                 handle_vec_upsert(&vec_store, params).await
                             } else if req.action == "vec_query" {
                                 handle_vec_query(&vec_store, params).await
+                            } else if CHATS_ACTIONS.contains(&req.action.as_str()) {
+                                match chats.lock().await.handle(&req.action, params) {
+                                    Some(r) => r,
+                                    None => continue, // Silent: never answer
+                                }
                             } else if req.action == "chat_completion" {
                                 ai_requests.lock().await.push(params.clone());
                                 match ai_replies.pop_front() {
@@ -898,6 +976,123 @@ mod tests {
                 .any(|m| m["content"].as_str().unwrap_or_default().contains("[TOOL RESULT")),
             "expected the tool result fed back into the second call"
         );
+    }
+
+    fn turn(seq: i64, q: &str, a: &str, status: &str) -> Value {
+        serde_json::json!({"id": format!("T{seq}"), "seq": seq, "user_text": q,
+                           "answer_text": a, "status": status, "tool_trace": null})
+    }
+
+    #[tokio::test]
+    async fn goal_start_resolves_session_and_returns_it() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("fine").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "hello"})).await.unwrap();
+        assert_eq!(res["status"], "completed");
+        assert_eq!(res["session_id"], "S1");
+        let calls = shim.chats_calls("chat_session_resolve").await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["device"], "host");
+        assert_eq!(calls[0]["kind"], "voice");
+        assert_eq!(calls[0]["source"], "tester");
+        assert!(calls[0].get("session_id").is_none(), "no session_id sent unless given");
+        assert!(shim.chats_calls("chat_session_read").await.is_empty(), "new session: nothing to read");
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(got["goal"]["session_id"], "S1");
+    }
+
+    #[tokio::test]
+    async fn history_turns_precede_goal_in_transcript() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![
+                turn(1, "какая погода", "+5", "ok"),
+                turn(2, "сломанный вопрос", "boom", "failed"),
+            ],
+        )
+        .await;
+        shim.push_ai_reply("завтра +7").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?", "session_id": "S1"}))
+            .await
+            .unwrap();
+        let read = shim.chats_calls("chat_session_read").await;
+        assert_eq!(read[0], serde_json::json!({"id": "S1", "last": 6}));
+        let msgs = shim.ai_requests().await[0]["messages"].as_array().unwrap().clone();
+        let pos = |role: &str, text: &str| {
+            msgs.iter().position(|m| m["role"] == role && m["content"] == text)
+        };
+        let q = pos("user", "какая погода").expect("history question");
+        let a = pos("assistant", "+5").expect("history answer");
+        let g = pos("user", "а завтра?").expect("goal");
+        assert!(0 < q && q < a && a < g, "order: instructions, history, goal");
+        assert!(msgs.iter().all(|m| !m["content"].as_str().unwrap().contains("сломанный")),
+            "failed turns stay out of the prompt");
+        assert!(shim.chats_calls("chat_session_resolve").await[0]["session_id"] == "S1");
+    }
+
+    #[tokio::test]
+    async fn history_wins_over_caller_context() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g", "context": "OLD-CONTEXT"}))
+            .await
+            .unwrap();
+        let reqs = shim.ai_requests().await;
+        assert!(!reqs[0].to_string().contains("OLD-CONTEXT"), "context must not reach the prompt");
+    }
+
+    #[tokio::test]
+    async fn caller_context_still_used_when_history_is_empty() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g", "context": "OLD-CONTEXT"}))
+            .await
+            .unwrap();
+        assert!(shim.ai_requests().await[0].to_string().contains("OLD-CONTEXT"));
+    }
+
+    #[tokio::test]
+    async fn missing_chats_plugin_keeps_goal_working() {
+        let shim = start_plugin(Config::default()).await; // chats Missing by default
+        shim.push_ai_reply("one").await;
+        shim.push_ai_reply("two").await;
+        for _ in 0..2 {
+            let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+            assert_eq!(res["status"], "completed");
+            assert!(res["session_id"].is_null(), "{res}");
+        }
+        assert_eq!(shim.chats_calls("chat_session_resolve").await.len(), 2);
+        assert!(shim.chats_calls("chat_session_read").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slow_chats_is_bounded_by_timeout() {
+        let cfg = Config { chats_timeout_ms: 200, ..Config::default() };
+        let shim = start_plugin(cfg).await;
+        shim.chats_mode(ChatsMode::Silent).await;
+        shim.push_ai_reply("done").await;
+        let t0 = std::time::Instant::now();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert!(t0.elapsed() < Duration::from_secs(2), "took {:?}", t0.elapsed());
+        assert_eq!(res["status"], "completed");
+        assert!(res["session_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn history_turns_zero_skips_read() {
+        let cfg = Config { history_turns: 0, ..Config::default() };
+        let shim = start_plugin(cfg).await;
+        shim.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert_eq!(res["session_id"], "S1");
+        assert!(shim.chats_calls("chat_session_read").await.is_empty());
+        assert!(!shim.ai_requests().await[0].to_string().contains("q1"));
     }
 
     #[tokio::test]

@@ -179,8 +179,10 @@ async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &s
 }
 
 pub enum Entry {
-    /// Fresh goal: seed the transcript from goal + catalog.
-    Fresh,
+    /// Fresh goal: seed the transcript from goal + catalog. `history` is
+    /// the session's prior (question, answer) pairs, oldest first; when
+    /// non-empty it replaces the caller's `context` (never both).
+    Fresh { history: Vec<(String, String)> },
     /// Resumed after approval: dispatch the pending confirmation first.
     ApprovedResume,
 }
@@ -297,15 +299,28 @@ pub async fn run(
     let llm_catalog = &effective;
     let dispatch_catalog = catalog;
     match entry {
-        Entry::Fresh => {
+        Entry::Fresh { history } => {
             doc.status = store::STATUS_RUNNING.to_string();
             // A fresh doc is never degraded yet, so this must (and does)
             // compute the exact same answer the loop's first iteration will
             // reach via `want_native_tools` below — the seed and the first
             // `tools` param are always in sync.
             let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+            // Session history wins over the caller's `context`: both would
+            // carry the same exchanges twice.
+            let context = if history.is_empty() { doc.context.as_str() } else { "" };
             doc.transcript =
-                llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog, native_seed);
+                llm::opening_messages_with_full(&doc.goal, context, llm_catalog, dispatch_catalog, native_seed);
+            // History rides as separate messages between the role/instruction
+            // message (index 0) and the goal, never inside the persona text.
+            let at = 1.min(doc.transcript.len());
+            let turns = history.into_iter().flat_map(|(q, a)| {
+                [
+                    Turn { role: "user".into(), content: q },
+                    Turn { role: "assistant".into(), content: a },
+                ]
+            });
+            doc.transcript.splice(at..at, turns);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;

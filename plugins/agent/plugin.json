@@ -555,6 +555,23 @@
         "type": "integer",
         "minimum": 1,
         "description": "Max goal docs kept; the oldest by updated_at_ms beyond it are pruned after each new goal. Unset = unlimited."
+      },
+      "AGENT_PLUGIN_LOCAL_DEVICE": {
+        "type": "string",
+        "default": "host",
+        "description": "Device name recorded for goals started by local plugins (default host)."
+      },
+      "AGENT_PLUGIN_HISTORY_TURNS": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 6,
+        "description": "How many recent turns of the chat session are fed to the model as history; 0 disables (6)."
+      },
+      "AGENT_PLUGIN_CHATS_TIMEOUT_MS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2000,
+        "description": "Per-call timeout for chats round-trips; a slow chats never delays a goal longer (2000)."
       }
     },
     "additionalProperties": true

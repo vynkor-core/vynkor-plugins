@@ -46,11 +46,22 @@ use tools::Catalog;
 pub struct Config {
     /// Per-call timeout for `database` IPC round-trips.
     pub db_timeout_ms: u32,
+    /// Device name for goals started by local plugins (`AGENT_PLUGIN_LOCAL_DEVICE`).
+    pub local_device: String,
+    /// Prior session turns fed to the LLM; 0 = off (`AGENT_PLUGIN_HISTORY_TURNS`).
+    pub history_turns: u32,
+    /// Per-call timeout for `chats` round-trips (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`).
+    pub chats_timeout_ms: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { db_timeout_ms: 5000 }
+        Self {
+            db_timeout_ms: 5000,
+            local_device: "host".to_string(),
+            history_turns: 6,
+            chats_timeout_ms: 2000,
+        }
     }
 }
 
@@ -60,7 +71,22 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5000);
-        Self { db_timeout_ms }
+        let d = Self::default();
+        let local_device = std::env::var("AGENT_PLUGIN_LOCAL_DEVICE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(d.local_device);
+        let history_turns = std::env::var("AGENT_PLUGIN_HISTORY_TURNS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(d.history_turns);
+        let chats_timeout_ms = std::env::var("AGENT_PLUGIN_CHATS_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(d.chats_timeout_ms);
+        Self { db_timeout_ms, local_device, history_turns, chats_timeout_ms }
     }
 }
 
@@ -237,14 +263,32 @@ fn default_title(goal: &str) -> String {
 async fn start_goal(
     db: &Db,
     rpc: &Rpc,
-    _config: &Config,
-    _caller: &str,
+    config: &Config,
+    caller: &str,
     params: GoalStartParams,
 ) -> Result<ActionResult, String> {
     let catalog = Catalog::load_with_discovery(rpc).await?;
     let id = db.next_id().await?.to_string();
     let now = store::now_ms();
     let llm = build_plan(&params);
+
+    // Session: never fatal. Without `chats` the goal runs as it always did.
+    let origin = sessions::origin(
+        caller,
+        params.kind.as_deref(),
+        params.source.as_deref(),
+        &config.local_device,
+    );
+    let resolved =
+        sessions::resolve(rpc, config.chats_timeout_ms, &origin, params.session_id.as_deref())
+            .await;
+    let history = match &resolved {
+        Some(r) if config.history_turns > 0 && !r.created => {
+            sessions::history(rpc, config.chats_timeout_ms, &r.id, config.history_turns).await
+        }
+        _ => Vec::new(),
+    };
+
     let mut doc = GoalDoc {
         id: id.clone(),
         title: params.title.clone().unwrap_or_else(|| default_title(&params.goal)),
@@ -272,9 +316,11 @@ async fn start_goal(
         updated_at_ms: now,
         tool_counts: Default::default(),
         tool_last_ms: Default::default(),
+        session_id: resolved.map(|r| r.id),
+        origin: Some(origin),
     };
 
-    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh).await?;
+    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -332,6 +378,7 @@ fn summary(doc: &GoalDoc) -> Value {
         "steps": doc.steps,
         "pending_tool": doc.pending_tool,
         "max_steps": doc.max_steps,
+        "session_id": doc.session_id,
     })
 }
 
