@@ -28,9 +28,9 @@ pub fn is_mutation(action: &str, result: &Value) -> bool {
         "chat_session_resolve" => result["created"] == true,
         "chat_delete" => result["deleted"] == true,
         "chat_turn_append" | "chat_session_update" => true,
-        "chat_review_apply" => {
-            result["deleted"].as_i64().unwrap_or(0) + result["compressed"].as_i64().unwrap_or(0) > 0
-        }
+        // the review changes status on every successful apply (even if every
+        // session was skipped): clients refresh `review_pending`
+        "chat_review_apply" => true,
         _ => false,
     }
 }

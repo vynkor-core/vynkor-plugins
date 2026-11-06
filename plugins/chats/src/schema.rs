@@ -107,12 +107,14 @@ const SCHEMA_V2_TABLE_COLUMNS: [(&str, &str, &str); 4] = [
 ];
 
 /// v3 (retention): usage counters, cascade modes and the monthly review.
-const SCHEMA_V3_COLUMNS: [(&str, &str, &str); 3] = [
+const SCHEMA_V3_COLUMNS: [(&str, &str, &str); 4] = [
     ("sessions", "recall_count", "INTEGER NOT NULL DEFAULT 0"),
     ("sessions", "last_used_at", "INTEGER NOT NULL DEFAULT 0"),
     // 'delete' = remove everything of the session, 'compact' = vectors of the
     // turns and agent goals only; the session itself stays
     ("cascade", "mode", "TEXT NOT NULL DEFAULT 'delete'"),
+    // 1 = the sweep must not touch the session's summary vector (compaction)
+    ("swept", "turns_only", "INTEGER NOT NULL DEFAULT 0"),
 ];
 
 const SCHEMA_V3_TABLES: &str = "

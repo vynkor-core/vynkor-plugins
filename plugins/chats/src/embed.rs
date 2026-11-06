@@ -100,10 +100,43 @@ fn dead_sessions(
     Ok(dead)
 }
 
-fn requeue_dead(conn: &mut Connection, attempted: &Attempted) -> Result<(), String> {
-    dead_sessions(conn, attempted)?
-        .into_iter()
-        .try_for_each(|(sid, ids)| crate::cascade::requeue(conn, &sid, &ids))
+/// Sessions among `attempted` that are live but no longer `full` (compacted or
+/// summarized while the write was in flight), with their turn ids: the vectors
+/// just written must go again.
+fn demoted_sessions(
+    conn: &Connection,
+    attempted: &Attempted,
+) -> Result<Vec<(String, Vec<String>)>, String> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for (sid, tid) in attempted {
+        let demoted: bool = conn
+            .query_row(
+                "SELECT count(*) FROM sessions WHERE id = ? AND state = 'live' AND tier != 'full'",
+                [sid],
+                |r| r.get::<_, i64>(0),
+            )
+            .map_err(db_err)?
+            > 0;
+        if demoted {
+            match out.iter_mut().find(|(s, _)| s == sid) {
+                Some((_, ids)) => ids.push(tid.clone()),
+                None => out.push((sid.clone(), vec![tid.clone()])),
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Queue cleanup for whatever may have reached vector-db for sessions that
+/// died or were compacted while the write was running.
+fn requeue_stale(conn: &mut Connection, attempted: &Attempted) -> Result<(), String> {
+    for (sid, ids) in dead_sessions(conn, attempted)? {
+        crate::cascade::requeue(conn, &sid, &ids)?;
+    }
+    for (sid, ids) in demoted_sessions(conn, attempted)? {
+        crate::cascade::enqueue_vectors(conn, &sid, &ids)?;
+    }
+    Ok(())
 }
 
 struct SessionDoc {
@@ -239,7 +272,7 @@ impl Worker {
                 {
                     // Backend trouble. The batch may still have been written
                     // (a timeout says nothing): clean up for dead sessions.
-                    let r = with_db(&self.db, move |c| requeue_dead(c, &attempted)).await;
+                    let r = with_db(&self.db, move |c| requeue_stale(c, &attempted)).await;
                     if let Ok(Err(e)) | Err(e) = r {
                         self.warn("db", &e);
                     }
@@ -272,7 +305,7 @@ impl Worker {
             bump_attempts(c, &bad)?;
             set_embedded(c, &good)?;
             // rejected or timed-out documents count as possibly written too
-            requeue_dead(c, &attempted)
+            requeue_stale(c, &attempted)
         })
         .await;
         if let Ok(Err(e)) | Err(e) = r {

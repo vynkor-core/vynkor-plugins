@@ -49,7 +49,7 @@ pub fn junk_sessions(conn: &Connection, now: i64, cfg: &Config) -> Result<Vec<St
     let before = now - cfg.junk_age_secs.saturating_mul(1000);
     conn.prepare(
         "SELECT s.id FROM sessions s
-         WHERE s.state = 'live' AND s.pinned = 0 AND s.tier != 'summary' AND s.last_at < ?1
+         WHERE s.state = 'live' AND s.pinned = 0 AND s.tier != 'summary' AND MAX(s.last_at, s.last_used_at) < ?1
            AND NOT EXISTS (
                 SELECT 1 FROM turns t WHERE t.session_id = s.id AND t.status = 'ok'
                    AND trim(t.user_text) != '' AND trim(t.answer_text) != '')
@@ -75,7 +75,7 @@ pub fn compact_candidates(
     conn.prepare(
         "SELECT s.id FROM sessions s
          WHERE s.state = 'live' AND s.pinned = 0 AND s.tier = 'full'
-           AND s.summarized_rev > 0 AND s.summary != ''
+           AND s.summary != '' AND s.summarized_rev >= s.rev
            AND s.last_at < ?1 AND MAX(s.last_used_at, s.last_at) < ?2
            AND NOT EXISTS (SELECT 1 FROM cascade c WHERE c.session_id = s.id)
          ORDER BY s.last_at LIMIT 100",
@@ -99,7 +99,7 @@ pub fn compact(conn: &mut Connection, session_id: &str) -> Result<bool, String> 
     let ok: bool = tx
         .query_row(
             "SELECT 1 FROM sessions s WHERE s.id = ?1 AND s.state = 'live' AND s.pinned = 0
-               AND s.tier = 'full'
+               AND s.tier = 'full' AND s.summary != '' AND s.summarized_rev >= s.rev
                AND NOT EXISTS (SELECT 1 FROM cascade c WHERE c.session_id = s.id)",
             [session_id],
             |_| Ok(true),
@@ -139,8 +139,14 @@ pub fn compact(conn: &mut Connection, session_id: &str) -> Result<bool, String> 
         [session_id],
     )
     .map_err(db_err)?;
+    // The summary was current (checked above) and stays current under the new
+    // revision: advance its markers so the summarizer and the embedder do not
+    // run again just because compaction bumped `rev`.
     tx.execute(
-        "UPDATE sessions SET tier = 'compact', rev = ?1 WHERE id = ?2",
+        "UPDATE sessions SET tier = 'compact',
+                embedded_rev = CASE WHEN embedded_rev >= summarized_rev THEN ?1 ELSE embedded_rev END,
+                summarized_rev = ?1, rev = ?1
+         WHERE id = ?2",
         params![rev, session_id],
     )
     .map_err(db_err)?;
@@ -181,13 +187,14 @@ fn group_sessions(
         // low-value voice sessions: at most one useful exchange, never recalled
         GROUP_JUNK => (
             "s.kind = 'voice' AND s.tier != 'summary' AND s.recall_count = 0
-             AND s.last_at < ?1
+             AND MAX(s.last_at, s.last_used_at) < ?1
              AND (SELECT count(*) FROM turns t WHERE t.session_id = s.id AND t.status = 'ok') <= 1",
             now - cfg.review_lowvalue_age_secs.saturating_mul(1000),
         ),
         // compact sessions nobody has looked at for a long time
         GROUP_COMPRESS => (
-            "s.tier = 'compact' AND MAX(s.last_used_at, s.last_at) < ?1",
+            "s.tier = 'compact' AND s.summary != '' AND s.summarized_rev >= s.rev
+             AND MAX(s.last_used_at, s.last_at) < ?1",
             now - cfg.review_summary_age_secs.saturating_mul(1000),
         ),
         other => return Err(format!("unknown group {other}")),
@@ -221,16 +228,16 @@ fn session_card(conn: &Connection, id: &str) -> Result<Value, String> {
     .map_err(db_err)
 }
 
-/// Prepare the monthly review if one is due (`meta.last_review`). Without
-/// candidates nothing is created; a still-pending older review is replaced
-/// (and marked `dismissed`). Returns true if a review was created.
+/// Prepare the monthly review if one is due (`meta.last_review`; a stamp in the
+/// future counts as due). With candidates a new review replaces a pending one;
+/// without candidates a pending review is dismissed. Returns true if the
+/// pending-review state changed (created, replaced or dismissed). The stamp is
+/// written only after the work succeeded.
 pub fn prepare_review(conn: &mut Connection, cfg: &Config, now: i64) -> Result<bool, String> {
-    if meta_get(conn, "last_review")?
-        .is_some_and(|l| now - l < cfg.review_interval_secs.saturating_mul(1000))
-    {
+    let interval = cfg.review_interval_secs.saturating_mul(1000);
+    if meta_get(conn, "last_review")?.is_some_and(|l| l <= now && now - l < interval) {
         return Ok(false);
     }
-    meta_set(conn, "last_review", now)?;
     let mut groups = Vec::new();
     for (key, action) in [(GROUP_JUNK, "delete"), (GROUP_COMPRESS, "summary")] {
         let ids = group_sessions(conn, key, cfg, now, None)?;
@@ -243,26 +250,31 @@ pub fn prepare_review(conn: &mut Connection, cfg: &Config, now: i64) -> Result<b
             .collect::<Result<Vec<_>, _>>()?;
         groups.push(json!({"key": key, "action": action, "sessions": sessions}));
     }
-    if groups.is_empty() {
-        return Ok(false);
-    }
     let tx = conn.transaction().map_err(db_err)?;
+    let dismissed = tx
+        .execute(
+            "UPDATE reviews SET status = 'dismissed' WHERE status = 'pending'",
+            [],
+        )
+        .map_err(db_err)?;
+    if !groups.is_empty() {
+        tx.execute(
+            "INSERT INTO reviews(id, created_at, status, groups) VALUES (?, ?, 'pending', ?)",
+            params![
+                ulid::Ulid::new().to_string(),
+                now,
+                json!(groups).to_string()
+            ],
+        )
+        .map_err(db_err)?;
+    }
     tx.execute(
-        "UPDATE reviews SET status = 'dismissed' WHERE status = 'pending'",
-        [],
-    )
-    .map_err(db_err)?;
-    tx.execute(
-        "INSERT INTO reviews(id, created_at, status, groups) VALUES (?, ?, 'pending', ?)",
-        params![
-            ulid::Ulid::new().to_string(),
-            now,
-            json!(groups).to_string()
-        ],
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_review', ?)",
+        [now],
     )
     .map_err(db_err)?;
     tx.commit().map_err(db_err)?;
-    Ok(true)
+    Ok(!groups.is_empty() || dismissed > 0)
 }
 
 /// `chat_review_get`: the pending review, if any.
@@ -296,7 +308,8 @@ pub fn summarize_tier(conn: &mut Connection, session_id: &str) -> Result<bool, S
         .map_err(db_err)?;
     let ok: bool = tx
         .query_row(
-            "SELECT 1 FROM sessions WHERE id = ? AND state = 'live' AND pinned = 0 AND tier = 'compact'",
+            "SELECT 1 FROM sessions WHERE id = ? AND state = 'live' AND pinned = 0 AND tier = 'compact'
+               AND summary != '' AND summarized_rev >= rev",
             [session_id],
             |_| Ok(true),
         )
@@ -317,7 +330,10 @@ pub fn summarize_tier(conn: &mut Connection, session_id: &str) -> Result<bool, S
     tx.execute("DELETE FROM turns WHERE session_id = ?", [session_id])
         .map_err(db_err)?;
     tx.execute(
-        "UPDATE sessions SET tier = 'summary', rev = ?1 WHERE id = ?2",
+        "UPDATE sessions SET tier = 'summary',
+                embedded_rev = CASE WHEN embedded_rev >= summarized_rev THEN ?1 ELSE embedded_rev END,
+                summarized_rev = ?1, rev = ?1
+         WHERE id = ?2",
         params![rev, session_id],
     )
     .map_err(db_err)?;
@@ -356,8 +372,10 @@ pub fn review_apply(
     let Some((status, groups)) = row else {
         return Err("review not found".into());
     };
-    if status != "pending" {
-        return Err("review already applied".into());
+    match status.as_str() {
+        "pending" => {}
+        "applied" => return Err("review already applied".into()),
+        _ => return Err("review not pending".into()),
     }
     let groups: Vec<Value> = serde_json::from_str(&groups).unwrap_or_default();
     for key in accept {
@@ -434,19 +452,23 @@ fn meta_set(conn: &Connection, key: &str, v: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// One maintenance pass; a no-op until `CHATS_MAINT_INTERVAL_SECS` has passed
-/// since the previous one (`meta.last_maint`).
+/// Is a maintenance pass due? A stamp in the future (clock moved back) counts
+/// as due.
+fn maintenance_due(conn: &Connection, cfg: &Config, now: i64) -> Result<bool, String> {
+    let interval = cfg.maint_interval_secs.saturating_mul(1000);
+    Ok(cfg.retention
+        && !meta_get(conn, "last_maint")?.is_some_and(|l| l <= now && now - l < interval))
+}
+
+/// The synchronous form of one maintenance pass (used by tests; the worker runs
+/// the same steps one session per database call, see
+/// [`Worker::maintenance_pass`]). The interval stamp is written last.
+#[cfg(test)]
 pub fn maintenance(conn: &mut Connection, cfg: &Config, now: i64) -> Result<Outcome, String> {
     let mut out = Outcome::default();
-    if !cfg.retention {
+    if !maintenance_due(conn, cfg, now)? {
         return Ok(out);
     }
-    if meta_get(conn, "last_maint")?
-        .is_some_and(|l| now - l < cfg.maint_interval_secs.saturating_mul(1000))
-    {
-        return Ok(out);
-    }
-    meta_set(conn, "last_maint", now)?;
     for id in junk_sessions(conn, now, cfg)? {
         if store::delete(conn, &id)?["deleted"] == true {
             out.deleted += 1;
@@ -458,26 +480,94 @@ pub fn maintenance(conn: &mut Connection, cfg: &Config, now: i64) -> Result<Outc
         }
     }
     out.review = prepare_review(conn, cfg, now)?;
+    meta_set(conn, "last_maint", now)?;
     Ok(out)
 }
 
 impl Worker {
-    /// Run the maintenance pass; true if synced state changed. The cleanup the
-    /// pass enqueues is processed by the cascade pass that follows it.
+    /// Run the maintenance pass; true if synced state changed. Nothing holds
+    /// the database for the whole pass: every session is its own short call,
+    /// the pass stops at the cleanup lane's wall-clock budget (the next tick
+    /// continues, since handled sessions drop out of the candidate lists), an
+    /// error on one session is logged and the pass goes on, and the interval
+    /// stamp is written only after a complete pass. The cleanup this enqueues
+    /// is processed by the cascade pass that follows.
     pub(crate) async fn maintenance_pass(&self, now: i64) -> bool {
-        let cfg = std::sync::Arc::clone(&self.cfg);
-        match with_db(&self.db, move |c| maintenance(c, &cfg, now)).await {
-            Ok(Ok(o)) => {
-                if o.review {
-                    (self.changed)("review");
-                }
-                o.changed()
-            }
+        let (cfg, started, budget) = (
+            std::sync::Arc::clone(&self.cfg),
+            std::time::Instant::now(),
+            self.pass_budget(),
+        );
+        let c = std::sync::Arc::clone(&cfg);
+        match with_db(&self.db, move |db| maintenance_due(db, &c, now)).await {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return false,
             Ok(Err(e)) | Err(e) => {
                 self.warn("db", &e);
-                false
+                return false;
             }
         }
+        let mut out = Outcome::default();
+        let c = std::sync::Arc::clone(&cfg);
+        let junk = with_db(&self.db, move |db| junk_sessions(db, now, &c)).await;
+        let c = std::sync::Arc::clone(&cfg);
+        let compactable = with_db(&self.db, move |db| compact_candidates(db, now, &c)).await;
+        let (junk, compactable) = match (junk, compactable) {
+            (Ok(Ok(j)), Ok(Ok(c))) => (j, c),
+            (a, b) => {
+                for e in [a.err(), b.err()].into_iter().flatten() {
+                    self.warn("db", &e);
+                }
+                return false;
+            }
+        };
+        let mut complete = true;
+        for (handled, (id, is_junk)) in junk
+            .into_iter()
+            .map(|i| (i, true))
+            .chain(compactable.into_iter().map(|i| (i, false)))
+            .enumerate()
+        {
+            if handled > 0 && started.elapsed() >= budget {
+                complete = false;
+                break;
+            }
+            let r = with_db(&self.db, move |db| {
+                if is_junk {
+                    store::delete(db, &id).map(|v| v["deleted"] == true)
+                } else {
+                    compact(db, &id)
+                }
+            })
+            .await;
+            match r {
+                Ok(Ok(true)) if is_junk => out.deleted += 1,
+                Ok(Ok(true)) => out.compacted += 1,
+                Ok(Ok(false)) => {}
+                Ok(Err(e)) | Err(e) => {
+                    self.warn("db", &e);
+                }
+            }
+        }
+        if complete {
+            let c = std::sync::Arc::clone(&cfg);
+            let r = with_db(&self.db, move |db| {
+                let review = prepare_review(db, &c, now)?;
+                meta_set(db, "last_maint", now)?;
+                Ok::<bool, String>(review)
+            })
+            .await;
+            match r {
+                Ok(Ok(review)) => out.review = review,
+                Ok(Err(e)) | Err(e) => {
+                    self.warn("db", &e);
+                }
+            }
+        }
+        if out.review {
+            (self.changed)("review");
+        }
+        out.changed()
     }
 }
 
@@ -736,7 +826,7 @@ mod tests {
         // once it has a summary it is compacted
         f.lock()
             .execute(
-                "UPDATE sessions SET summary='s', summarized_rev=1 WHERE id=?",
+                "UPDATE sessions SET summary='s', summarized_rev=rev WHERE id=?",
                 [&nosum],
             )
             .unwrap();
@@ -1059,7 +1149,10 @@ mod tests {
             &set.c1,
         );
         assert_eq!((tier.as_str(), n), ("compact", 1));
-        assert!(!request_changed("chat_review_apply", &out));
+        assert!(
+            request_changed("chat_review_apply", &out),
+            "the review status changed even though everything was skipped"
+        );
     }
 
     #[tokio::test]
@@ -1188,5 +1281,336 @@ mod tests {
         assert!(ch.iter().all(|c| c["op"] != "delete"));
         let n: i64 = f.q("SELECT count(*) FROM turns WHERE session_id=?", [&sid]);
         assert_eq!(n, 0);
+    }
+
+    // ----- review follow-ups ----------------------------------------------
+
+    #[tokio::test]
+    async fn compaction_and_summary_tier_do_not_retrigger_summary_or_embedding() {
+        let f = Fixture::new();
+        let (sid, _) = summarized(&f, "a", T0).await;
+        f.worker.run_work(T0 + 10).await; // turn + summary embedded
+        let upserts = f.fake.calls("vec_upsert_batch").len();
+        let summary = |f: &Fixture| -> (String, String) {
+            f.q2("SELECT summary, title FROM sessions WHERE id=?", &sid)
+        };
+        let before = summary(&f);
+        let later = T0 + OLD;
+        f.worker.run_cleanup(later).await; // compact
+        f.fake.script_completion(Ok(
+            r#"{"title":"HALLUCINATED","summary":"made up","tags":[]}"#,
+        ));
+        f.worker.run_work(later + 10).await;
+        assert!(
+            f.fake.calls("chat_completion").is_empty(),
+            "no summary call after compaction"
+        );
+        assert_eq!(summary(&f), before);
+        assert_eq!(
+            f.fake.calls("vec_upsert_batch").len(),
+            upserts,
+            "no re-embedding"
+        );
+        // compact -> summary: the session has no turns left; still nothing to do
+        assert!(summarize_tier(&mut f.lock(), &sid).unwrap());
+        f.worker.run_work(later + 20).await;
+        assert!(
+            f.fake.calls("chat_completion").is_empty(),
+            "no summary call after summarize"
+        );
+        assert_eq!(summary(&f), before, "the only content is not overwritten");
+        assert_eq!(f.fake.calls("vec_upsert_batch").len(), upserts);
+        let (rev, sum_rev, emb_rev): (i64, i64, i64) = f.q2(
+            "SELECT rev, summarized_rev, embedded_rev FROM sessions WHERE id=?",
+            &sid,
+        );
+        assert_eq!((sum_rev, emb_rev), (rev, rev));
+    }
+
+    #[tokio::test]
+    async fn stale_summary_blocks_compaction_and_compression() {
+        let f = Fixture::new();
+        let (sid, _) = summarized(&f, "a", T0).await;
+        // a turn arrived after the summary: it no longer describes the session
+        store::append(
+            &mut f.lock(),
+            &f.cfg,
+            store::tests::ap(&sid, "more", "talk"),
+            T0 + 1,
+        )
+        .unwrap();
+        f.lock()
+            .execute("UPDATE sessions SET last_used_at = 0 WHERE id=?", [&sid])
+            .unwrap();
+        assert!(compact_candidates(&f.lock(), T0 + OLD, &f.cfg)
+            .unwrap()
+            .is_empty());
+        assert!(!compact(&mut f.lock(), &sid).unwrap());
+        // same for a compact session whose summary is not current
+        f.lock()
+            .execute(
+                "UPDATE sessions SET tier='compact', summarized_rev = rev - 1 WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
+        assert!(!summarize_tier(&mut f.lock(), &sid).unwrap());
+        let ids = group_sessions(&f.lock(), GROUP_COMPRESS, &f.cfg, REVIEW_NOW, None).unwrap();
+        assert!(ids.is_empty());
+        // an empty summary does not qualify either
+        f.lock()
+            .execute(
+                "UPDATE sessions SET summarized_rev = rev, summary = '' WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
+        assert!(!summarize_tier(&mut f.lock(), &sid).unwrap());
+        assert!(
+            group_sessions(&f.lock(), GROUP_COMPRESS, &f.cfg, REVIEW_NOW, None)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn title_and_pin_edits_keep_the_summary_current() {
+        let f = Fixture::new();
+        let (sid, _) = summarized(&f, "a", T0).await;
+        f.worker.run_work(T0 + 10).await;
+        store::update(&mut f.lock(), &sid, Some("My title".into()), None).unwrap();
+        let (rev, sum_rev, emb_rev): (i64, i64, i64) = f.q2(
+            "SELECT rev, summarized_rev, embedded_rev FROM sessions WHERE id=?",
+            &sid,
+        );
+        assert_eq!((sum_rev, emb_rev), (rev, rev));
+        f.worker.run_work(T0 + OLD).await;
+        assert!(f.fake.calls("chat_completion").is_empty());
+    }
+
+    #[tokio::test]
+    async fn delete_after_summary_tier_keeps_the_pending_vector_and_goal_deletes() {
+        let f = Fixture::new();
+        let (sid, turn) = summarized(&f, "a", T0).await;
+        f.worker.run_work(T0 + 10).await;
+        f.fake.set_failing("agent", true);
+        f.worker.run_cleanup(T0 + OLD).await; // compact; the goal delete is stuck
+        assert!(summarize_tier(&mut f.lock(), &sid).unwrap()); // turns are gone now
+        f.delete(&sid).await;
+        let (turns, goals): (String, String) = f.q2(
+            "SELECT turn_ids, goal_ids FROM cascade WHERE session_id=?",
+            &sid,
+        );
+        assert!(
+            turns.contains(&turn),
+            "pending turn vector delete kept: {turns}"
+        );
+        assert!(goals.contains("g-a"), "pending goal delete kept: {goals}");
+        f.fake.set_failing("agent", false);
+        f.worker.run_cleanup(T0 + OLD + 4 * 3_600_000).await;
+        assert!(f.fake.doc_ids("chats-turns").is_empty());
+        assert!(f.fake.calls("goal_delete").len() >= 2);
+        let rows: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]);
+        assert_eq!(rows, 0);
+    }
+
+    /// The session is compacted (and its cleanup already finished) while a
+    /// turn embedding is in flight: the vector that lands afterwards must be
+    /// queued for deletion, and the sweep must retry turn vectors only.
+    #[tokio::test]
+    async fn late_turn_vector_of_a_compacted_session_is_cleaned() {
+        let f = Fixture::new();
+        let (sid, turn) = summarized(&f, "a", T0).await;
+        let (db, s2) = (std::sync::Arc::clone(&f.db), sid.clone());
+        let once = std::sync::atomic::AtomicBool::new(false);
+        f.fake.on_call("vec_upsert_batch", move |p| {
+            if p["collection"] != "chats-turns"
+                || once.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return;
+            }
+            let mut c = db.lock().unwrap();
+            assert!(compact(&mut c, &s2).unwrap());
+            c.execute("DELETE FROM cascade WHERE session_id = ?", [&s2])
+                .unwrap(); // cleanup finished
+        });
+        f.worker.run_work(T0 + 10).await;
+        assert_eq!(
+            f.fake.doc_ids("chats-turns"),
+            vec![turn.clone()],
+            "the late vector landed"
+        );
+        let (mode, ids): (String, String) = f.q2(
+            "SELECT mode, turn_ids FROM cascade WHERE session_id=?",
+            &sid,
+        );
+        assert_eq!(mode, "compact");
+        assert!(ids.contains(&turn));
+        f.worker.run_cleanup(T0 + 20).await;
+        assert!(
+            f.fake.doc_ids("chats-turns").is_empty(),
+            "late vector deleted again"
+        );
+        assert_eq!(
+            f.fake.doc_ids("chats-sessions"),
+            vec![sid.clone()],
+            "summary vector stays"
+        );
+        let rows: i64 = f.q(
+            "SELECT count(*) FROM sessions WHERE id=? AND state='live'",
+            [&sid],
+        );
+        assert_eq!(rows, 1);
+    }
+
+    #[tokio::test]
+    async fn compact_job_leaves_a_turns_only_sweep_row() {
+        let f = Fixture::new();
+        let (sid, turn) = summarized(&f, "a", T0).await;
+        f.worker.run_work(T0 + 10).await;
+        f.worker.run_cleanup(T0 + OLD).await; // compaction done
+        let (only, ids): (i64, String) = f.q2(
+            "SELECT turns_only, turn_ids FROM swept WHERE session_id=?",
+            &sid,
+        );
+        assert_eq!(only, 1);
+        assert!(ids.contains(&turn));
+        // a straggling embedding lands later; the daily sweep removes it but
+        // never the summary vector
+        f.fake
+            .handle(
+                "vec_upsert_batch",
+                json!({"collection": "chats-turns", "docs": [{"id": turn, "text": "late", "metadata": {}}]}),
+            )
+            .await
+            .unwrap();
+        f.worker.run_cleanup(T0 + OLD + 2 * DAY).await; // closes the open cycle
+        f.worker.run_cleanup(T0 + OLD + 3 * DAY).await; // next cycle sweeps
+        assert!(f.fake.doc_ids("chats-turns").is_empty());
+        assert_eq!(f.fake.doc_ids("chats-sessions"), vec![sid]);
+    }
+
+    #[tokio::test]
+    async fn resumed_old_chat_is_not_junk() {
+        let f = Fixture::new();
+        let sid = f.session("a", "chat", T0);
+        turn_status(&f, &sid, "q", "", "failed", T0);
+        let now = T0 + 2 * DAY;
+        // the user continues the old chat: resolve with its id, turn comes next
+        let r = store::resolve(
+            &mut f.lock(),
+            &f.cfg,
+            &store::tests::rp("a", "chat", Some(&sid)),
+            now,
+        )
+        .unwrap();
+        assert_eq!(r["session_id"], sid.as_str());
+        assert_eq!(r["created"], false);
+        let out = maintenance(&mut f.lock(), &f.cfg, now).unwrap();
+        assert_eq!(out.deleted, 0);
+        assert_eq!(state(&f, &sid), "live");
+        // and resolving does not bump rev (not synced)
+        let used: i64 = f.q("SELECT last_used_at FROM sessions WHERE id=?", [&sid]);
+        assert_eq!(used, now);
+    }
+
+    #[tokio::test]
+    async fn future_stamps_count_as_due() {
+        let f = Fixture::new();
+        let a = f.session("a", "chat", T0);
+        turn_status(&f, &a, "q", "", "failed", T0);
+        let now = T0 + 2 * DAY;
+        meta_set(&f.lock(), "last_maint", now + 400 * DAY).unwrap(); // clock moved back
+        meta_set(&f.lock(), "last_review", now + 400 * DAY).unwrap();
+        let out = maintenance(&mut f.lock(), &f.cfg, now).unwrap();
+        assert_eq!(out.deleted, 1, "pass ran despite the future stamp");
+        let stamp: i64 = f.q("SELECT value FROM meta WHERE key='last_maint'", []);
+        assert_eq!(stamp, now);
+    }
+
+    #[tokio::test]
+    async fn maintenance_resumes_within_the_budget_and_stamps_last() {
+        let f = Fixture::new();
+        for i in 0..3 {
+            let s = f.session(&format!("d{i}"), "chat", T0);
+            turn_status(&f, &s, "q", "", "failed", T0);
+        }
+        let now = T0 + 2 * DAY;
+        f.worker.set_pass_budget_ms(0); // one session per pass
+        f.worker.run_cleanup(now).await;
+        let live =
+            |f: &Fixture| -> i64 { f.q("SELECT count(*) FROM sessions WHERE state = 'live'", []) };
+        let stamped: i64 = f.q("SELECT count(*) FROM meta WHERE key='last_maint'", []);
+        assert_eq!((live(&f), stamped), (2, 0), "partial pass: not stamped yet");
+        f.worker.run_cleanup(now + 1).await;
+        f.worker.run_cleanup(now + 2).await;
+        assert_eq!(live(&f), 0);
+        f.worker.run_cleanup(now + 3).await; // complete pass, now stamped
+        let stamped: i64 = f.q("SELECT count(*) FROM meta WHERE key='last_maint'", []);
+        assert_eq!(stamped, 1);
+    }
+
+    #[tokio::test]
+    async fn review_without_candidates_dismisses_the_pending_one() {
+        let f = Fixture::new();
+        let set = review_set(&f).await;
+        make_review(&f);
+        let pending = |f: &Fixture| {
+            crate::sync::sync(&f.lock(), 0, 100, 500).unwrap()["review_pending"].clone()
+        };
+        assert_eq!(pending(&f), true);
+        // the owner pinned everything meanwhile
+        for id in [&set.v1, &set.c1] {
+            store::update(&mut f.lock(), id, None, Some(true)).unwrap();
+        }
+        assert!(
+            prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW + 31 * DAY).unwrap(),
+            "state changed"
+        );
+        assert_eq!(pending(&f), false);
+        assert_eq!(review_get(&f.lock()).unwrap(), json!({"review": null}));
+        // a further run changes nothing
+        assert!(!prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW + 70 * DAY).unwrap());
+    }
+
+    #[tokio::test]
+    async fn dismissed_review_cannot_be_applied() {
+        let f = Fixture::new();
+        review_set(&f).await;
+        let first = make_review(&f)["id"].as_str().unwrap().to_string();
+        assert!(prepare_review(&mut f.lock(), &f.cfg, REVIEW_NOW + 31 * DAY).unwrap());
+        let e = review_apply(
+            &mut f.lock(),
+            &f.cfg,
+            &first,
+            &["junk".to_string()],
+            &[],
+            REVIEW_NOW + 31 * DAY,
+        )
+        .unwrap_err();
+        assert_eq!(e, "review not pending");
+    }
+
+    #[tokio::test]
+    async fn summary_tier_session_is_never_a_summary_candidate() {
+        let f = Fixture::new();
+        let sid = f.session("a", "chat", T0);
+        turn_status(&f, &sid, "q", "a", "ok", T0);
+        // a summary-tier session has no turn rows; even with stale markers it
+        // must not be fed an empty transcript
+        f.lock()
+            .execute("DELETE FROM turns WHERE session_id=?", [&sid])
+            .unwrap();
+        f.lock()
+            .execute(
+                "UPDATE sessions SET tier='summary', summary='kept', title='T', summarized_rev=0 WHERE id=?",
+                [&sid],
+            )
+            .unwrap();
+        f.fake
+            .script_completion(Ok(r#"{"title":"X","summary":"hallucinated","tags":[]}"#));
+        f.worker.run_work(T0 + OLD).await;
+        assert!(f.fake.calls("chat_completion").is_empty());
+        let (title, summary): (String, String) =
+            f.q2("SELECT title, summary FROM sessions WHERE id=?", &sid);
+        assert_eq!((title.as_str(), summary.as_str()), ("T", "kept"));
     }
 }

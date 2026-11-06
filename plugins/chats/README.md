@@ -134,6 +134,14 @@ applied after they were pinned.
   are removed through a `cascade` job in `compact` mode (retried like a delete;
   summary, tags, summary vector and facts stay). A new turn makes the session
   `full` again.
+- **Current summaries only.** Compaction, the `compress` group and the
+  `summary` tier need a non-empty summary that is current (`summarized_rev >=
+  rev`). Compaction and the tier change keep the summary current under their
+  new `rev` (no re-summarizing, no re-embedding); title and pin edits do too.
+  Only `full` sessions with a good turn are ever summarized, so a `summary`-tier
+  session (no turns) can never be overwritten by an empty-transcript reply.
+- **Resumed chats.** Resolving an existing session stamps `last_used_at`
+  (no `rev`), so an old chat that is being continued is not junk.
 - **Monthly review.** Every `CHATS_REVIEW_INTERVAL_SECS` the worker prepares a
   review with two groups: `junk` (low-value voice sessions: at most one good
   turn, never recalled, older than `CHATS_REVIEW_LOWVALUE_AGE_SECS`; action
@@ -143,7 +151,12 @@ applied after they were pinned.
   `review_pending`; the worker publishes `changed` with `action: "review"`.
   `chat_review_apply` carries out the accepted group keys, re-checking every
   session first (pinned, used or deleted since -> `skipped`). A review can be
-  applied once (`review already applied`); an unknown id is `review not found`.
+  applied once (`review already applied`; a replaced one is `review not
+  pending`); an unknown id is `review not found`. Every successful apply
+  publishes `changed`. A due review with no candidates dismisses a pending one.
+  The maintenance pass works one session per database call within the
+  cleanup lane's 60 s budget and writes its interval stamp last; a stamp in the
+  future counts as due.
 
 ## Events
 
