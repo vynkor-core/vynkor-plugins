@@ -64,9 +64,10 @@ Matching is case-insensitive (including Cyrillic) and diacritics-insensitive.
 
 ## Semantic layer (C2)
 
-Needs the `ai`, `vector-db` and `agent` plugins; any that is not installed
-(`action not found`) is skipped with one warning and `chats` keeps working
-like C1.
+Needs the `ai`, `vector-db` and `agent` plugins; while one is not available
+(`action not found`) its work is skipped with one warning and `chats` keeps
+working like C1. The exception is the delete cascade: a missing plugin may be
+restarting, so its steps stay queued and are retried indefinitely.
 
 - **Summaries.** A live session silent for `CHATS_SUMMARY_IDLE_SECS` whose
   `rev` moved since the last summary gets one `chat_completion` (JSON title,
@@ -89,7 +90,8 @@ like C1.
 - **Delete cascade.** `chat_delete` queues a job in the same transaction. The
   worker deletes the turn and session vectors, calls `goal_delete` per
   `goal_id` and `memory_forget_session` on `agent`, retrying with backoff
-  (1 min, doubled, max 1 h; finished steps are not repeated). When done the
+  (1 min, doubled, max 1 h, no attempt limit; finished steps are not repeated;
+  a plugin that is missing counts as a failed step, never as done). When done the
   session row is removed (the tombstone stays). A daily sweep repeats the
   vector deletes for sessions finished in the last 7 days to catch late writes.
 

@@ -154,8 +154,9 @@ fn save_progress(
 
 impl Worker {
     /// Run due cascade jobs. Every step is idempotent and remembered in
-    /// `done`; a step whose plugin is not installed counts as done (there is
-    /// nothing to remove there). Returns true if a session row went away.
+    /// `done`; a step whose plugin is missing or failing stays open and the
+    /// job is retried with backoff, indefinitely (a restarting plugin must not
+    /// make the deletion get dropped). Returns true if a session row went away.
     pub(crate) async fn cascade_pass(&self, now: i64) -> bool {
         let jobs = match with_db(&self.db, move |c| due_jobs(c, now)).await {
             Ok(Ok(j)) => j,
@@ -205,9 +206,12 @@ impl Worker {
                     Ok(_) => {
                         done.insert(key);
                     }
+                    // A missing plugin may only be restarting: its data is not
+                    // known to be gone, so the step stays open (fail closed).
                     Err(e) if is_missing_plugin(&e) => {
                         self.warn_once(plugin, &e);
-                        done.insert(key);
+                        down.insert(plugin);
+                        failed = true;
                     }
                     Err(e) => {
                         self.warn_once("cascade-step", &e);
@@ -279,9 +283,13 @@ impl Worker {
                     .await
                 {
                     Ok(_) => {}
-                    Err(e) if is_missing_plugin(&e) => break,
                     Err(e) => {
-                        self.warn_once("sweep-step", &e);
+                        let key = if is_missing_plugin(&e) {
+                            "vector-db"
+                        } else {
+                            "sweep-step"
+                        };
+                        self.warn_once(key, &e);
                         ok = false;
                         break;
                     }
@@ -442,15 +450,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_plugin_step_counts_as_done() {
+    async fn missing_plugin_step_is_retried_until_plugin_returns() {
         let f = Fixture::new();
         let (sid, _) = deleted_session(&f).await;
         f.fake.set_missing("agent", true);
         f.fake.set_missing("vector-db", true);
-        f.worker.run_once(T0 + 10).await;
-        let sessions: i64 = f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]);
+        let now = T0 + 10;
+        f.worker.run_once(now).await;
+        let (sessions, queue, attempts): (i64, i64, i64) = (
+            f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]),
+            f.q("SELECT count(*) FROM cascade", []),
+            f.q("SELECT attempts FROM cascade", []),
+        );
+        assert_eq!(
+            (sessions, queue, attempts),
+            (1, 1, 1),
+            "job kept, not dropped"
+        );
+        // keeps retrying with growing backoff, far beyond any fixed limit
+        let mut t = now;
+        for _ in 0..12 {
+            t += 3_600_000;
+            f.worker.run_once(t).await;
+        }
         let queue: i64 = f.q("SELECT count(*) FROM cascade", []);
+        let next_at: i64 = f.q("SELECT next_at FROM cascade", []);
+        assert_eq!(queue, 1);
+        assert_eq!(next_at, t + 3_600_000, "backoff capped at 1 h");
+        assert!(f.fake.calls("goal_delete").len() >= 12);
+        // plugins return: everything is deleted, job removed
+        f.fake.set_missing("agent", false);
+        f.fake.set_missing("vector-db", false);
+        f.worker.run_once(t + 3_600_000).await;
+        let (sessions, queue): (i64, i64) = (
+            f.q("SELECT count(*) FROM sessions WHERE id=?", [&sid]),
+            f.q("SELECT count(*) FROM cascade", []),
+        );
         assert_eq!((sessions, queue), (0, 0));
+        assert!(f.fake.doc_ids("chats-turns").is_empty());
+        assert!(f.fake.doc_ids("chats-sessions").is_empty());
+        assert!(!f.fake.calls("memory_forget_session").is_empty());
     }
 
     #[tokio::test]
