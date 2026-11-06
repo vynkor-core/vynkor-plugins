@@ -15,6 +15,7 @@ use crate::llm::{self, Reply};
 use crate::memory;
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
+use crate::sessions::TraceRec;
 use crate::tools::Catalog;
 use crate::Rpc;
 
@@ -178,9 +179,44 @@ async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &s
     llm::filtered_catalog(catalog, goal, context)
 }
 
+/// History as one string for tool filtering (questions and answers).
+fn history_text(history: &[(String, String)]) -> String {
+    history.iter().map(|(q, a)| format!("{q} {a}")).collect::<Vec<_>>().join(" ")
+}
+
+/// Text the tool filter looks at besides the goal: session history when
+/// there is any, else the caller's `context`.
+fn catalog_hint(doc: &GoalDoc) -> String {
+    if doc.history_hint.is_empty() { doc.context.clone() } else { doc.history_hint.clone() }
+}
+
+/// Insert prior (question, answer) pairs between the role message
+/// (index 0) and the goal as separate messages, never inside the persona
+/// text. The first question is folded into message 0 so the roles
+/// alternate (`user, assistant, user, ..., user goal`): `ai` does not merge
+/// consecutive same-role messages for providers that reject them.
+fn weave_history(transcript: &mut Vec<Turn>, history: Vec<(String, String)>) {
+    if history.is_empty() || transcript.is_empty() {
+        return;
+    }
+    let mut woven = Vec::new();
+    for (i, (q, a)) in history.into_iter().enumerate() {
+        if i == 0 {
+            transcript[0].content =
+                format!("{}\n\n---\n[EARLIER IN THIS CONVERSATION]\n{q}", transcript[0].content);
+        } else {
+            woven.push(Turn { role: "user".into(), content: q });
+        }
+        woven.push(Turn { role: "assistant".into(), content: a });
+    }
+    transcript.splice(1..1, woven);
+}
+
 pub enum Entry {
-    /// Fresh goal: seed the transcript from goal + catalog.
-    Fresh,
+    /// Fresh goal: seed the transcript from goal + catalog. `history` is
+    /// the session's prior (question, answer) pairs, oldest first; when
+    /// non-empty it replaces the caller's `context` (never both).
+    Fresh { history: Vec<(String, String)> },
     /// Resumed after approval: dispatch the pending confirmation first.
     ApprovedResume,
 }
@@ -211,7 +247,7 @@ pub(crate) async fn persist(db: &Db, doc: &mut GoalDoc) -> Result<(), String> {
     db.put(doc).await
 }
 
-fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
+pub(crate) fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
     let n = doc.steps.iter().map(|s| s.n).max().unwrap_or(0) + 1;
     doc.steps.push(StepRec { n, kind: kind.to_string(), detail });
 }
@@ -235,6 +271,7 @@ async fn dispatch_and_observe(
     name: &str,
     params: Value,
 ) -> Result<bool, String> {
+    let started = std::time::Instant::now();
     let mut outcome = rpc.call(name, params.clone(), spec_timeout_ms).await;
     if outcome.is_err() && is_device_target(name) {
         let err = outcome.as_ref().err().unwrap().to_string();
@@ -248,6 +285,8 @@ async fn dispatch_and_observe(
         Err(e) => ("error", e),
     };
     let ok = status == "ok";
+    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    doc.tool_trace.push(TraceRec::new(name, &params, if ok { Ok(&body) } else { Err(&body) }, ms));
     let observation =
         truncate_chars(&format!("[TOOL RESULT name={name} status={status}]\n{body}"), OBSERVATION_MAX);
     push_turn(doc, "user", observation)?;
@@ -293,19 +332,29 @@ pub async fn run(
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
-    let effective = effective_catalog(rpc, catalog, &doc.goal, &doc.context).await;
+    if let Entry::Fresh { history } = &entry {
+        doc.history_hint = history_text(history);
+    }
+    // Tool filtering sees the same text the model will: a follow-up like
+    // "and tomorrow?" must keep the tools the previous turn needed.
+    let hint = catalog_hint(doc);
+    let effective = effective_catalog(rpc, catalog, &doc.goal, &hint).await;
     let llm_catalog = &effective;
     let dispatch_catalog = catalog;
     match entry {
-        Entry::Fresh => {
+        Entry::Fresh { history } => {
             doc.status = store::STATUS_RUNNING.to_string();
             // A fresh doc is never degraded yet, so this must (and does)
             // compute the exact same answer the loop's first iteration will
             // reach via `want_native_tools` below — the seed and the first
             // `tools` param are always in sync.
             let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+            // Session history wins over the caller's `context`: both would
+            // carry the same exchanges twice.
+            let context = if history.is_empty() { doc.context.as_str() } else { "" };
             doc.transcript =
-                llm::opening_messages_with_full(&doc.goal, &doc.context, llm_catalog, dispatch_catalog, native_seed);
+                llm::opening_messages_with_full(&doc.goal, context, llm_catalog, dispatch_catalog, native_seed);
+            weave_history(&mut doc.transcript, history);
             if memory::enabled() {
                 if let Some(block) = memory::recall(rpc, &doc.goal).await {
                     push_turn(doc, "user", block)?;
@@ -321,6 +370,7 @@ pub async fn run(
             doc.status = store::STATUS_RUNNING.to_string();
             if let Some(s) = spec {
                 if let Err(e) = check_quota(doc, s) {
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&e), 0));
                     push_turn(doc, "user", format!("[TOOL RESULT name={} status=error]\n{e}", name))?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": e}));
                     persist(db, doc).await?;
@@ -396,9 +446,10 @@ pub async fn run(
                     let rpc = rpc.clone();
                     let plan = doc.llm.clone();
                     let goal_id = doc.id.clone();
+                    let session_id = doc.session_id.clone();
                     let goal = doc.goal.clone();
                     tokio::spawn(async move {
-                        memory::remember(&rpc, &plan, &goal_id, &goal, &answer).await;
+                        memory::remember(&rpc, &plan, &goal_id, session_id.as_deref(), &goal, &answer).await;
                     });
                 }
                 return Ok(());
@@ -408,6 +459,7 @@ pub async fn run(
                     let msg = format!(
                         "unknown tool \"{name}\": not in the operator's tool catalog"
                     );
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(
                         doc,
                         "user",
@@ -427,6 +479,7 @@ pub async fn run(
                 }
                 if let Err(quota_err) = check_quota(doc, spec) {
                     let msg = quota_err.clone();
+                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
                     persist(db, doc).await?;
@@ -500,5 +553,51 @@ mod tests {
         let a = cat(vec![spec("a", "does a"), spec("b", "does b")]);
         let b = cat(vec![spec("a", "does a"), spec("b", "does b")]);
         assert_eq!(catalog_content_hash(&a), catalog_content_hash(&b));
+    }
+
+    fn plain(name: &str) -> crate::tools::ToolSpec {
+        spec(name, "x")
+    }
+
+    #[tokio::test]
+    async fn follow_up_keeps_tools_from_history() {
+        let catalog = cat(vec![
+            plain("fs_read"), plain("fs_list"), plain("fs_write"),
+            plain("a_one"), plain("a_two"), plain("a_three"),
+        ]);
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let rpc = Rpc::new(tx);
+        let names = |c: &Catalog| c.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+
+        // Without history the bare follow-up filters the fs_* tools out...
+        let mut doc = crate::store::tests::sample(STATUS_COMPLETED);
+        doc.goal = "а потом?".into();
+        let hint = catalog_hint(&doc);
+        let bare = effective_catalog(&rpc, &catalog, &doc.goal, &hint).await;
+        assert!(!names(&bare).contains(&"fs_read".to_string()), "{:?}", names(&bare));
+
+        // ...with the previous turn in the hint they stay.
+        doc.history_hint = history_text(&[("прочитай файл notes.txt".into(), "готово".into())]);
+        let hint = catalog_hint(&doc);
+        let kept = effective_catalog(&rpc, &catalog, &doc.goal, &hint).await;
+        assert!(names(&kept).contains(&"fs_read".to_string()), "{:?}", names(&kept));
+
+        // No history: the caller's context is used as before.
+        doc.history_hint.clear();
+        doc.context = "прочитай файл".into();
+        assert_eq!(catalog_hint(&doc), "прочитай файл");
+    }
+
+    #[test]
+    fn weave_history_alternates_roles() {
+        let mut t = vec![
+            Turn { role: "user".into(), content: "ROLE".into() },
+            Turn { role: "user".into(), content: "goal".into() },
+        ];
+        weave_history(&mut t, vec![("q1".into(), "a1".into()), ("q2".into(), "a2".into())]);
+        let roles: Vec<&str> = t.iter().map(|x| x.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "user", "assistant", "user"]);
+        assert!(t[0].content.starts_with("ROLE") && t[0].content.ends_with("q1"));
+        assert_eq!(t[4].content, "goal");
     }
 }

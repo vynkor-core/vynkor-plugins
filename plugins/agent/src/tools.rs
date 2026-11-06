@@ -248,6 +248,29 @@ fn parse_tools_file(raw: &str) -> Result<BTreeMap<String, ToolSpec>, String> {
     Ok(map)
 }
 
+/// `chats` actions the model must never see or call, even when an operator
+/// allowlists them: they write or delete history on the model's behalf
+/// (the agent records its own turns; deletion is the owner's decision).
+/// Reading (`chat_sessions_list`, `chat_session_read`, `chat_search`) stays allowed.
+pub const CHATS_INTERNAL_ACTIONS: [&str; 5] = [
+    "chat_turn_append",
+    "chat_session_resolve",
+    "chat_sync",
+    "chat_session_update",
+    "chat_delete",
+];
+
+/// The agent's own management actions: the model must not start nested
+/// goals, resume or delete goals, or wipe memory, whatever the allowlist or
+/// tools file says. (`memory_forget` / `memory_list` stay as they were:
+/// operator-allowlistable.)
+pub const AGENT_MANAGEMENT_ACTIONS: [&str; 5] =
+    ["goal_start", "goal_resume", "goal_delete", "memory_forget_session", "memory_clear"];
+
+fn is_hard_denied(name: &str) -> bool {
+    CHATS_INTERNAL_ACTIONS.contains(&name) || AGENT_MANAGEMENT_ACTIONS.contains(&name)
+}
+
 impl Catalog {
     /// Build the effective catalog from process env. Read per goal start so
     /// operator edits land without a restart (see module docs).
@@ -261,7 +284,14 @@ impl Catalog {
     /// so tests can exercise it without the parallel-test env races
     /// documented in `docs/PLUGIN_AUTHORING.md` §6.
     pub fn build(allowed_raw: &str, file_path: Option<&str>) -> Result<Catalog, String> {
-        let allowed = parse_allowlist(allowed_raw);
+        let mut allowed = parse_allowlist(allowed_raw);
+        allowed.retain(|name| {
+            let denied = is_hard_denied(name);
+            if denied {
+                eprintln!("[agent] ignoring \"{name}\" in the allowlist: internal or management action");
+            }
+            !denied
+        });
 
         let specs = match file_path {
             Some(path) => {
@@ -910,6 +940,35 @@ mod tests {
         for name in ["launch_list", "launch_providers", "db_get"] {
             assert_eq!(cat.get(name).unwrap().risk, "low", "{name}");
             assert!(!cat.get(name).unwrap().requires_confirmation, "{name}");
+        }
+    }
+
+    #[test]
+    fn chats_internal_actions_never_reach_llm_catalog() {
+        let allowed = "chat_sessions_list,chat_session_read,chat_search,chat_turn_append,\
+                       chat_session_resolve,chat_sync,chat_session_update,chat_delete,notify_send";
+        let cat = Catalog::build(allowed, None).unwrap();
+        let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["chat_sessions_list", "chat_session_read", "chat_search", "notify_send"]
+        );
+        for internal in CHATS_INTERNAL_ACTIONS {
+            assert!(cat.get(internal).is_none(), "{internal} must not be dispatchable");
+            assert!(!cat.allowed_actions.iter().any(|a| a == internal));
+        }
+    }
+
+    #[test]
+    fn agent_management_actions_never_reach_llm_catalog() {
+        let allowed = "goal_start,goal_resume,goal_delete,memory_forget_session,memory_clear,\
+                       memory_forget,memory_list,goal_get,notify_send";
+        let cat = Catalog::build(allowed, None).unwrap();
+        let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["memory_forget", "memory_list", "goal_get", "notify_send"]);
+        for denied in AGENT_MANAGEMENT_ACTIONS {
+            assert!(cat.get(denied).is_none(), "{denied}");
+            assert!(!cat.allowed_actions.iter().any(|a| a == denied), "{denied}");
         }
     }
 }

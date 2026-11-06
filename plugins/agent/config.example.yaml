@@ -41,3 +41,8 @@ AGENT_PLUGIN_DB_TIMEOUT_MS=5000 # per-call timeout for database round-trips
 #   memory_forget {"query": "..."} / memory_clear {} / memory_list {}
 AGENT_PLUGIN_MEMORY=off                       # on | off
 AGENT_PLUGIN_MEMORY_COLLECTION=agent-memory   # vector-db collection name
+
+# --- Chat sessions (chats plugin; optional, a missing chats never breaks goals) ---
+# AGENT_PLUGIN_LOCAL_DEVICE=host        # device name for goals from local plugins
+# AGENT_PLUGIN_HISTORY_TURNS=6          # prior session turns fed to the model; 0 = off
+# AGENT_PLUGIN_CHATS_TIMEOUT_MS=2000    # per-call timeout for chats round-trips

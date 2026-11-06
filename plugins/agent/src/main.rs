@@ -25,8 +25,8 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
-const PLUGIN_VERSION: &str = "0.1.4";
-const ACTIONS: [&str; 8] = [
+const PLUGIN_VERSION: &str = "0.1.5";
+const ACTIONS: [&str; 10] = [
     "goal_start",
     "goal_get",
     "goal_list",
@@ -35,6 +35,8 @@ const ACTIONS: [&str; 8] = [
     "memory_forget",
     "memory_clear",
     "memory_list",
+    "memory_forget_session",
+    "goal_delete",
 ];
 
 fn manifest() -> PluginManifest {
@@ -150,7 +152,7 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                         let out = outbound_tx.clone();
                         let config = Arc::clone(&config);
                         tokio::spawn(async move {
-                            match handle_action(rpc, &config, &req.action, &req.params_json)
+                            match handle_action(rpc, &config, &req.caller_plugin_id, &req.action, &req.params_json)
                                 .await
                             {
                                 Ok(result) => {
@@ -293,7 +295,7 @@ mod tests {
             std::env::set_var("AGENT_PLUGIN_AI_BASE_URL", "http://llm.test/v1");
             std::env::set_var("AGENT_PLUGIN_AI_MODEL", "test-model");
             std::env::set_var("AGENT_PLUGIN_AI_API_KEY_ENV", "TEST_LLM_KEY");
-            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read");
+            std::env::set_var("AGENT_PLUGIN_ALLOWED_ACTIONS", "notify_send,fs_read,secret_get,ping_a,ping_b");
             let dir = std::env::temp_dir().join(format!("vynkor-agent-test-{}", std::process::id()));
             std::fs::create_dir_all(&dir).unwrap();
             let path = dir.join("tools.json");
@@ -334,6 +336,14 @@ mod tests {
                      "params_schema": "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}",
                      "risk": "medium", "requires_confirmation": true}
                 ]
+            },
+            "secrets": {
+                "actions": ["secret_get"],
+                "action_specs": [
+                    {"name": "secret_get", "description": "Read a secret",
+                     "params_schema": "{\"type\":\"object\"}", "risk": "low",
+                     "requires_confirmation": false}
+                ]
             }
         })
     }
@@ -349,12 +359,59 @@ mod tests {
     /// tests seed keys (e.g. `memory:index`) the same way `vec_store` lets
     /// them seed fake vector-db collections.
     type DbStore = Arc<Mutex<FakeDb>>;
+    type ChatsStore = Arc<Mutex<FakeChats>>;
+
+    /// How the fake kernel answers `chat_*` actions.
+    #[derive(Default, Clone, PartialEq)]
+    enum ChatsMode {
+        /// Plugin not installed: `action not found`.
+        #[default]
+        Missing,
+        /// Installed and healthy.
+        Normal,
+        /// Installed but never answers (exercises the call timeout).
+        Silent,
+    }
+
+    /// In-memory stand-in for the `chats` plugin: scripted reads, recorded calls.
+    #[derive(Default)]
+    struct FakeChats {
+        mode: ChatsMode,
+        session_id: String,
+        created: bool,
+        turns: Vec<Value>,
+        calls: Vec<(String, Value)>,
+    }
+
+    const CHATS_ACTIONS: [&str; 3] = ["chat_session_resolve", "chat_session_read", "chat_turn_append"];
+
+    impl FakeChats {
+        fn handle(&mut self, action: &str, params: Value) -> Option<Result<Value, String>> {
+            self.calls.push((action.to_string(), params));
+            match self.mode {
+                ChatsMode::Missing => Some(Err("action not found".to_string())),
+                ChatsMode::Silent => None,
+                ChatsMode::Normal => Some(Ok(match action {
+                    "chat_session_resolve" => {
+                        serde_json::json!({"session_id": self.session_id, "created": self.created})
+                    }
+                    "chat_session_read" => serde_json::json!({
+                        "session": {"id": self.session_id}, "turns": self.turns
+                    }),
+                    _ => serde_json::json!({"turn_id": "T1", "seq": 1, "rev": 1}),
+                })),
+            }
+        }
+    }
 
     /// In-memory stand-in for the `database` plugin (same KV semantics the
     /// notes/calendar tests use).
     #[derive(Default)]
     struct FakeDb {
         kv: BTreeMap<String, Value>,
+        /// Fail exactly the Nth `db_set` of a `goal:*` key (1-based), once.
+        fail_goal_set_at: Option<usize>,
+        goal_sets: usize,
     }
 
     impl FakeDb {
@@ -373,6 +430,12 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
+                    if k.starts_with("goal:") {
+                        self.goal_sets += 1;
+                        if self.fail_goal_set_at == Some(self.goal_sets) {
+                            return Err("injected db_set failure".to_string());
+                        }
+                    }
                     self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
@@ -484,6 +547,7 @@ mod tests {
         ai_requests: AiRequests,
         vec_store: VecStore,
         db: DbStore,
+        chats: ChatsStore,
         _serial: tokio::sync::MutexGuard<'static, ()>,
     }
 
@@ -572,6 +636,31 @@ mod tests {
             db.kv.insert(key, Value::Array(entries));
         }
 
+        /// Install a healthy fake `chats` returning this session and history.
+        async fn chats_normal(&self, session_id: &str, created: bool, turns: Vec<Value>) {
+            let mut c = self.chats.lock().await;
+            c.mode = ChatsMode::Normal;
+            c.session_id = session_id.to_string();
+            c.created = created;
+            c.turns = turns;
+        }
+
+        async fn chats_mode(&self, mode: ChatsMode) {
+            self.chats.lock().await.mode = mode;
+        }
+
+        /// `chat_*` calls the plugin made, in order, optionally one action only.
+        async fn chats_calls(&self, action: &str) -> Vec<Value> {
+            self.chats
+                .lock()
+                .await
+                .calls
+                .iter()
+                .filter(|(a, _)| a == action)
+                .map(|(_, p)| p.clone())
+                .collect()
+        }
+
         async fn vec_facts(&self, collection: &str) -> Vec<Value> {
             self.vec_store
                 .lock()
@@ -608,6 +697,7 @@ mod tests {
             ai_requests: Arc::new(Mutex::new(Vec::new())),
             vec_store: vec_store.clone(),
             db: db.clone(),
+            chats: Arc::new(Mutex::new(FakeChats::default())),
             _serial: TEST_SERIAL.lock().await,
         };
         tokio::spawn(run_shim(
@@ -618,6 +708,7 @@ mod tests {
             shim.ai_requests.clone(),
             vec_store,
             db,
+            shim.chats.clone(),
             commands_denied,
         ));
         shim
@@ -632,6 +723,7 @@ mod tests {
         ai_requests: AiRequests,
         vec_store: VecStore,
         db: DbStore,
+        chats: ChatsStore,
         commands_denied: bool,
     ) {
         let mut ai_replies: VecDeque<Value> = VecDeque::new();
@@ -675,8 +767,15 @@ mod tests {
                                 db.lock().await.handle(&req.action, params)
                             } else if req.action == "vec_upsert" {
                                 handle_vec_upsert(&vec_store, params).await
+                            } else if req.action == "vec_delete" {
+                                handle_vec_delete(&vec_store, params).await
                             } else if req.action == "vec_query" {
                                 handle_vec_query(&vec_store, params).await
+                            } else if CHATS_ACTIONS.contains(&req.action.as_str()) {
+                                match chats.lock().await.handle(&req.action, params) {
+                                    Some(r) => r,
+                                    None => continue, // Silent: never answer
+                                }
                             } else if req.action == "chat_completion" {
                                 ai_requests.lock().await.push(params.clone());
                                 match ai_replies.pop_front() {
@@ -687,8 +786,20 @@ mod tests {
                                     None => Err("no scripted ai reply".to_string()),
                                 }
                             } else {
+                                let action_is_secret = req.action == "secret_get";
+                                let big = params.get("big").and_then(Value::as_bool) == Some(true);
+                                let envfail = req.action == "fs_read"
+                                    && params.get("path").and_then(Value::as_str) == Some("/tmp/envfail");
                                 dispatched.lock().await.push((req.action.clone(), params));
-                                Ok(serde_json::json!({"ok": true}))
+                                if envfail {
+                                    Err("read failed:\nDB_PASSWORD=hunter2\nAPI_KEY=abc".to_string())
+                                } else if action_is_secret {
+                                    Ok(serde_json::json!({"secret": "hunter2", "note": "hunter2"}))
+                                } else if big {
+                                    Ok(serde_json::json!({"blob": "x".repeat(1_000_000)}))
+                                } else {
+                                    Ok(serde_json::json!({"ok": true}))
+                                }
                             };
                             let resp = match outcome {
                                 Ok(v) => ProtoActionResponse {
@@ -900,6 +1011,393 @@ mod tests {
         );
     }
 
+    fn turn(seq: i64, q: &str, a: &str, status: &str) -> Value {
+        serde_json::json!({"id": format!("T{seq}"), "seq": seq, "user_text": q,
+                           "answer_text": a, "status": status, "tool_trace": null})
+    }
+
+    #[tokio::test]
+    async fn goal_start_resolves_session_and_returns_it() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("fine").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "hello"})).await.unwrap();
+        assert_eq!(res["status"], "completed");
+        assert_eq!(res["session_id"], "S1");
+        let calls = shim.chats_calls("chat_session_resolve").await;
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["device"], "host");
+        assert_eq!(calls[0]["kind"], "voice");
+        assert_eq!(calls[0]["source"], "tester");
+        assert!(calls[0].get("session_id").is_none(), "no session_id sent unless given");
+        assert!(shim.chats_calls("chat_session_read").await.is_empty(), "new session: nothing to read");
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(got["goal"]["session_id"], "S1");
+    }
+
+    #[tokio::test]
+    async fn history_turns_precede_goal_in_transcript() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![
+                turn(1, "какая погода", "+5", "ok"),
+                turn(2, "сломанный вопрос", "boom", "failed"),
+            ],
+        )
+        .await;
+        shim.push_ai_reply("завтра +7").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?", "session_id": "S1"}))
+            .await
+            .unwrap();
+        let read = shim.chats_calls("chat_session_read").await;
+        assert_eq!(read[0], serde_json::json!({"id": "S1", "last": 6}));
+        let msgs = shim.ai_requests().await[0]["messages"].as_array().unwrap().clone();
+        let pos = |role: &str, text: &str| {
+            msgs.iter().position(|m| m["role"] == role && m["content"] == text)
+        };
+        // First question is folded into the role message; the answer and the goal follow.
+        assert!(msgs[0]["content"].as_str().unwrap().ends_with("какая погода"));
+        let a = pos("assistant", "+5").expect("history answer");
+        let g = pos("user", "а завтра?").expect("goal");
+        assert!(0 < a && a < g, "order: instructions+question, answer, goal");
+        assert!(msgs.iter().all(|m| !m["content"].as_str().unwrap().contains("сломанный")),
+            "failed turns stay out of the prompt");
+        assert!(shim.chats_calls("chat_session_resolve").await[0]["session_id"] == "S1");
+    }
+
+    #[tokio::test]
+    async fn history_transcript_alternates_roles_for_anthropic() {
+        // `ai` forwards messages as is (no merging of same-role neighbours),
+        // so the agent must send an alternating transcript.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![turn(1, "q1", "a1", "ok"), turn(2, "q2", "a2", "ok"), turn(3, "q3", "a3", "ok")],
+        )
+        .await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "now", "provider": "anthropic"}))
+            .await
+            .unwrap();
+        let reqs = shim.ai_requests().await;
+        assert_eq!(reqs[0]["provider"], "anthropic");
+        let roles: Vec<&str> = reqs[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "user", "assistant", "user", "assistant", "user"]);
+    }
+
+    #[tokio::test]
+    async fn follow_up_keeps_tools_from_history() {
+        let tool_names = |req: &Value| -> Vec<String> {
+            req["tools"].as_array().unwrap().iter()
+                .map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        // Bare follow-up: the fs_* tool is filtered out of what the model sees.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "какая погода", "+5", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?"})).await.unwrap();
+        assert!(!tool_names(&shim.ai_requests().await[0]).contains(&"fs_read".to_string()));
+        drop(shim);
+
+        // Same follow-up after a file question keeps it.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "прочитай файл notes.txt", "готово", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "а завтра?"})).await.unwrap();
+        assert!(tool_names(&shim.ai_requests().await[0]).contains(&"fs_read".to_string()));
+    }
+
+    #[tokio::test]
+    async fn history_skips_turns_with_empty_text() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![
+                turn(1, "empty answer", "  ", "ok"),
+                turn(2, "", "empty question", "ok"),
+                turn(3, "real q", "real a", "ok"),
+            ],
+        )
+        .await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let req = shim.ai_requests().await[0].to_string();
+        assert!(req.contains("real q") && req.contains("real a"));
+        assert!(!req.contains("empty answer") && !req.contains("empty question"), "{req}");
+    }
+
+    #[tokio::test]
+    async fn history_wins_over_caller_context() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g", "context": "OLD-CONTEXT"}))
+            .await
+            .unwrap();
+        let reqs = shim.ai_requests().await;
+        assert!(!reqs[0].to_string().contains("OLD-CONTEXT"), "context must not reach the prompt");
+    }
+
+    #[tokio::test]
+    async fn caller_context_still_used_when_history_is_empty() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", false, vec![]).await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g", "context": "OLD-CONTEXT"}))
+            .await
+            .unwrap();
+        assert!(shim.ai_requests().await[0].to_string().contains("OLD-CONTEXT"));
+    }
+
+    #[tokio::test]
+    async fn missing_chats_plugin_keeps_goal_working() {
+        let shim = start_plugin(Config::default()).await; // chats Missing by default
+        shim.push_ai_reply("one").await;
+        shim.push_ai_reply("two").await;
+        for _ in 0..2 {
+            let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+            assert_eq!(res["status"], "completed");
+            assert!(res["session_id"].is_null(), "{res}");
+        }
+        assert_eq!(shim.chats_calls("chat_session_resolve").await.len(), 2);
+        assert!(shim.chats_calls("chat_session_read").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn slow_chats_is_bounded_by_timeout() {
+        let cfg = Config { chats_timeout_ms: 200, ..Config::default() };
+        let shim = start_plugin(cfg).await;
+        shim.chats_mode(ChatsMode::Silent).await;
+        shim.push_ai_reply("done").await;
+        let t0 = std::time::Instant::now();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert!(t0.elapsed() < Duration::from_secs(2), "took {:?}", t0.elapsed());
+        assert_eq!(res["status"], "completed");
+        assert!(res["session_id"].is_null());
+    }
+
+    #[tokio::test]
+    async fn history_turns_zero_skips_read() {
+        let cfg = Config { history_turns: 0, ..Config::default() };
+        let shim = start_plugin(cfg).await;
+        shim.chats_normal("S1", false, vec![turn(1, "q1", "a1", "ok")]).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert_eq!(res["session_id"], "S1");
+        assert!(shim.chats_calls("chat_session_read").await.is_empty());
+        assert!(!shim.ai_requests().await[0].to_string().contains("q1"));
+    }
+
+    /// `chat_turn_append` runs in the background after the reply: poll for it.
+    async fn wait_for_chats_calls(shim: &Shim, action: &str, n: usize) -> Vec<Value> {
+        for _ in 0..120 {
+            let calls = shim.chats_calls(action).await;
+            if calls.len() >= n {
+                return calls;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        shim.chats_calls(action).await
+    }
+
+    #[tokio::test]
+    async fn completed_goal_appends_turn_with_trace() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "notify_send", "params": {"title": "hi"}}"#).await;
+        shim.push_ai_reply("notified").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "notify me"})).await.unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        assert_eq!(appended.len(), 1);
+        let a = &appended[0];
+        assert_eq!(a["session_id"], "S1");
+        assert_eq!(a["user_text"], "notify me");
+        assert_eq!(a["answer_text"], "notified");
+        assert_eq!(a["status"], "ok");
+        assert_eq!(a["goal_id"], res["id"]);
+        let t = &a["tool_trace"][0];
+        assert_eq!(t["tool"], "notify_send");
+        assert_eq!(t["args"], r#"{"title":"hi"}"#);
+        assert!(t["result"].as_str().unwrap().contains("ok"));
+        assert!(t["ms"].is_u64(), "{t}");
+        assert!(t.get("error").is_none(), "no error key on success: {t}");
+        // Only contract keys cross the wire (chats rejects unknown fields).
+        let mut keys: Vec<&String> = a.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["answer_text", "goal_id", "session_id", "status", "tool_trace", "user_text"]);
+        let mut tkeys: Vec<&String> = t.as_object().unwrap().keys().collect();
+        tkeys.sort();
+        assert_eq!(tkeys, ["args", "ms", "result", "tool"]);
+        // The doc keeps the same trace.
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(got["goal"]["tool_trace"][0]["tool"], "notify_send");
+    }
+
+    #[tokio::test]
+    async fn huge_tool_result_is_truncated_in_trace() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "notify_send", "params": {"big": true}}"#).await;
+        shim.push_ai_reply("done").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "big"})).await.unwrap();
+        assert_eq!(res["status"], "completed");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        let result = a["tool_trace"][0]["result"].as_str().unwrap();
+        assert_eq!(result.chars().count(), 201, "200 chars + ellipsis");
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        let stored = got["goal"]["tool_trace"][0]["result"].as_str().unwrap();
+        assert!(stored.chars().count() <= 201);
+    }
+
+    #[tokio::test]
+    async fn secret_tool_trace_is_redacted() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // secret_get must be a known tool: allow it via the kernel manifest fixture.
+        shim.push_ai_reply(r#"{"tool": "secret_get", "params": {"name": "db_pass"}}"#).await;
+        shim.push_ai_reply("fetched").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "get it"})).await.unwrap();
+        assert_eq!(shim.dispatched().await[0].0, "secret_get", "tool must really run");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert!(!a.to_string().contains("hunter2"), "secret leaked to chats: {a}");
+        assert_eq!(a["tool_trace"][0]["result"], "[redacted]");
+        assert_eq!(a["tool_trace"][0]["args"], r#"{"name":"[redacted]"}"#);
+        let got = shim.call("goal_get", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert!(!got["goal"]["tool_trace"].to_string().contains("hunter2"));
+    }
+
+    #[tokio::test]
+    async fn fs_error_with_env_lines_never_reaches_chats() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/envfail"}}"#).await;
+        shim.push_ai_reply("could not read").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": true}))
+            .await
+            .unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert!(!a.to_string().contains("hunter2"), "leak: {a}");
+        let t = &a["tool_trace"][0];
+        assert_eq!(t["tool"], "fs_read");
+        assert_eq!(t["error"], "[omitted]");
+    }
+
+    #[tokio::test]
+    async fn sensitive_keys_masked_in_args_and_result() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(
+            r#"{"tool": "notify_send", "params": {"title": "t", "api_key": "KEY-123", "nested": {"Authorization": "Bearer ZZZ"}}}"#,
+        )
+        .await;
+        shim.push_ai_reply("done").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        let t = &a["tool_trace"][0];
+        let args = t["args"].as_str().unwrap();
+        assert!(!args.contains("KEY-123") && !args.contains("ZZZ"), "{args}");
+        assert!(args.contains(r#""title":"t""#), "non-sensitive keys stay: {args}");
+        assert!(args.contains("[redacted]"));
+    }
+
+    #[tokio::test]
+    async fn failed_tool_and_unknown_tool_are_traced_with_error() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "no_such_tool", "params": {}}"#).await;
+        shim.push_ai_reply("gave up").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["tool_trace"][0]["tool"], "no_such_tool");
+        assert!(a["tool_trace"][0]["error"].as_str().unwrap().contains("not in the operator"));
+    }
+
+    #[tokio::test]
+    async fn needs_confirmation_appends_nothing_until_resume() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/x"}}"#).await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "read it"})).await.unwrap();
+        assert_eq!(res["status"], "needs_confirmation");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(shim.chats_calls("chat_turn_append").await.is_empty(), "nothing while pending");
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": false}))
+            .await
+            .unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        assert_eq!(appended.len(), 1);
+        assert_eq!(appended[0]["status"], "cancelled");
+    }
+
+    #[tokio::test]
+    async fn approved_resume_appends_the_final_turn_once() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply(r#"{"tool": "fs_read", "params": {"path": "/tmp/x"}}"#).await;
+        shim.push_ai_reply("it says hi").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "read it"})).await.unwrap();
+        shim.call("goal_resume", serde_json::json!({"id": res["id"], "approve": true}))
+            .await
+            .unwrap();
+        let appended = wait_for_chats_calls(&shim, "chat_turn_append", 1).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(shim.chats_calls("chat_turn_append").await.len(), 1);
+        assert_eq!(appended[0]["status"], "ok");
+        assert_eq!(appended[0]["answer_text"], "it says hi");
+        assert_eq!(appended[0]["tool_trace"][0]["tool"], "fs_read");
+    }
+
+    #[tokio::test]
+    async fn llm_failure_appends_failed_turn() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // No scripted replies: every chat_completion fails, even the text retry.
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        assert_eq!(res["status"], "error");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["status"], "failed");
+        assert_eq!(a["answer_text"], res["error"], "answer_text carries the error text");
+        assert!(a["answer_text"].as_str().unwrap().contains("chat_completion"), "{a}");
+    }
+
+    #[tokio::test]
+    async fn engine_error_ends_goal_as_error_and_still_records_the_turn() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        // 1st goal write (running) succeeds, the 2nd (after the answer) fails.
+        shim.db.lock().await.fail_goal_set_at = Some(2);
+        shim.push_ai_reply("an answer that cannot be saved").await;
+        let err = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap_err();
+        assert!(err.contains("injected db_set failure"), "{err}");
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["status"], "failed");
+        // The model had already answered; that text is what the turn keeps.
+        assert_eq!(a["answer_text"], "an answer that cannot be saved");
+        // The recovery write (3rd) succeeded: the goal is not left "running".
+        let got = shim.call("goal_get", serde_json::json!({"id": a["goal_id"]})).await.unwrap();
+        assert_eq!(got["goal"]["status"], "error");
+        assert!(got["goal"]["error"].as_str().unwrap().contains("injected db_set failure"));
+    }
+
+    #[tokio::test]
+    async fn goal_without_session_appends_nothing() {
+        let shim = start_plugin(Config::default()).await; // chats missing
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(shim.chats_calls("chat_turn_append").await.is_empty());
+    }
+
     #[tokio::test]
     async fn unknown_tool_is_reported_back_never_dispatched() {
         let shim = start_plugin(Config::default()).await;
@@ -1001,7 +1499,8 @@ mod tests {
         assert_eq!(requests.len(), 1);
         let tools = requests[0]["tools"].as_array().expect("tools param missing");
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read"]);
+        // Dynamic catalog: no file words in the goal, so fs_* is filtered out.
+        assert_eq!(names, vec!["notify_send", "secret_get", "ping_a", "ping_b"]);
         assert_eq!(tools[0]["input_schema"]["type"], "object");
     }
 
@@ -1149,7 +1648,7 @@ mod tests {
         assert_eq!(res["tools_file_set"], true);
         let names: Vec<&str> = res["tools"].as_array().unwrap()
             .iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read"]);
+        assert_eq!(names, vec!["notify_send", "fs_read", "secret_get", "ping_a", "ping_b"]);
 
         // notify_send has an operator entry, so its description and schema
         // stay exactly as written — but the entry left `risk` empty, and
@@ -1239,6 +1738,24 @@ mod tests {
             .or_default()
             .push(serde_json::json!({"id": id, "text": text, "metadata": metadata}));
         Ok(serde_json::json!({"ok": true}))
+    }
+
+    async fn handle_vec_delete(store: &VecStore, params: Value) -> Result<Value, String> {
+        let collection =
+            params.get("collection").and_then(Value::as_str).unwrap_or_default().to_string();
+        let id = params.get("id").and_then(Value::as_str).unwrap_or_default();
+        let mut store = store.lock().await;
+        // Test hook: ids listed in the pseudo-collection `__fail_delete__` fail.
+        let doomed = store
+            .get("__fail_delete__")
+            .is_some_and(|v| v.iter().any(|d| d["id"].as_str() == Some(id)));
+        if doomed {
+            return Err(format!("vec_delete injected failure for {id}"));
+        }
+        let docs = store.entry(collection).or_default();
+        let before = docs.len();
+        docs.retain(|d| d["id"].as_str() != Some(id));
+        Ok(serde_json::json!({"deleted": docs.len() != before}))
     }
 
     async fn handle_vec_query(store: &VecStore, params: Value) -> Result<Value, String> {
@@ -1343,6 +1860,122 @@ mod tests {
         let remembered =
             wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await;
         assert!(remembered, "vec_upsert should have stored the remembered fact");
+    }
+
+    async fn seed_session_fact(shim: &Shim, id: &str, session: Option<&str>) {
+        shim.seed_fact("agent-memory-test", id, &format!("fact {id}")).await;
+        let mut db = shim.db.lock().await;
+        let key = agent_plugin::memory::INDEX_KEY.to_string();
+        let mut entries: Vec<Value> =
+            db.kv.get(&key).and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut e = serde_json::json!({"id": id, "ts": 0});
+        if let Some(sid) = session {
+            e["session_id"] = serde_json::json!(sid);
+        }
+        entries.push(e);
+        db.kv.insert(key, Value::Array(entries));
+    }
+
+    #[tokio::test]
+    async fn remember_tags_facts_with_session() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply("The user runs Arch Linux.").await;
+        shim.push_ai_reply("[\"the user runs Arch Linux\"]").await;
+        shim.call("goal_start", serde_json::json!({"goal": "which OS"})).await.unwrap();
+        assert!(
+            wait_for_remembered_fact(&shim, "agent-memory-test", "the user runs Arch Linux").await
+        );
+        let facts = shim.vec_facts("agent-memory-test").await;
+        let f = facts.iter().find(|f| f["metadata"]["goal_id"].is_string()).unwrap();
+        assert_eq!(f["metadata"]["session_id"], "S1");
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        assert_eq!(idx["facts"][0]["session_id"], "S1");
+    }
+
+    #[tokio::test]
+    async fn memory_forget_session_deletes_only_that_session() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        seed_session_fact(&shim, "a1", Some("S1")).await;
+        seed_session_fact(&shim, "a2", Some("S1")).await;
+        seed_session_fact(&shim, "b1", Some("S2")).await;
+        seed_session_fact(&shim, "old", None).await; // pre-sessions entry: no session_id
+        let res = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(res["deleted"], 2);
+        let left: Vec<String> = shim
+            .vec_facts("agent-memory-test")
+            .await
+            .iter()
+            .map(|f| f["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(left, ["b1", "old"]);
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        let ids: Vec<&str> =
+            idx["facts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"b1") && ids.contains(&"old"));
+        // Repeat and unknown session: nothing to do, not an error.
+        let again = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(again["deleted"], 0);
+        let unknown = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "NOPE"}))
+            .await
+            .unwrap();
+        assert_eq!(unknown["deleted"], 0);
+    }
+
+    #[tokio::test]
+    async fn forget_session_partial_failure_still_rewrites_the_index() {
+        let shim = start_plugin(Config::default()).await;
+        let _mem = MemoryEnvGuard::enable("agent-memory-test");
+        seed_session_fact(&shim, "a1", Some("S1")).await;
+        seed_session_fact(&shim, "a2", Some("S1")).await;
+        seed_session_fact(&shim, "a3", Some("S1")).await;
+        seed_session_fact(&shim, "b1", Some("S2")).await;
+        shim.seed_fact("__fail_delete__", "a2", "boom").await;
+        let err = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap_err();
+        assert!(err.contains("injected failure"), "{err}");
+        let idx = shim.call("memory_list", serde_json::json!({})).await.unwrap();
+        let mut ids: Vec<&str> =
+            idx["facts"].as_array().unwrap().iter().map(|e| e["id"].as_str().unwrap()).collect();
+        ids.sort();
+        // a1 was deleted before the failure: gone from the index; a2 (failed), a3 (not tried) remain.
+        assert_eq!(ids, ["a2", "a3", "b1"]);
+        let left: Vec<String> = shim.vec_facts("agent-memory-test").await.iter()
+            .map(|f| f["id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(left, ["a2", "a3", "b1"]);
+        // Once the fault is gone a retry finishes the job.
+        shim.vec_store.lock().await.remove("__fail_delete__");
+        let ok = shim
+            .call("memory_forget_session", serde_json::json!({"session_id": "S1"}))
+            .await
+            .unwrap();
+        assert_eq!(ok["deleted"], 2);
+    }
+
+    #[tokio::test]
+    async fn goal_delete_removes_doc_and_is_idempotent() {
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let id = res["id"].clone();
+        let del = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(del["deleted"], true);
+        let got = shim.call("goal_get", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(got["found"], false);
+        let again = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap();
+        assert_eq!(again["deleted"], false);
     }
 }
 

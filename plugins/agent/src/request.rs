@@ -25,6 +25,12 @@ pub struct GoalStartParams {
     pub title: Option<String>,
     pub max_steps: u32,
     pub llm: LlmOverrides,
+    /// Existing chat session to continue (`chats` id).
+    pub session_id: Option<String>,
+    /// `chat` | `voice`; `None` = default (`voice`).
+    pub kind: Option<String>,
+    /// Free-form origin label, e.g. `desktop`.
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -40,6 +46,10 @@ pub enum AgentRequest {
     MemoryClear,
     /// `memory_list {}` — index contents, newest first.
     MemoryList,
+    /// `memory_forget_session {"session_id": "…"}` — drop every fact learned in a session.
+    MemoryForgetSession { session_id: String },
+    /// `goal_delete {"id": "…"}` — remove one stored goal document.
+    GoalDelete { id: String },
 }
 
 fn want_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
@@ -75,6 +85,15 @@ fn check_base_url(value: &str) -> Result<(), String> {
     } else {
         Err("params.base_url must start with http:// or https://".to_string())
     }
+}
+
+/// `chats` session ids are ULIDs; accept the safe superset `[0-9A-Za-z_-]{1,64}`.
+fn check_session_id(sid: &str) -> Result<(), String> {
+    check_size("session_id", sid, 64)?;
+    if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+        return Err("params.session_id must be 1..64 chars of [0-9A-Za-z_-]".to_string());
+    }
+    Ok(())
 }
 
 fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String> {
@@ -146,12 +165,30 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
         .and_then(serde_json::Value::as_u64)
         .map(|n| u32::try_from(n).unwrap_or(u32::MAX));
 
+    let session_id = opt_str("session_id")?;
+    if let Some(sid) = &session_id {
+        check_session_id(sid)?;
+    }
+    let kind = opt_str("kind")?;
+    if let Some(k) = &kind {
+        if k != "chat" && k != "voice" {
+            return Err(format!("params.kind must be \"chat\" or \"voice\" (got \"{k}\")"));
+        }
+    }
+    let source = opt_str("source")?;
+    if let Some(s) = &source {
+        check_size("source", s, 64)?;
+    }
+
     Ok(GoalStartParams {
         goal,
         context,
         title,
         max_steps,
         llm: LlmOverrides { provider, base_url, model, api_key_env, agent_id, max_tokens },
+        session_id,
+        kind,
+        source,
     })
 }
 
@@ -184,6 +221,16 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
         }
         "memory_clear" => Ok(AgentRequest::MemoryClear),
         "memory_list" => Ok(AgentRequest::MemoryList),
+        "memory_forget_session" => {
+            let session_id = want_string(&body, "session_id")?;
+            check_session_id(&session_id)?;
+            Ok(AgentRequest::MemoryForgetSession { session_id })
+        }
+        "goal_delete" => {
+            let id = want_string(&body, "id")?;
+            check_size("id", &id, 64)?;
+            Ok(AgentRequest::GoalDelete { id })
+        }
         other => Err(format!("ERR_AGENT_BAD_PARAMS: unknown action: {other}")),
     }
 }
@@ -285,6 +332,53 @@ mod tests {
         let err = parse("goal_resume", json!({"id": "3"})).unwrap_err();
         assert!(err.contains("approve"), "{err}");
         assert!(matches!(parse("tools_list", json!({})).unwrap(), AgentRequest::ToolsList));
+    }
+
+    #[test]
+    fn session_fields_default_to_none_and_are_validated() {
+        match parse("goal_start", json!({"goal": "g"})).unwrap() {
+            AgentRequest::GoalStart(p) => {
+                assert_eq!((p.session_id, p.kind, p.source), (None, None, None));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        match parse(
+            "goal_start",
+            json!({"goal": "g", "session_id": "01J_ab-Z", "kind": "chat", "source": "desktop"}),
+        )
+        .unwrap()
+        {
+            AgentRequest::GoalStart(p) => {
+                assert_eq!(p.session_id.as_deref(), Some("01J_ab-Z"));
+                assert_eq!(p.kind.as_deref(), Some("chat"));
+                assert_eq!(p.source.as_deref(), Some("desktop"));
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+        let err = parse("goal_start", json!({"goal": "g", "kind": "sms"})).unwrap_err();
+        assert!(err.contains("kind"), "{err}");
+        let err = parse("goal_start", json!({"goal": "g", "session_id": "x".repeat(65)})).unwrap_err();
+        assert!(err.contains("session_id"), "{err}");
+        let err = parse("goal_start", json!({"goal": "g", "session_id": "a b"})).unwrap_err();
+        assert!(err.contains("session_id"), "{err}");
+        let err = parse("goal_start", json!({"goal": "g", "source": "s".repeat(65)})).unwrap_err();
+        assert!(err.contains("source"), "{err}");
+    }
+
+    #[test]
+    fn parses_cascade_actions() {
+        match parse("memory_forget_session", json!({"session_id": "S1"})).unwrap() {
+            AgentRequest::MemoryForgetSession { session_id } => assert_eq!(session_id, "S1"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert!(parse("memory_forget_session", json!({})).unwrap_err().contains("session_id"));
+        assert!(parse("memory_forget_session", json!({"session_id": ""})).is_err());
+        assert!(parse("memory_forget_session", json!({"session_id": "a b"})).is_err());
+        match parse("goal_delete", json!({"id": "7"})).unwrap() {
+            AgentRequest::GoalDelete { id } => assert_eq!(id, "7"),
+            other => panic!("wrong variant: {other:?}"),
+        }
+        assert!(parse("goal_delete", json!({})).unwrap_err().contains("id"));
     }
 
     #[test]

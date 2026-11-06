@@ -26,6 +26,7 @@ pub mod engine;
 pub mod llm;
 pub mod memory;
 pub mod request;
+pub mod sessions;
 pub mod store;
 pub mod tools;
 
@@ -45,11 +46,22 @@ use tools::Catalog;
 pub struct Config {
     /// Per-call timeout for `database` IPC round-trips.
     pub db_timeout_ms: u32,
+    /// Device name for goals started by local plugins (`AGENT_PLUGIN_LOCAL_DEVICE`).
+    pub local_device: String,
+    /// Prior session turns fed to the LLM; 0 = off (`AGENT_PLUGIN_HISTORY_TURNS`).
+    pub history_turns: u32,
+    /// Per-call timeout for `chats` round-trips (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`).
+    pub chats_timeout_ms: u32,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { db_timeout_ms: 5000 }
+        Self {
+            db_timeout_ms: 5000,
+            local_device: "host".to_string(),
+            history_turns: 6,
+            chats_timeout_ms: 2000,
+        }
     }
 }
 
@@ -59,7 +71,22 @@ impl Config {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(5000);
-        Self { db_timeout_ms }
+        let d = Self::default();
+        let local_device = std::env::var("AGENT_PLUGIN_LOCAL_DEVICE")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(d.local_device);
+        let history_turns = std::env::var("AGENT_PLUGIN_HISTORY_TURNS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(d.history_turns);
+        let chats_timeout_ms = std::env::var("AGENT_PLUGIN_CHATS_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(d.chats_timeout_ms);
+        Self { db_timeout_ms, local_device, history_turns, chats_timeout_ms }
     }
 }
 
@@ -233,11 +260,35 @@ fn default_title(goal: &str) -> String {
     t
 }
 
-async fn start_goal(db: &Db, rpc: &Rpc, params: GoalStartParams) -> Result<ActionResult, String> {
+async fn start_goal(
+    db: &Db,
+    rpc: &Rpc,
+    config: &Config,
+    caller: &str,
+    params: GoalStartParams,
+) -> Result<ActionResult, String> {
     let catalog = Catalog::load_with_discovery(rpc).await?;
     let id = db.next_id().await?.to_string();
     let now = store::now_ms();
     let llm = build_plan(&params);
+
+    // Session: never fatal. Without `chats` the goal runs as it always did.
+    let origin = sessions::origin(
+        caller,
+        params.kind.as_deref(),
+        params.source.as_deref(),
+        &config.local_device,
+    );
+    let resolved =
+        sessions::resolve(rpc, config.chats_timeout_ms, &origin, params.session_id.as_deref())
+            .await;
+    let history = match &resolved {
+        Some(r) if config.history_turns > 0 && !r.created => {
+            sessions::history(rpc, config.chats_timeout_ms, &r.id, config.history_turns).await
+        }
+        _ => Vec::new(),
+    };
+
     let mut doc = GoalDoc {
         id: id.clone(),
         title: params.title.clone().unwrap_or_else(|| default_title(&params.goal)),
@@ -265,9 +316,13 @@ async fn start_goal(db: &Db, rpc: &Rpc, params: GoalStartParams) -> Result<Actio
         updated_at_ms: now,
         tool_counts: Default::default(),
         tool_last_ms: Default::default(),
+        session_id: resolved.map(|r| r.id),
+        origin: Some(origin),
+        history_hint: String::new(),
+        tool_trace: Vec::new(),
     };
 
-    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::Fresh).await?;
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history }).await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -279,9 +334,46 @@ async fn start_goal(db: &Db, rpc: &Rpc, params: GoalStartParams) -> Result<Actio
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
+/// Write the finished turn to `chats` in the background: the caller's reply
+/// never waits on it. No-op for unfinished goals (see `sessions::turn_status`).
+fn record_turn(rpc: &Rpc, config: &Config, doc: &GoalDoc) {
+    if doc.session_id.is_none() || sessions::turn_status(&doc.status).is_none() {
+        return;
+    }
+    let rpc = rpc.clone();
+    let doc = doc.clone();
+    let timeout = config.chats_timeout_ms;
+    tokio::spawn(async move { sessions::append_turn(&rpc, timeout, &doc).await });
+}
+
+/// `engine::run` plus the chat turn. When the engine itself fails (storage
+/// or transcript budget), the goal is still ended as `error` (persisted best
+/// effort) and its turn is recorded as `failed`; the error is returned as before.
+async fn run_and_record(
+    db: &Db,
+    rpc: &Rpc,
+    config: &Config,
+    catalog: &Catalog,
+    doc: &mut GoalDoc,
+    entry: engine::Entry,
+) -> Result<(), String> {
+    let result = engine::run(db, rpc, catalog, doc, entry).await;
+    if let Err(e) = &result {
+        doc.status = store::STATUS_ERROR.to_string();
+        doc.error = e.clone();
+        engine::next_step(doc, "error", json!({"error": e}));
+        if let Err(pe) = engine::persist(db, doc).await {
+            eprintln!("[agent] could not persist failed goal {}: {pe}", doc.id);
+        }
+    }
+    record_turn(rpc, config, doc);
+    result
+}
+
 async fn resume_goal(
     db: &Db,
     rpc: &Rpc,
+    config: &Config,
     id: &str,
     approve: bool,
 ) -> Result<ActionResult, String> {
@@ -306,11 +398,12 @@ async fn resume_goal(
             detail: json!({"tool": tool}),
         });
         engine::persist(db, &mut doc).await?;
+        record_turn(rpc, config, &doc);
         return ok(summary(&doc), Some(changed(&doc.status, &doc.id)));
     }
 
     let catalog = Catalog::load_with_discovery(rpc).await?;
-    engine::run(db, rpc, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
@@ -325,6 +418,7 @@ fn summary(doc: &GoalDoc) -> Value {
         "steps": doc.steps,
         "pending_tool": doc.pending_tool,
         "max_steps": doc.max_steps,
+        "session_id": doc.session_id,
     })
 }
 
@@ -335,13 +429,14 @@ fn summary(doc: &GoalDoc) -> Value {
 pub async fn handle_action(
     rpc: Rpc,
     config: &Config,
+    caller: &str,
     action: &str,
     params_json: &[u8],
 ) -> Result<ActionResult, String> {
     let req = request::parse_request(action, params_json)?;
     let db = Db::new(rpc.clone(), config.db_timeout_ms);
     match req {
-        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, params).await,
+        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, config, caller, params).await,
         AgentRequest::GoalGet { id } => match db.get(&id).await? {
             Some(doc) => ok(json!({"found": true, "goal": doc}), None),
             None => ok(json!({"found": false, "goal": null}), None),
@@ -350,7 +445,7 @@ pub async fn handle_action(
             let goals = db.list_summaries(limit).await?;
             ok(json!({"total": goals.len(), "goals": goals}), None)
         }
-        AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, &id, approve).await,
+        AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, config, &id, approve).await,
         AgentRequest::ToolsList => {
             let catalog = Catalog::load_with_discovery(&rpc).await?;
             ok(
@@ -369,6 +464,14 @@ pub async fn handle_action(
         AgentRequest::MemoryClear => {
             let deleted = memory::clear(&rpc).await?;
             ok(json!({"cleared": deleted}), None)
+        }
+        AgentRequest::MemoryForgetSession { session_id } => {
+            let deleted = memory::forget_session(&rpc, &session_id).await?;
+            ok(json!({"deleted": deleted}), None)
+        }
+        AgentRequest::GoalDelete { id } => {
+            let deleted = db.delete(&id).await?;
+            ok(json!({"deleted": deleted}), None)
         }
         AgentRequest::MemoryList => {
             let facts = memory::list(&rpc).await?;
