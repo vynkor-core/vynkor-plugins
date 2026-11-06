@@ -64,11 +64,14 @@ impl Worker {
     }
 
     /// One full pass. Passes never overlap.
-    pub async fn run_once(&self, _now: i64) {
+    pub async fn run_once(&self, now: i64) {
         if !self.cfg.semantic {
             return;
         }
         let _g = self.pass_lock.lock().await;
+        if self.summarize_pass(now).await {
+            (self.changed)();
+        }
     }
 
     /// Log a missing/failed dependency once per kind.

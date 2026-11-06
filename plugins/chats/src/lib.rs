@@ -5,6 +5,7 @@ pub mod rpc;
 pub mod schema;
 pub mod search;
 pub mod store;
+pub mod summary;
 pub mod sync;
 pub mod worker;
 

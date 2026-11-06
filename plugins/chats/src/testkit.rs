@@ -371,6 +371,16 @@ impl Fixture {
         self.lock().query_row(sql, p, |r| r.get(0)).unwrap()
     }
 
+    /// Multi-column variant of [`Fixture::q`] with a single text parameter.
+    pub fn q2<T>(&self, sql: &str, id: &str) -> T
+    where
+        T: for<'a> TryFrom<&'a rusqlite::Row<'a>, Error = rusqlite::Error>,
+    {
+        self.lock()
+            .query_row(sql, [id], |r| T::try_from(r))
+            .unwrap()
+    }
+
     pub async fn delete(&self, sid: &str) {
         let sid = sid.to_string();
         with_db(&self.db, move |c| store::delete(c, &sid).unwrap())
