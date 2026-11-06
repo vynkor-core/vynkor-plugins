@@ -9,6 +9,7 @@ use crate::db::with_db;
 use crate::embed::{SESSIONS, TURNS};
 use crate::worker::Worker;
 
+pub const MODE_COMPACT: &str = "compact";
 const SWEEP_EVERY_MS: i64 = 24 * 3600 * 1000;
 const SWEEP_KEEP_MS: i64 = 7 * SWEEP_EVERY_MS;
 /// A sweep cycle is closed after this long even if some rows were not swept.
@@ -62,12 +63,14 @@ struct Job {
     attempts: i64,
     done: HashSet<String>,
     gen: i64,
+    /// `delete` (everything) or `compact` (turn vectors + goals only)
+    mode: String,
 }
 
 fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT session_id, turn_ids, goal_ids, attempts, done, gen FROM cascade
+            "SELECT session_id, turn_ids, goal_ids, attempts, done, gen, mode FROM cascade
              WHERE next_at <= ? ORDER BY next_at LIMIT ?",
         )
         .map_err(db_err)?;
@@ -81,6 +84,7 @@ fn due_jobs(conn: &Connection, now: i64) -> Result<Vec<Job>, String> {
                 attempts: r.get(3)?,
                 done: list(r.get(4)?).into_iter().collect(),
                 gen: r.get(5)?,
+                mode: r.get(6)?,
             })
         })
         .map_err(db_err)?
@@ -112,6 +116,11 @@ fn finish(conn: &mut Connection, job: &Job, now: i64) -> Result<bool, String> {
         .map_err(db_err)?;
     if removed == 0 {
         return Ok(false);
+    }
+    if job.mode == MODE_COMPACT {
+        // the session stays; only the queued cleanup is done
+        tx.commit().map_err(db_err)?;
+        return Ok(true);
     }
     tx.execute(
         "DELETE FROM sessions WHERE id = ? AND state = 'deleting'",
@@ -184,6 +193,14 @@ fn steps_of(job: &Job) -> Vec<Step> {
             "vec_delete",
             json!({"collection": TURNS, "id": t}),
         ));
+    }
+    if job.mode == MODE_COMPACT {
+        // compaction keeps the session: its summary vector and the agent's
+        // facts stay, only turn vectors and goals go
+        for g in &job.goal_ids {
+            steps.push((format!("g:{g}"), "agent", "goal_delete", json!({"id": g})));
+        }
+        return steps;
     }
     steps.push((
         "s".into(),
