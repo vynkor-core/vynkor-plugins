@@ -173,7 +173,7 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
   (top `AGENT_PLUGIN_RECALL_TOP_K`, `AGENT_PLUGIN_RECALL_MIN_SCORE`, the current
   session excluded) runs in parallel with the facts lookup under
   `AGENT_PLUGIN_RECALL_BUDGET_MS`. The result is appended to the goal message
-  (the last `user` message) as a `[PAST SESSIONS]` block, after the facts block
+  (the last `user` message) as a `[PAST SESSIONS]` block (entries between `<<<PAST_SESSIONS_DATA` / `PAST_SESSIONS_DATA>>>` fences; title and summary are flattened to one line, `[` becomes `(`, `---` and fence tokens are defused), after the facts block
   if there is one; the role message and message alternation are not touched. A
   timeout, an error or a missing `chat_recall` means no block (a missing one is
   logged once per process). Blended session ids are stored on the goal as
