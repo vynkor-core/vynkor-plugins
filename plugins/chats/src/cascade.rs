@@ -11,6 +11,8 @@ use crate::worker::Worker;
 
 const SWEEP_EVERY_MS: i64 = 24 * 3600 * 1000;
 const SWEEP_KEEP_MS: i64 = 7 * SWEEP_EVERY_MS;
+/// A sweep cycle is closed after this long even if some rows were not swept.
+const SWEEP_CYCLE_LIMIT_MS: i64 = 6 * 3600 * 1000;
 const BACKOFF_BASE_MS: i64 = 60_000;
 const BACKOFF_MAX_MS: i64 = 3_600_000;
 const JOBS_PER_PASS: i64 = 10;
@@ -297,8 +299,9 @@ impl Worker {
         let started = std::time::Instant::now();
         let budget = self.pass_budget();
         let mut swept: Vec<(String, String)> = Vec::new();
+        let mut failed_rows: Vec<(String, String, i64)> = Vec::new();
         let mut failures = 0;
-        'rows: for (n, (sid, turn_ids)) in rows.iter().enumerate() {
+        'rows: for (n, (sid, turn_ids, row_failures)) in rows.iter().enumerate() {
             if n > 0 && started.elapsed() >= budget {
                 break;
             }
@@ -315,21 +318,29 @@ impl Worker {
                     Err(e) => {
                         self.warn("vector-db", &e);
                         failures += 1;
+                        failed_rows.push((sid.clone(), turn_ids.clone(), *row_failures));
                         if failures >= 3 {
                             break 'rows;
                         }
-                        continue 'rows; // retried in a later pass
+                        continue 'rows; // retried later, behind the healthy rows
                     }
                 }
             }
             failures = 0;
             swept.push((sid.clone(), turn_ids.clone()));
         }
-        if swept.is_empty() {
+        if swept.is_empty() && failed_rows.is_empty() {
             return;
         }
         let r = with_db(&self.db, move |c| {
             let tx = c.transaction().map_err(db_err)?;
+            for (sid, turn_ids, n) in &failed_rows {
+                tx.execute(
+                    "UPDATE swept SET failures = ?1, next_at = ?2 WHERE session_id = ?3 AND turn_ids = ?4",
+                    params![n + 1, now + backoff_ms(n + 1), sid, turn_ids],
+                )
+                .map_err(db_err)?;
+            }
             for (sid, turn_ids) in &swept {
                 // only if the row was not rewritten (new late ids) meanwhile
                 tx.execute(
@@ -347,7 +358,7 @@ impl Worker {
     }
 }
 
-type SweepRows = Vec<(String, String)>;
+type SweepRows = Vec<(String, String, i64)>;
 
 /// Prune expired rows, open or continue a cycle and pick the rows still to
 /// visit; closes the cycle when none is left.
@@ -359,7 +370,23 @@ fn sweep_plan(c: &Connection, now: i64) -> Result<Option<(i64, SweepRows)>, Stri
     };
     c.execute("DELETE FROM swept WHERE until < ?", [now])
         .map_err(db_err)?;
+    let close = |cycle: i64| -> Result<(), String> {
+        c.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_sweep', ?)",
+            [cycle],
+        )
+        .map_err(db_err)?;
+        c.execute("DELETE FROM meta WHERE key = 'sweep_cycle'", [])
+            .map_err(db_err)?;
+        Ok(())
+    };
     let cycle = match meta("sweep_cycle")? {
+        // out of time: rows not reached stay unstamped and are visited again
+        // by the next cycle
+        Some(cy) if now - cy >= SWEEP_CYCLE_LIMIT_MS => {
+            close(cy)?;
+            return Ok(None);
+        }
         Some(cy) => cy,
         None => {
             if meta("last_sweep")?.is_some_and(|l| now - l < SWEEP_EVERY_MS) {
@@ -370,27 +397,37 @@ fn sweep_plan(c: &Connection, now: i64) -> Result<Option<(i64, SweepRows)>, Stri
                 [now],
             )
             .map_err(db_err)?;
+            c.execute("UPDATE swept SET failures = 0, next_at = 0", [])
+                .map_err(db_err)?;
             now
         }
     };
     let rows: SweepRows = c
         .prepare(
-            "SELECT session_id, turn_ids FROM swept WHERE swept_at < ?
-             ORDER BY swept_at, session_id LIMIT 200",
+            "SELECT session_id, turn_ids, failures FROM swept
+             WHERE swept_at < ?1 AND next_at <= ?2
+             ORDER BY next_at, swept_at, session_id LIMIT 200",
         )
         .map_err(db_err)?
-        .query_map([cycle], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(params![cycle, now], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()
         .map_err(db_err)?;
     if rows.is_empty() {
-        c.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES ('last_sweep', ?)",
-            [cycle],
-        )
-        .map_err(db_err)?;
-        c.execute("DELETE FROM meta WHERE key = 'sweep_cycle'", [])
+        // nothing due: either every row is stamped (cycle complete) or the
+        // rest is waiting out a retry delay
+        let unstamped: i64 = c
+            .query_row(
+                "SELECT count(*) FROM swept WHERE swept_at < ?",
+                [cycle],
+                |r| r.get(0),
+            )
             .map_err(db_err)?;
+        if unstamped == 0 {
+            close(cycle)?;
+        }
         return Ok(None);
     }
     Ok(Some((cycle, rows)))
@@ -765,8 +802,10 @@ mod tests {
         // backend fine again: the next pass finishes the row, one more closes the cycle
         f.fake.with(|s| s.poison.clear());
         f.worker.run_cleanup(day2 + 1000).await;
+        assert_eq!(f.fake.doc_ids("chats-turns").len(), 1, "row is backing off");
+        f.worker.run_cleanup(day2 + 70_000).await;
         assert!(f.fake.doc_ids("chats-turns").is_empty());
-        f.worker.run_cleanup(day2 + 2000).await;
+        f.worker.run_cleanup(day2 + 71_000).await;
         let last: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
         let open: i64 = f.q("SELECT count(*) FROM meta WHERE key='sweep_cycle'", []);
         assert_eq!((last, open), (day2, 0));
@@ -830,6 +869,61 @@ mod tests {
         assert!(
             ids.contains(&"late".to_string()),
             "the late id was deleted: {ids:?}"
+        );
+    }
+
+    /// 3 failing rows sort first, one healthy row behind them.
+    async fn failing_rows_first(f: &Fixture) -> (Vec<String>, String, i64) {
+        let mut sids = deleted_sessions(f, 4).await;
+        f.worker.run_cleanup(T0 + 3).await;
+        sids.sort();
+        let mut late = Vec::new();
+        for sid in &sids {
+            let id = swept_turns(f, sid)[0].clone();
+            put_late_vector(f, &id).await;
+            late.push(id);
+        }
+        for id in &late[..3] {
+            f.fake.poison_doc(id);
+        }
+        (late[..3].to_vec(), late[3].clone(), T0 + 3 + DAY + 10)
+    }
+
+    #[tokio::test]
+    async fn failing_sweep_rows_do_not_block_the_healthy_row_behind_them() {
+        let f = Fixture::new();
+        let (bad, good, day2) = failing_rows_first(&f).await;
+        f.worker.run_cleanup(day2).await; // three failures end the pass
+        assert!(
+            f.fake.doc_ids("chats-turns").contains(&good),
+            "pass ended before the good row"
+        );
+        f.worker.run_cleanup(day2 + 1000).await; // failing rows now wait out their delay
+        let left = f.fake.doc_ids("chats-turns");
+        let mut want = bad.clone();
+        want.sort();
+        assert_eq!(left, want, "the good row was swept in the same cycle");
+        let cycle: i64 = f.q("SELECT value FROM meta WHERE key='sweep_cycle'", []);
+        assert_eq!(cycle, day2, "cycle still open: failing rows are unstamped");
+    }
+
+    #[tokio::test]
+    async fn sweep_cycle_closes_after_its_time_limit_and_retries_next_day() {
+        let f = Fixture::new();
+        let (bad, _good, day2) = failing_rows_first(&f).await;
+        f.worker.run_cleanup(day2).await;
+        f.worker.run_cleanup(day2 + 1000).await;
+        // the limit passes with the failing rows still unswept: cycle closes
+        f.worker.run_cleanup(day2 + 7 * 3600 * 1000).await;
+        let last: i64 = f.q("SELECT value FROM meta WHERE key='last_sweep'", []);
+        let open: i64 = f.q("SELECT count(*) FROM meta WHERE key='sweep_cycle'", []);
+        assert_eq!((last, open), (day2, 0));
+        // next day: new cycle, retry counters reset, rows visited again
+        f.fake.with(|s| s.poison.clear());
+        f.worker.run_cleanup(day2 + DAY + 10).await;
+        assert!(
+            f.fake.doc_ids("chats-turns").is_empty(),
+            "{bad:?} swept in the new cycle"
         );
     }
 }

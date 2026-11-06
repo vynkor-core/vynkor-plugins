@@ -88,10 +88,23 @@ CREATE TABLE IF NOT EXISTS swept(
   turn_ids TEXT NOT NULL DEFAULT '[]',
   until INTEGER NOT NULL,
   -- sweep cycle (start time) in which this row was last swept
-  swept_at INTEGER NOT NULL DEFAULT 0
+  swept_at INTEGER NOT NULL DEFAULT 0,
+  -- per-row retry state: failing rows go to the back of the queue
+  failures INTEGER NOT NULL DEFAULT 0,
+  next_at INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS turns_embedded ON turns(embedded, session_id);
 ";
+const SCHEMA_V2_INDEXES: &str =
+    "CREATE INDEX IF NOT EXISTS turns_embedded ON turns(embedded, session_id);";
+
+/// Columns of the v2 tables that were added after the first v2 shape; applied
+/// to databases that already have the tables.
+const SCHEMA_V2_TABLE_COLUMNS: [(&str, &str, &str); 4] = [
+    ("cascade", "gen", "INTEGER NOT NULL DEFAULT 0"),
+    ("swept", "swept_at", "INTEGER NOT NULL DEFAULT 0"),
+    ("swept", "failures", "INTEGER NOT NULL DEFAULT 0"),
+    ("swept", "next_at", "INTEGER NOT NULL DEFAULT 0"),
+];
 
 pub const USER_VERSION: i64 = 2;
 
@@ -106,13 +119,26 @@ fn has_column(conn: &Connection, table: &str, col: &str) -> rusqlite::Result<boo
     Ok(false)
 }
 
-fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, col, decl) in SCHEMA_V2_COLUMNS {
+fn add_missing_columns(conn: &Connection, cols: &[(&str, &str, &str)]) -> rusqlite::Result<()> {
+    for (table, col, decl) in cols {
         if !has_column(conn, table, col)? {
             conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {col} {decl}"))?;
         }
     }
+    Ok(())
+}
+
+/// Make sure every v2 column and table exists, whichever shape the file has
+/// (fresh v1, or v2 written by an earlier build). Idempotent.
+fn ensure_v2_shape(conn: &Connection) -> rusqlite::Result<()> {
+    add_missing_columns(conn, &SCHEMA_V2_COLUMNS)?;
     conn.execute_batch(SCHEMA_V2_TABLES)?;
+    add_missing_columns(conn, &SCHEMA_V2_TABLE_COLUMNS)?;
+    conn.execute_batch(SCHEMA_V2_INDEXES)
+}
+
+fn migrate_v2(conn: &Connection) -> rusqlite::Result<()> {
+    ensure_v2_shape(conn)?;
     // C1 only hid deleted sessions; nothing cleaned up after them. Queue
     // their cleanup now (turns are normally gone already, so the vector and
     // fact steps are what matter).
@@ -140,11 +166,13 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
         ));
     }
     conn.execute_batch(SCHEMA_V1)?;
+    let tx = conn.unchecked_transaction()?;
     if v < 2 {
-        let tx = conn.unchecked_transaction()?;
         migrate_v2(&tx)?;
-        tx.commit()?;
+    } else {
+        ensure_v2_shape(&tx)?;
     }
+    tx.commit()?;
     conn.pragma_update(None, "user_version", USER_VERSION)?;
     Ok(conn)
 }
@@ -303,6 +331,53 @@ mod tests {
             .query_row("SELECT count(*) FROM cascade", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 2, "reopening does not requeue");
+    }
+
+    /// A v2 file written before `cascade.gen` and the `swept` retry columns
+    /// existed gains them on open, keeping its rows.
+    #[test]
+    fn earlier_v2_shape_gains_gen_and_sweep_columns() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("chats.db");
+        {
+            let c = Connection::open(&p).unwrap();
+            c.execute_batch(SCHEMA_V1).unwrap();
+            c.execute_batch(
+                "ALTER TABLE sessions ADD COLUMN summarized_rev INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN title_manual INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE sessions ADD COLUMN embedded_rev INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE turns ADD COLUMN embedded INTEGER NOT NULL DEFAULT 0;
+                 CREATE TABLE cascade(session_id TEXT PRIMARY KEY, turn_ids TEXT NOT NULL DEFAULT '[]',
+                   goal_ids TEXT NOT NULL DEFAULT '[]', attempts INTEGER NOT NULL DEFAULT 0,
+                   next_at INTEGER NOT NULL DEFAULT 0, done TEXT NOT NULL DEFAULT '[]');
+                 CREATE TABLE swept(session_id TEXT PRIMARY KEY, turn_ids TEXT NOT NULL DEFAULT '[]',
+                   until INTEGER NOT NULL);
+                 INSERT INTO cascade(session_id) VALUES('c1');
+                 INSERT INTO swept(session_id, until) VALUES('w1', 99);",
+            )
+            .unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let c = open(&p).unwrap();
+        for (t, col) in [
+            ("cascade", "gen"),
+            ("swept", "swept_at"),
+            ("swept", "failures"),
+            ("swept", "next_at"),
+            ("turns", "embed_attempts"),
+        ] {
+            assert!(has_column(&c, t, col).unwrap(), "{t}.{col}");
+        }
+        let (gen, until, swept_at): (i64, i64, i64) = c
+            .query_row(
+                "SELECT (SELECT gen FROM cascade WHERE session_id='c1'), until, swept_at FROM swept",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((gen, until, swept_at), (0, 99, 0));
+        drop(c);
+        assert!(open(&p).is_ok(), "reopening is a no-op");
     }
 
     #[test]
