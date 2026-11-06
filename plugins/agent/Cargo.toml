@@ -18,6 +18,7 @@ vynkor-plugin-manifest = { path = "../_shared/plugin-manifest" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

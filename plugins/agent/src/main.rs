@@ -1044,13 +1044,60 @@ mod tests {
         let pos = |role: &str, text: &str| {
             msgs.iter().position(|m| m["role"] == role && m["content"] == text)
         };
-        let q = pos("user", "какая погода").expect("history question");
+        // First question is folded into the role message; the answer and the goal follow.
+        assert!(msgs[0]["content"].as_str().unwrap().ends_with("какая погода"));
         let a = pos("assistant", "+5").expect("history answer");
         let g = pos("user", "а завтра?").expect("goal");
-        assert!(0 < q && q < a && a < g, "order: instructions, history, goal");
+        assert!(0 < a && a < g, "order: instructions+question, answer, goal");
         assert!(msgs.iter().all(|m| !m["content"].as_str().unwrap().contains("сломанный")),
             "failed turns stay out of the prompt");
         assert!(shim.chats_calls("chat_session_resolve").await[0]["session_id"] == "S1");
+    }
+
+    #[tokio::test]
+    async fn history_transcript_alternates_roles_for_anthropic() {
+        // `ai` forwards messages as is (no merging of same-role neighbours),
+        // so the agent must send an alternating transcript.
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![turn(1, "q1", "a1", "ok"), turn(2, "q2", "a2", "ok"), turn(3, "q3", "a3", "ok")],
+        )
+        .await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "now", "provider": "anthropic"}))
+            .await
+            .unwrap();
+        let reqs = shim.ai_requests().await;
+        assert_eq!(reqs[0]["provider"], "anthropic");
+        let roles: Vec<&str> = reqs[0]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "user", "assistant", "user", "assistant", "user"]);
+    }
+
+    #[tokio::test]
+    async fn history_skips_turns_with_empty_text() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal(
+            "S1",
+            false,
+            vec![
+                turn(1, "empty answer", "  ", "ok"),
+                turn(2, "", "empty question", "ok"),
+                turn(3, "real q", "real a", "ok"),
+            ],
+        )
+        .await;
+        shim.push_ai_reply("ok").await;
+        shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let req = shim.ai_requests().await[0].to_string();
+        assert!(req.contains("real q") && req.contains("real a"));
+        assert!(!req.contains("empty answer") && !req.contains("empty question"), "{req}");
     }
 
     #[tokio::test]

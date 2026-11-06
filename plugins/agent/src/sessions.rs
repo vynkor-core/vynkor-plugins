@@ -32,7 +32,8 @@ pub struct Origin {
 ///   part before the first dot, source defaults to the plugin part;
 /// - `caller` without a dot (local plugin) or empty: device is
 ///   `local_device`, source defaults to the caller (`"local"` when empty);
-/// - `kind` defaults to `voice`.
+/// - `kind` defaults to `voice`; device is lower-cased, an empty source
+///   becomes `"local"`, source is capped at [`SOURCE_MAX_CHARS`].
 pub fn origin(
     caller: &str,
     kind: Option<&str>,
@@ -40,16 +41,21 @@ pub fn origin(
     local_device: &str,
 ) -> Origin {
     let (device, default_source) = match caller.split_once('.') {
-        Some((dev, plugin)) if !dev.is_empty() => (dev.to_string(), plugin.to_string()),
-        _ if caller.is_empty() => (local_device.to_string(), "local".to_string()),
-        _ => (local_device.to_string(), caller.to_string()),
+        Some((dev, plugin)) if !dev.is_empty() => (dev, plugin),
+        Some((_, plugin)) => (local_device, plugin),
+        None => (local_device, caller),
     };
+    let source = source.filter(|s| !s.is_empty()).unwrap_or(default_source);
+    let source = if source.is_empty() { "local" } else { source };
     Origin {
-        device,
+        device: device.to_lowercase(),
         kind: kind.unwrap_or("voice").to_string(),
-        source: source.map(str::to_string).unwrap_or(default_source),
+        source: source.chars().take(SOURCE_MAX_CHARS).collect(),
     }
 }
+
+/// Cap for the derived/explicit `source` label (chars).
+pub const SOURCE_MAX_CHARS: usize = 64;
 
 /// Cap for `args` / `result` / `error` kept in the trace (chars).
 pub const TRACE_TEXT_MAX_CHARS: usize = 200;
@@ -134,6 +140,16 @@ fn mask_json_text(text: &str) -> String {
 /// - every tool: values of sensitive keys are masked recursively in args and,
 ///   when it parses as JSON, in the result.
 pub fn redact(tool: &str, args: &Value, result: &str) -> (String, String) {
+    (redact_args(tool, args), redact_result(tool, result))
+}
+
+/// Tools whose output is file or shell content: never copied into the trace.
+fn is_omit_tool(tool: &str) -> bool {
+    let t = tool.to_lowercase();
+    t.starts_with("fs_") || t.starts_with("exec") || t.starts_with("shell")
+}
+
+fn redact_args(tool: &str, args: &Value) -> String {
     if is_sensitive_tool(tool) {
         let keys_only = match args {
             Value::Object(map) => Value::Object(
@@ -142,26 +158,74 @@ pub fn redact(tool: &str, args: &Value, result: &str) -> (String, String) {
             Value::Null => Value::Null,
             _ => Value::String(REDACTED.to_string()),
         };
-        return (keys_only.to_string(), REDACTED.to_string());
+        return keys_only.to_string();
     }
     let mut masked = args.clone();
     mask_keys(&mut masked);
-    (masked.to_string(), mask_json_text(result))
+    scrub_text(&masked.to_string())
+}
+
+fn redact_result(tool: &str, result: &str) -> String {
+    if is_sensitive_tool(tool) {
+        REDACTED.to_string()
+    } else if is_omit_tool(tool) {
+        "[omitted]".to_string()
+    } else {
+        scrub_text(&mask_json_text(result))
+    }
+}
+
+/// Error text: same masking as results, but fs/exec errors are kept (they
+/// say what went wrong, not what the file held) after the text scrub.
+fn redact_error(tool: &str, err: &str) -> String {
+    if is_sensitive_tool(tool) {
+        REDACTED.to_string()
+    } else {
+        scrub_text(&mask_json_text(err))
+    }
+}
+
+fn scrub_regexes() -> &'static [regex::Regex; 3] {
+    static RES: std::sync::OnceLock<[regex::Regex; 3]> = std::sync::OnceLock::new();
+    RES.get_or_init(|| {
+        [
+            regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+").unwrap(),
+            regex::Regex::new(
+                r"(?i)[A-Za-z0-9_.-]*(?:key|token|secret|passw\w*|authorization)[A-Za-z0-9_.-]*\s*[:=]\s*\S+",
+            )
+            .unwrap(),
+            regex::Regex::new(r"[A-Za-z0-9+_=-]{32,}").unwrap(),
+        ]
+    })
+}
+
+/// Pattern pass for text that is not (or not only) JSON: `Bearer <tok>`,
+/// `name: value` / `NAME=value` pairs whose name looks secret (`.env` files,
+/// headers), and long token-like runs (>= 32 chars with a letter and a digit;
+/// `/` is not part of the class, so file paths are not eaten).
+fn scrub_text(text: &str) -> String {
+    let [bearer, pair, long] = scrub_regexes();
+    let t = bearer.replace_all(text, REDACTED);
+    let t = pair.replace_all(&t, REDACTED);
+    long.replace_all(&t, |c: &regex::Captures| {
+        let m = &c[0];
+        if m.bytes().any(|b| b.is_ascii_digit()) && m.bytes().any(|b| b.is_ascii_alphabetic()) {
+            REDACTED.to_string()
+        } else {
+            m.to_string()
+        }
+    })
+    .into_owned()
 }
 
 impl TraceRec {
     /// A call that ran (or failed) after `ms` milliseconds. Secrets are
     /// redacted first, then every text is cut to [`TRACE_TEXT_MAX_CHARS`].
     pub fn new(tool: &str, args: &Value, outcome: Result<&str, &str>, ms: u64) -> Self {
-        let (args_text, result, error) = match outcome {
-            Ok(body) => {
-                let (a, r) = redact(tool, args, body);
-                (a, trace_text(&r), None)
-            }
-            Err(e) => {
-                let (a, e) = redact(tool, args, e);
-                (a, String::new(), Some(trace_text(&e)))
-            }
+        let args_text = redact_args(tool, args);
+        let (result, error) = match outcome {
+            Ok(body) => (trace_text(&redact_result(tool, body)), None),
+            Err(e) => (String::new(), Some(trace_text(&redact_error(tool, e)))),
         };
         Self { tool: tool.to_string(), args: trace_text(&args_text), result, error, ms }
     }
@@ -310,6 +374,9 @@ pub async fn history(
         .filter_map(|t| {
             let q = t.get("user_text").and_then(Value::as_str)?;
             let a = t.get("answer_text").and_then(Value::as_str)?;
+            if q.trim().is_empty() || a.trim().is_empty() {
+                return None;
+            }
             Some((q.to_string(), a.to_string()))
         })
         .collect();
@@ -342,7 +409,7 @@ mod tests {
         assert!(!r.contains("\"k\""), "{r}");
         assert!(r.contains(r#""n":1"#) && !r.contains(r#""c""#), "{r}");
         // non-JSON result of a normal tool is untouched
-        assert_eq!(redact("fs_read", &json!({}), "plain text").1, "plain text");
+        assert_eq!(redact("http_get", &json!({}), "plain text").1, "plain text");
     }
 
     #[test]
@@ -355,6 +422,53 @@ mod tests {
         let rec = TraceRec::new("http_get", &json!({"token": "T0P"}), Err(r#"{"auth":"A1"}"#), 1);
         assert!(!rec.args.contains("T0P"));
         assert!(!rec.error.unwrap().contains("A1"));
+    }
+
+    #[test]
+    fn origin_normalizes_device_and_source() {
+        assert_eq!(origin("laptop.", None, None, "host"), o("laptop", "voice", "local"));
+        assert_eq!(origin("Laptop.desktop", None, None, "host"), o("laptop", "voice", "desktop"));
+        assert_eq!(origin("", None, None, "HOST"), o("host", "voice", "local"));
+        assert_eq!(origin(".desktop", None, None, "host"), o("host", "voice", "desktop"));
+        let long = format!("dev.{}", "s".repeat(100));
+        assert_eq!(origin(&long, None, None, "host").source.chars().count(), SOURCE_MAX_CHARS);
+        let src = origin("dev.x", None, Some(&"é".repeat(100)), "host").source;
+        assert_eq!(src.chars().count(), SOURCE_MAX_CHARS);
+    }
+
+    #[test]
+    fn plain_text_results_are_scrubbed() {
+        let env = "DB_HOST=localhost\nDB_PASSWORD=hunter2\nAPI_KEY: sk-abc123\nok=1\n";
+        let r = redact("http_get", &json!({}), env).1;
+        assert!(!r.contains("hunter2") && !r.contains("sk-abc123"), "{r}");
+        assert!(r.contains("DB_HOST=localhost") && r.contains("ok=1"), "{r}");
+        let r = redact("http_get", &json!({}), "Authorization: Bearer abc.def-123").1;
+        assert!(!r.contains("abc.def"), "{r}");
+        let r = redact("http_get", &json!({}), "Bearer abc.def-123 then more").1;
+        assert!(!r.contains("abc.def") && r.contains("then more"), "{r}");
+        let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+        let r = redact("http_get", &json!({}), &format!("hash {hex} end")).1;
+        assert!(!r.contains(hex) && r.contains("end"), "{r}");
+        let b64 = "dGhpcyBpcyBhIHNlY3JldCB0b2tlbiB2YWx1ZQ0123456789";
+        assert!(!redact("http_get", &json!({}), b64).1.contains(b64));
+        // paths and plain prose survive
+        let path = "/home/behzod/projects/vynkor-core/vynkor-plugins-wt-a1/plugins/agent";
+        assert_eq!(redact("http_get", &json!({}), path).1, path);
+        // errors get the same pass
+        let rec = TraceRec::new("http_get", &json!({}), Err("denied: token=abc123"), 1);
+        assert!(!rec.error.unwrap().contains("abc123"));
+    }
+
+    #[test]
+    fn fs_and_exec_results_are_omitted_but_errors_kept() {
+        for tool in ["fs_read", "fs_list", "exec_run", "shell_exec", "Shell"] {
+            assert_eq!(redact(tool, &json!({"path": "/x"}), "SECRET FILE BODY").1, "[omitted]", "{tool}");
+        }
+        let rec = TraceRec::new("fs_read", &json!({"path": "/etc/x"}), Ok("body"), 1);
+        assert_eq!(rec.result, "[omitted]");
+        assert!(rec.args.contains("/etc/x"), "args stay: {}", rec.args);
+        let rec = TraceRec::new("fs_read", &json!({}), Err("no such file"), 1);
+        assert_eq!(rec.error.as_deref(), Some("no such file"));
     }
 
     #[test]

@@ -94,6 +94,10 @@ pub struct GoalDoc {
     #[serde(default)]
     pub origin: Option<crate::sessions::Origin>,
     /// Every tool call of the goal (args/results cut short), oldest first.
+    /// Prior session turns as plain text (questions and answers joined),
+    /// kept so tool filtering stays the same when the goal is resumed.
+    #[serde(default)]
+    pub history_hint: String,
     #[serde(default)]
     pub tool_trace: Vec<crate::sessions::TraceRec>,
 }
@@ -394,7 +398,7 @@ pub fn prune_ids_at(limit: Option<usize>, mut docs: Vec<PruneCandidate>) -> Vec<
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -417,7 +421,7 @@ mod tests {
         assert!(!sample(STATUS_NEEDS_CONFIRMATION).is_terminal());
     }
 
-    fn sample(status: &str) -> GoalDoc {
+    pub(crate) fn sample(status: &str) -> GoalDoc {
         GoalDoc {
             id: "1".into(),
             title: "t".into(),
@@ -446,6 +450,7 @@ mod tests {
             tool_last_ms: Default::default(),
             session_id: None,
             origin: None,
+            history_hint: String::new(),
             tool_trace: Vec::new(),
         }
     }

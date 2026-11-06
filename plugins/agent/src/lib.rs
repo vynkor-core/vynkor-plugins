@@ -318,6 +318,7 @@ async fn start_goal(
         tool_last_ms: Default::default(),
         session_id: resolved.map(|r| r.id),
         origin: Some(origin),
+        history_hint: String::new(),
         tool_trace: Vec::new(),
     };
 
