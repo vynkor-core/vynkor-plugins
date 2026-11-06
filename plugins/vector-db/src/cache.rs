@@ -229,6 +229,8 @@ struct Inner {
     cfg: CacheConfig,
     clock: Arc<dyn Fn() -> i64 + Send + Sync>,
     slots: StdMutex<HashMap<(String, String), Arc<Slot>>>,
+    /// Bytes held (or reserved for an in-flight load) by all cached collections.
+    total: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -247,6 +249,7 @@ impl VecCache {
                 cfg,
                 clock,
                 slots: StdMutex::new(HashMap::new()),
+                total: AtomicUsize::new(0),
             }),
         }
     }
@@ -270,10 +273,45 @@ impl VecCache {
     }
 
     fn total_bytes(&self) -> usize {
+        self.inner.total.load(AtomicOrdering::SeqCst)
+    }
+
+    /// Atomically claim `n` bytes of the global budget; false if it would exceed the cap.
+    fn try_reserve(&self, n: usize) -> bool {
+        let max = self.inner.cfg.max_bytes;
+        self.inner
+            .total
+            .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |t| {
+                t.checked_add(n).filter(|v| *v <= max)
+            })
+            .is_ok()
+    }
+
+    /// Reserve `n` bytes, evicting least recently used collections if needed.
+    fn reserve_with_eviction(&self, keep: &Arc<Slot>, n: usize) -> bool {
+        if self.try_reserve(n) {
+            return true;
+        }
+        self.make_room(keep, n);
+        self.try_reserve(n)
+    }
+
+    fn release(&self, n: usize) {
+        self.inner.total.fetch_sub(n, AtomicOrdering::SeqCst);
+    }
+
+    /// Return a slot's accounted bytes to the global budget (call right after
+    /// its state was set to `None`).
+    fn drop_bytes(&self, slot: &Slot) {
+        let b = slot.bytes.swap(0, AtomicOrdering::SeqCst);
+        self.release(b);
+    }
+
+    /// Sum of what loaded collections actually hold (independent of the budget counter).
+    #[cfg(test)]
+    fn held_bytes(&self) -> usize {
         let g = self.inner.slots.lock().unwrap();
-        g.values()
-            .map(|s| s.bytes.load(AtomicOrdering::Relaxed))
-            .sum()
+        g.values().map(|s| s.bytes.load(AtomicOrdering::SeqCst)).sum()
     }
 
     /// True when the collection is currently held in memory.
@@ -288,7 +326,7 @@ impl VecCache {
         let slot = self.slot(caller, collection);
         let _w = slot.writer.lock().await;
         *slot.state.write().await = None;
-        slot.bytes.store(0, AtomicOrdering::Relaxed);
+        self.drop_bytes(&slot);
     }
 
     /// Unload collections not touched for longer than the idle window.
@@ -303,7 +341,7 @@ impl VecCache {
             if now - s.last_used.load(AtomicOrdering::Relaxed) > self.inner.cfg.idle_ms {
                 if let Ok(mut st) = s.state.try_write() {
                     if st.take().is_some() {
-                        s.bytes.store(0, AtomicOrdering::Relaxed);
+                        self.drop_bytes(&s);
                         n += 1;
                     }
                 }
@@ -339,7 +377,7 @@ impl VecCache {
     /// Make room for `need` bytes by unloading least-recently-used collections.
     fn make_room(&self, keep: &Arc<Slot>, need: usize) {
         loop {
-            if self.total_bytes() + need <= self.inner.cfg.max_bytes {
+            if self.total_bytes().saturating_add(need) <= self.inner.cfg.max_bytes {
                 return;
             }
             let victim = {
@@ -353,7 +391,7 @@ impl VecCache {
             match v.state.try_write() {
                 Ok(mut st) => {
                     *st = None;
-                    v.bytes.store(0, AtomicOrdering::Relaxed);
+                    self.drop_bytes(&v);
                 }
                 // In use right now: treat as not evictable this round.
                 Err(_) => return,
@@ -456,9 +494,30 @@ impl VecCache {
                 drop(_w);
                 return scan_sqlite(pool, collection, q, top_k, filter).await;
             }
-            self.make_room(&slot, est);
-            let loaded = self.load(pool, collection, dim).await?;
-            slot.bytes.store(loaded.bytes(), AtomicOrdering::Relaxed);
+            // Reserve before loading so concurrent loads cannot jointly overcommit.
+            if !self.reserve_with_eviction(&slot, est) {
+                drop(_w);
+                return scan_sqlite(pool, collection, q, top_k, filter).await;
+            }
+            let loaded = match self.load(pool, collection, dim).await {
+                Ok(l) => l,
+                Err(e) => {
+                    self.release(est);
+                    return Err(e);
+                }
+            };
+            let actual = loaded.bytes();
+            if actual > est {
+                // The estimate was low (rows grew meanwhile); claim the rest or give up.
+                if !self.reserve_with_eviction(&slot, actual - est) {
+                    self.release(est);
+                    drop(_w);
+                    return scan_sqlite(pool, collection, q, top_k, filter).await;
+                }
+            } else {
+                self.release(est - actual);
+            }
+            slot.bytes.store(actual, AtomicOrdering::SeqCst);
             *slot.state.write().await = Some(loaded);
         }
     }
@@ -531,13 +590,20 @@ impl VecCache {
             for r in rows {
                 l.push(r.id, &r.vector, &r.metadata_json);
             }
-            let b = l.bytes();
-            if b > self.inner.cfg.max_bytes {
-                // Grew past the ceiling: fall back to scanning from SQLite.
-                *st = None;
-                slot.bytes.store(0, AtomicOrdering::Relaxed);
+            let new = l.bytes();
+            let old = slot.bytes.load(AtomicOrdering::SeqCst);
+            if new > old {
+                // Account the growth against the global budget, not this collection alone.
+                if self.reserve_with_eviction(&slot, new - old) {
+                    slot.bytes.store(new, AtomicOrdering::SeqCst);
+                } else {
+                    // No room: unload so later queries scan SQLite.
+                    *st = None;
+                    self.drop_bytes(&slot);
+                }
             } else {
-                slot.bytes.store(b, AtomicOrdering::Relaxed);
+                self.release(old - new);
+                slot.bytes.store(new, AtomicOrdering::SeqCst);
             }
         }
         slot.last_used.store(self.now(), AtomicOrdering::Relaxed);
@@ -563,7 +629,9 @@ impl VecCache {
         let mut st = slot.state.write().await;
         if let Some(l) = st.as_mut() {
             l.remove(id);
-            slot.bytes.store(l.bytes(), AtomicOrdering::Relaxed);
+            let new = l.bytes();
+            let old = slot.bytes.swap(new, AtomicOrdering::SeqCst);
+            self.release(old.saturating_sub(new));
         }
         Ok(res.rows_affected() > 0)
     }
@@ -1045,6 +1113,105 @@ mod tests {
             all.iter().map(|h| &h.0).collect::<Vec<_>>(),
             sql.iter().map(|h| &h.0).collect::<Vec<_>>()
         );
+    }
+
+    #[tokio::test]
+    async fn load_never_exceeds_global_cap_when_eviction_blocked() {
+        let (_d, pool) = setup().await;
+        // one collection: 100 x 256 x 4 = ~100 KB + overhead; cap fits exactly one
+        let cache = VecCache::new(cfg(150_000));
+        let mut rng = Rng(77);
+        for c in ["a", "b"] {
+            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+        }
+        let q = rng.unit(256);
+        cache.query(&pool, "t", "a", &q, 1, None).await.unwrap();
+        assert!(cache.is_loaded("t", "a").await);
+        // a reader is inside "a": it cannot be evicted
+        let guard = cache.slot("t", "a").state.clone().read_owned().await;
+        let hit = cache.query(&pool, "t", "b", &q, 3, None).await.unwrap();
+        let want = scan_sqlite(&pool, "b", &q, 3, None).await.unwrap();
+        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
+        assert!(cache.total_bytes() <= 150_000, "total {}", cache.total_bytes());
+        assert!(!cache.is_loaded("t", "b").await, "b served by scan, not cached");
+        drop(guard);
+        // once the reader is gone, b can displace a
+        cache.query(&pool, "t", "b", &q, 1, None).await.unwrap();
+        assert!(cache.is_loaded("t", "b").await);
+        assert!(cache.total_bytes() <= 150_000);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_loads_respect_cap() {
+        let (_d, pool) = setup().await;
+        let cap = 260_000; // fits two ~100 KB collections, not eight
+        let cache = VecCache::new(cfg(cap));
+        let mut rng = Rng(5);
+        let names: Vec<String> = (0..8).map(|i| format!("c{i}")).collect();
+        for c in &names {
+            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+        }
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for c in names {
+            let (cache, pool, peak) = (cache.clone(), pool.clone(), peak.clone());
+            tasks.push(tokio::spawn(async move {
+                let mut rng = Rng(c.len() as u64 + c.as_bytes()[1] as u64);
+                for _ in 0..5 {
+                    let q = rng.unit(256);
+                    let hits = cache.query(&pool, "t", &c, &q, 3, None).await.unwrap();
+                    assert_eq!(hits.len(), 3);
+                    peak.fetch_max(cache.held_bytes(), AtomicOrdering::SeqCst);
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        peak.fetch_max(cache.held_bytes(), AtomicOrdering::SeqCst);
+        assert!(peak.load(AtomicOrdering::SeqCst) <= cap, "peak {}", peak.load(AtomicOrdering::SeqCst));
+        assert!(cache.total_bytes() <= cap);
+    }
+
+    #[tokio::test]
+    async fn upsert_growth_counts_against_global_total() {
+        let (_d, pool) = setup().await;
+        // each collection ~100 KB; cap fits both but not both plus growth
+        let cache = VecCache::new(cfg(260_000));
+        let mut rng = Rng(31);
+        for c in ["a", "b"] {
+            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+        }
+        let q = rng.unit(256);
+        cache.query(&pool, "t", "a", &q, 1, None).await.unwrap();
+        cache.query(&pool, "t", "b", &q, 1, None).await.unwrap();
+        assert!(cache.is_loaded("t", "a").await && cache.is_loaded("t", "b").await);
+        // grow "b": alone far below the cap, but the global total would exceed it
+        cache.upsert(&pool, "t", "b", 256, None, rows(&mut rng, 40, 256, "more")).await.unwrap();
+        assert!(cache.total_bytes() <= 260_000, "total {}", cache.total_bytes());
+        // results stay correct whichever of them got unloaded
+        let hit = cache.query(&pool, "t", "b", &q, 5, None).await.unwrap();
+        let want = scan_sqlite(&pool, "b", &q, 5, None).await.unwrap();
+        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
+        assert!(cache.total_bytes() <= 260_000);
+        // pinned neighbour cannot be evicted: the growing collection unloads itself
+        let cache = VecCache::new(cfg(260_000));
+        for c in ["x", "y"] {
+            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+        }
+        cache.query(&pool, "t", "x", &q, 1, None).await.unwrap();
+        cache.query(&pool, "t", "y", &q, 1, None).await.unwrap();
+        assert!(cache.is_loaded("t", "x").await && cache.is_loaded("t", "y").await);
+        let guard = cache.slot("t", "x").state.clone().read_owned().await;
+        cache.upsert(&pool, "t", "y", 256, None, rows(&mut rng, 40, 256, "evenmore")).await.unwrap();
+        drop(guard);
+        assert!(cache.total_bytes() <= 260_000, "total {}", cache.total_bytes());
+        assert!(!cache.is_loaded("t", "y").await, "y unloaded instead of overcommitting");
+        assert!(cache.is_loaded("t", "x").await);
+        let hit = cache.query(&pool, "t", "y", &q, 5, None).await.unwrap();
+        let want = scan_sqlite(&pool, "y", &q, 5, None).await.unwrap();
+        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
     }
 
     /// Run with: cargo test --release -- --ignored --nocapture query_20k_1024d_fast
