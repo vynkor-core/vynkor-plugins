@@ -7,12 +7,13 @@ use vector_db_plugin::config::Config;
 use vector_db_plugin::db::DbPools;
 use vector_db_plugin::handler::{Handler, Rpc, RpcCall};
 use vynkor_sdk::proto::{
-    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish, PluginManifest, Pong,
+    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish, PluginManifest,
+    Pong,
 };
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "vector-db";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = "0.2.0";
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -28,6 +29,7 @@ fn manifest() -> PluginManifest {
             "vec_delete".into(),
             "vec_list".into(),
             "vec_stats".into(),
+            "vec_embed".into(),
         ],
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
@@ -41,7 +43,12 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn action_response(action_id: String, status: ActionStatus, data_json: Vec<u8>, error: String) -> Envelope {
+fn action_response(
+    action_id: String,
+    status: ActionStatus,
+    data_json: Vec<u8>,
+    error: String,
+) -> Envelope {
     Envelope {
         payload: Some(envelope::Payload::ActionResponse(ActionResponse {
             action_id,
@@ -65,7 +72,9 @@ fn event_envelope(event_type: &str, payload: &Value) -> Envelope {
 
 async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorError> {
     let jwt_token = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
-    let ack = client.register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt_token).await?;
+    let ack = client
+        .register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt_token)
+        .await?;
     if !ack.accepted {
         return Err(VynkorError::PermissionDenied(format!(
             "registration rejected: {}",
@@ -75,18 +84,24 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     println!("[{PLUGIN_ID}] registered with kernel");
 
     let pools = DbPools::new(config.db.clone());
-    let handler = Arc::new(Handler::new(
+    let handler = Arc::new(Handler::with_cache(
         pools,
         config.max_response_bytes,
         config.default_dim,
+        config.cache.clone(),
     ));
+    // Unload idle collections; check often enough to honour short windows.
+    let sweep =
+        std::time::Duration::from_millis((config.cache.idle_ms / 4).clamp(1000, 60_000) as u64);
+    let mut sweep_tick = tokio::time::interval(sweep);
     let embed_cfg = Arc::new(config.embed.clone());
 
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(64);
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
     let rpc = Rpc::new(rpc_tx);
 
-    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> = HashMap::new();
+    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> =
+        HashMap::new();
     let mut seq: u64 = 0;
 
     loop {
@@ -157,6 +172,12 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
                     }
                 }
             }
+            _ = sweep_tick.tick() => {
+                let n = handler.evict_idle();
+                if n > 0 {
+                    println!("[{PLUGIN_ID}] unloaded {n} idle collection(s) from memory");
+                }
+            }
             Some(env) = outbound_rx.recv() => {
                 let _ = client.send("kernel", env).await;
             }
@@ -188,7 +209,9 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
 async fn main() -> Result<(), VynkorError> {
     let socket_path = std::env::var("VYN_SOCKET_PATH")
         .unwrap_or_else(|_| vynkor_wire::socket::default_socket_path());
-    let secret = std::env::var("VYN_JWT_SECRET").ok().filter(|s| !s.is_empty());
+    let secret = std::env::var("VYN_JWT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
     let client = match secret {
         Some(s) => VynkorClient::connect_with_secret(&socket_path, s.as_bytes()).await?,
         None => VynkorClient::connect(&socket_path).await?,
@@ -230,7 +253,9 @@ mod tests {
                 api_key_env: String::new(),
                 timeout_ms: 0,
                 fallback: EmbedFallback::Error,
+                batch: 64,
             },
+            cache: Default::default(),
         };
 
         let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
@@ -243,7 +268,10 @@ mod tests {
             .await
             .expect("timed out waiting for registration")
             .unwrap();
-        assert!(matches!(reg.payload, Some(envelope::Payload::PluginRegister(_))));
+        assert!(matches!(
+            reg.payload,
+            Some(envelope::Payload::PluginRegister(_))
+        ));
         let ack = Envelope {
             payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
                 accepted: true,
@@ -283,7 +311,12 @@ mod tests {
                 .unwrap();
             match env.payload {
                 Some(envelope::Payload::ActionResponse(resp)) => {
-                    assert_eq!(resp.status, ActionStatus::ActionOk as i32, "error: {}", resp.error);
+                    assert_eq!(
+                        resp.status,
+                        ActionStatus::ActionOk as i32,
+                        "error: {}",
+                        resp.error
+                    );
                     seen += 1;
                 }
                 Some(envelope::Payload::EventPublish(ev)) => {
@@ -334,14 +367,47 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_lists_vec_embed() {
+        assert!(super::manifest().actions.iter().any(|a| a == "vec_embed"));
+        let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
+        let declared: Vec<&str> = parsed["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap())
+            .collect();
+        assert!(
+            declared.contains(&"vec_embed"),
+            "plugin.json must declare vec_embed"
+        );
+        let runtime: std::collections::BTreeSet<String> =
+            super::manifest().actions.into_iter().collect();
+        let shipped: std::collections::BTreeSet<String> =
+            declared.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            runtime, shipped,
+            "manifest() and plugin.json action lists must match"
+        );
     }
 }

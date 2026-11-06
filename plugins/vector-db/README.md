@@ -138,6 +138,16 @@ Cloud (без Ollama) — то же, но base_url/api_key_env указываю�
 | `VECTOR_DB_MAX_RESPONSE_BYTES` | `4194304` (4 MiB) | vec_query result size cap |
 | `VECTOR_DB_MAX_DB_BYTES` | `268435456` (256 MiB) | hard per-caller disk quota via PRAGMA max_page_count; 0 disables |
 | `VECTOR_DB_DEFAULT_DIM` | `384` | default dim for text-only upserts |
+| `VECTOR_DB_EMBED_BATCH` | `64` | texts per `ai.embedding` request when embedding a batch (1..64); an `ai` that rejects array input is detected once and fed one text at a time |
+| `VECTOR_DB_CACHE_MAX_MB` | `256` | memory ceiling for cached collections (LRU eviction); a collection larger than this is never cached and is searched by streaming BLOBs from SQLite |
+| `VECTOR_DB_CACHE_IDLE_SECS` | `600` | a cached collection with no queries or writes for this long is unloaded |
+
+## Storage, cache and migration (v0.2)
+
+- Vectors are stored as f32 little-endian BLOBs (`PRAGMA user_version = 1`). A database from v0.1 (JSON text vectors) is migrated on first open: `VACUUM INTO '<caller>.db.bak-v0'` (only if that file does not exist yet), then one transaction converts every row. Rows whose JSON vector cannot be parsed are skipped with a warning naming the id. A second start does not migrate or touch the backup.
+- `vec_query` searches an in-memory copy of the collection (contiguous `Vec<f32>`, dot product on normalized vectors, top-k via a bounded heap), loaded lazily on first query and kept in sync by writes. 20 000 x 1024-d vectors: ~4 ms per query warm.
+- `vec_embed {texts}` (1..64) returns `{vectors, model, dim}` (normalized) so a caller can embed a question once and pass `vector` to several `vec_query` calls.
+- `collections.model` records the embedding model of a collection (set on the first write that was embedded). If the configured `VECTOR_DB_EMBED_MODEL` differs, the collection is re-embedded in the background from the stored `text` (rows without text are deleted); meanwhile `vec_query` and writes fail with `collection <name> is being re-embedded for model <m>`. `vec_stats` reports `model`.
 
 ## Concurrency
 
@@ -146,4 +156,4 @@ One task owns `VynkorClient`, spawned handler tasks push responses via mpsc.
 
 ## Status
 
-v0.1.0 — brute-force, fake embeddings, offline. See `ROADMAP.md` for v0.2 plan (real embeddings).
+v0.2.0 — cached brute-force search, f32 BLOB storage, batch embedding. See `ROADMAP.md` for v0.2 plan (real embeddings).
