@@ -31,7 +31,7 @@ dependencies = [
 
 [[package]]
 name = "agent-plugin"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "regex",
  "serde",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "chats-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "rusqlite",
  "serde",

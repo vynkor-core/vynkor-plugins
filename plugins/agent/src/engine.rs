@@ -13,11 +13,12 @@ use serde_json::{json, Value};
 
 use crate::llm::{self, Reply};
 use crate::memory;
+use crate::recall::{self, QueryVec};
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
 use crate::sessions::TraceRec;
 use crate::tools::Catalog;
-use crate::Rpc;
+use crate::{Config, Rpc};
 
 /// Cap on a single tool result fed back into the transcript (chars).
 const OBSERVATION_MAX: usize = 8192;
@@ -109,6 +110,7 @@ async fn embedding_filtered_catalog(
     rpc: &Rpc,
     catalog: &Catalog,
     goal: &str,
+    query: Option<&QueryVec>,
 ) -> Option<Catalog> {
     if !embedding_filter_enabled() || goal.trim().is_empty() {
         return None;
@@ -117,13 +119,7 @@ async fn embedding_filtered_catalog(
         eprintln!("[agent] embedding filter: ensure failed: {e}");
         return None;
     }
-    let resp = rpc
-        .call(
-            "vec_query",
-            json!({"collection": TOOLS_COLLECTION, "text": goal, "top_k": 35}),
-            10000,
-        )
-        .await;
+    let resp = recall::vec_query(rpc, TOOLS_COLLECTION, query, goal, 35, 10000).await;
     let results = match resp {
         Ok(v) => v,
         Err(e) => {
@@ -166,8 +162,14 @@ async fn embedding_filtered_catalog(
     })
 }
 
-async fn effective_catalog(rpc: &Rpc, catalog: &Catalog, goal: &str, context: &str) -> Catalog {
-    if let Some(emb) = embedding_filtered_catalog(rpc, catalog, goal).await {
+async fn effective_catalog(
+    rpc: &Rpc,
+    catalog: &Catalog,
+    goal: &str,
+    context: &str,
+    query: Option<&QueryVec>,
+) -> Catalog {
+    if let Some(emb) = embedding_filtered_catalog(rpc, catalog, goal, query).await {
         eprintln!(
             "[agent] embedding filter: {} -> {} tools (goal: {})",
             catalog.tools.len(),
@@ -216,7 +218,7 @@ pub enum Entry {
     /// Fresh goal: seed the transcript from goal + catalog. `history` is
     /// the session's prior (question, answer) pairs, oldest first; when
     /// non-empty it replaces the caller's `context` (never both).
-    Fresh { history: Vec<(String, String)> },
+    Fresh { history: Vec<(String, String)>, query: Option<QueryVec> },
     /// Resumed after approval: dispatch the pending confirmation first.
     ApprovedResume,
 }
@@ -232,6 +234,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 fn push_turn(doc: &mut GoalDoc, role: &str, content: String) -> Result<(), String> {
     doc.transcript.push(Turn { role: role.to_string(), content });
+    check_budget(doc)
+}
+
+fn check_budget(doc: &GoalDoc) -> Result<(), String> {
     let total: usize = doc.transcript.iter().map(|t| t.content.chars().count()).sum();
     if total > TRANSCRIPT_MAX_CHARS {
         return Err(format!(
@@ -328,21 +334,26 @@ fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), Strin
 pub async fn run(
     db: &Db,
     rpc: &Rpc,
+    config: &Config,
     catalog: &Catalog,
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
-    if let Entry::Fresh { history } = &entry {
-        doc.history_hint = history_text(history);
-    }
+    let query = match &entry {
+        Entry::Fresh { history, query } => {
+            doc.history_hint = history_text(history);
+            query.clone()
+        }
+        Entry::ApprovedResume => None,
+    };
     // Tool filtering sees the same text the model will: a follow-up like
     // "and tomorrow?" must keep the tools the previous turn needed.
     let hint = catalog_hint(doc);
-    let effective = effective_catalog(rpc, catalog, &doc.goal, &hint).await;
+    let effective = effective_catalog(rpc, catalog, &doc.goal, &hint, query.as_ref()).await;
     let llm_catalog = &effective;
     let dispatch_catalog = catalog;
     match entry {
-        Entry::Fresh { history } => {
+        Entry::Fresh { history, .. } => {
             doc.status = store::STATUS_RUNNING.to_string();
             // A fresh doc is never degraded yet, so this must (and does)
             // compute the exact same answer the loop's first iteration will
@@ -355,10 +366,33 @@ pub async fn run(
             doc.transcript =
                 llm::opening_messages_with_full(&doc.goal, context, llm_catalog, dispatch_catalog, native_seed);
             weave_history(&mut doc.transcript, history);
-            if memory::enabled() {
-                if let Some(block) = memory::recall(rpc, &doc.goal).await {
-                    push_turn(doc, "user", block)?;
+            let (facts, past) = tokio::join!(
+                async {
+                    if memory::enabled() {
+                        memory::recall(rpc, &doc.goal, query.as_ref()).await
+                    } else {
+                        None
+                    }
+                },
+                async {
+                    match &query {
+                        Some(q) if config.recall => {
+                            recall::past_sessions(rpc, q, doc.session_id.as_deref(), config).await
+                        }
+                        _ => Vec::new(),
+                    }
                 }
+            );
+            let blocks: Vec<String> =
+                [facts, recall::format_past_sessions(&past)].into_iter().flatten().collect();
+            if !blocks.is_empty() {
+                // Into the goal message (the last one), never the role message
+                // and never a message of its own: roles keep alternating.
+                if let Some(last) = doc.transcript.last_mut() {
+                    last.content = format!("{}\n\n---\n{}", last.content, blocks.join("\n\n"));
+                }
+                doc.recalled_sessions = past.iter().map(|p| p.session_id.clone()).collect();
+                check_budget(doc)?;
             }
             persist(db, doc).await?;
         }
@@ -573,13 +607,13 @@ mod tests {
         let mut doc = crate::store::tests::sample(STATUS_COMPLETED);
         doc.goal = "а потом?".into();
         let hint = catalog_hint(&doc);
-        let bare = effective_catalog(&rpc, &catalog, &doc.goal, &hint).await;
+        let bare = effective_catalog(&rpc, &catalog, &doc.goal, &hint, None).await;
         assert!(!names(&bare).contains(&"fs_read".to_string()), "{:?}", names(&bare));
 
         // ...with the previous turn in the hint they stay.
         doc.history_hint = history_text(&[("прочитай файл notes.txt".into(), "готово".into())]);
         let hint = catalog_hint(&doc);
-        let kept = effective_catalog(&rpc, &catalog, &doc.goal, &hint).await;
+        let kept = effective_catalog(&rpc, &catalog, &doc.goal, &hint, None).await;
         assert!(names(&kept).contains(&"fs_read".to_string()), "{:?}", names(&kept));
 
         // No history: the caller's context is used as before.
