@@ -46,22 +46,6 @@ jobs:
           # the cache; the new prefix-key retires caches saved without it.
           prefix-key: v1-rust
           cache-directories: target/sherpa-onnx-prebuilt
-      # A cache restored by a fallback key (a PR with another Cargo.lock) can
-      # carry a sherpa-onnx-sys build-script output whose link-search dir is
-      # not in that cache's sherpa-onnx-prebuilt. Cargo reuses the output and
-      # linking fails; dropping it makes the build script run (and download)
-      # again.
-      - name: Drop sherpa build outputs that point at missing libs
-        run: |
-          find . -path '*/build/sherpa-onnx-sys-*/output' -type f 2>/dev/null | while read -r out; do
-            dir=$(sed -n 's/^cargo:rustc-link-search=native=//p' "$out" | head -1)
-            if [ -n "$dir" ] && [ ! -d "$dir" ]; then
-              echo "stale: $out -> $dir"
-              build=$(dirname "$out")
-              profile=$(dirname "$(dirname "$build")")
-              rm -rf "$build" "$profile"/.fingerprint/sherpa-onnx-sys-*
-            fi
-          done
       # vynkor-wire's build.rs runs protoc; the pipe-masked test loop hid
       # that no plugin had ever compiled in CI without it
       - name: Install system build dependencies
