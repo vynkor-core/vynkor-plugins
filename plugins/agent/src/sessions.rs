@@ -149,6 +149,57 @@ pub fn redact(tool: &str, args: &Value, result: &str) -> (String, String) {
     (redact_args(tool, args), redact_result(tool, result))
 }
 
+/// Strip a finished goal's stored document of what the trace already hides:
+/// tool results in `transcript` (`[TOOL RESULT name=… status=…]` turns), tool
+/// params in text-mode assistant turns and in `steps`. `goal_get` and the
+/// at-rest copy of a terminal goal go through this; a running goal keeps the
+/// raw transcript its next LLM step needs, and `pending_params` stays as is
+/// so the owner sees exactly what an approval would run. Idempotent.
+pub fn redact_goal(doc: &mut crate::store::GoalDoc) {
+    for turn in &mut doc.transcript {
+        if turn.role == "user" {
+            if let Some(redacted) = redact_observation(&turn.content) {
+                turn.content = redacted;
+            }
+        } else if turn.role == "assistant" {
+            if let Some(redacted) = redact_call_text(&turn.content) {
+                turn.content = redacted;
+            }
+        }
+    }
+    for step in &mut doc.steps {
+        let Some(tool) = step.detail.get("tool").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if let Some(params) = step.detail.get_mut("params") {
+            *params = redacted_args_value(&tool, params);
+        }
+    }
+}
+
+fn redacted_args_value(tool: &str, args: &Value) -> Value {
+    let text = redact_args(tool, args);
+    serde_json::from_str(&text).unwrap_or(Value::String(text))
+}
+
+/// `[TOOL RESULT name=N status=S]\n<body>` → same header, redacted body.
+fn redact_observation(content: &str) -> Option<String> {
+    let rest = content.strip_prefix("[TOOL RESULT name=")?;
+    let (header, body) = rest.split_once('\n').unwrap_or((rest, ""));
+    let (name, status) = header.strip_suffix(']')?.split_once(" status=")?;
+    let body = if status == "ok" { redact_result(name, body) } else { redact_error(name, body) };
+    Some(format!("[TOOL RESULT name={name} status={status}]\n{body}"))
+}
+
+/// Text-mode tool call `{"tool": …, "params": {…}}` → params redacted.
+fn redact_call_text(content: &str) -> Option<String> {
+    let mut v: Value = serde_json::from_str(content.trim()).ok()?;
+    let tool = v.get("tool")?.as_str()?.to_string();
+    let params = v.get_mut("params")?;
+    *params = redacted_args_value(&tool, params);
+    Some(v.to_string())
+}
+
 /// Tools whose output is file or shell content: never copied into the trace.
 fn is_omit_tool(tool: &str) -> bool {
     let t = base_name(tool);
@@ -395,6 +446,42 @@ pub async fn history(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redact_goal_strips_results_and_params_but_not_pending() {
+        use crate::store::{StepRec, Turn};
+        let mut doc = crate::store::tests::sample(crate::store::STATUS_COMPLETED);
+        let t = |role: &str, c: &str| Turn { role: role.into(), content: c.into() };
+        doc.transcript = vec![
+            t("user", "read my token"),
+            t("assistant", r#"{"tool": "secret_get", "params": {"name": "gh", "value": "S3CR3T"}}"#),
+            t("user", "[TOOL RESULT name=secret_get status=ok]\n{\"value\":\"S3CR3T\"}"),
+            t("user", "[TOOL RESULT name=fs_read status=ok]\nprivate file body"),
+            t("user", "[TOOL RESULT name=notify_send status=error]\n{\"api_key\":\"K-1\",\"why\":\"down\"}"),
+            t("assistant", "Done."),
+        ];
+        doc.steps = vec![StepRec {
+            n: 1,
+            kind: "tool_ok".into(),
+            detail: json!({"tool": "notify_send", "params": {"title": "hi", "password": "P"}}),
+        }];
+        doc.pending_params = json!({"password": "kept for approval"});
+        redact_goal(&mut doc);
+        let all = serde_json::to_string(&doc).unwrap();
+        for secret in ["S3CR3T", "private file body", "K-1", "\"P\""] {
+            assert!(!all.contains(secret), "{secret} leaked: {all}");
+        }
+        assert!(doc.transcript[2].content.starts_with("[TOOL RESULT name=secret_get status=ok]\n"));
+        assert!(doc.transcript[3].content.ends_with("[omitted]"));
+        assert!(doc.transcript[4].content.contains("down"), "non-secret error text kept");
+        assert_eq!(doc.transcript[0].content, "read my token");
+        assert_eq!(doc.transcript[5].content, "Done.");
+        assert_eq!(doc.steps[0].detail["params"]["title"], "hi");
+        assert_eq!(doc.pending_params["password"], "kept for approval");
+        let once = serde_json::to_string(&doc).unwrap();
+        redact_goal(&mut doc);
+        assert_eq!(once, serde_json::to_string(&doc).unwrap(), "idempotent");
+    }
 
     fn o(device: &str, kind: &str, source: &str) -> Origin {
         Origin { device: device.into(), kind: kind.into(), source: source.into() }
