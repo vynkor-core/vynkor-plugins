@@ -114,6 +114,7 @@ impl Config {
             .ok()
             .and_then(|s| s.trim().parse::<f64>().ok())
             .filter(|f| f.is_finite())
+            .map(|f| f.clamp(0.0, 1.0))
             .unwrap_or(d.recall_min_score);
         let recall_budget_ms = std::env::var("AGENT_PLUGIN_RECALL_BUDGET_MS")
             .ok()

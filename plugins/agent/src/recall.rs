@@ -216,18 +216,25 @@ fn fence_nonce() -> String {
     format!("{:016x}", h.finish())
 }
 
+/// Longest title kept per entry; a title has no other bound and must not
+/// push the prompt over its budget (recall never fails a turn).
+const MAX_TITLE_CHARS: usize = 120;
+
+fn cap_chars(s: String, max: usize) -> String {
+    if s.chars().count() > max {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    } else {
+        s
+    }
+}
+
 /// One entry as a JSON object line: escaping keeps every character of the
 /// stored text inside a quoted string.
 fn entry_line(h: &PastSession) -> String {
-    let title = flatten(&h.title);
+    let title = cap_chars(flatten(&h.title), MAX_TITLE_CHARS);
     let title = if title.is_empty() { "(untitled)".to_string() } else { title };
-    let summary = flatten(&h.summary);
-    let summary = if summary.chars().count() > MAX_SUMMARY_CHARS {
-        let cut: String = summary.chars().take(MAX_SUMMARY_CHARS).collect();
-        format!("{cut}…")
-    } else {
-        summary
-    };
+    let summary = cap_chars(flatten(&h.summary), MAX_SUMMARY_CHARS);
     // `[`/`]` as JSON escapes: still valid JSON with the same decoded text, but
     // no literal `[TOOL RESULT`-style marker can appear in the prompt.
     json!({"date": utc_date(h.at), "title": title, "summary": summary})
@@ -318,6 +325,16 @@ mod tests {
         let sum = e1["summary"].as_str().unwrap();
         assert!(sum.ends_with('…'));
         assert_eq!(sum.chars().filter(|c| *c == 'я').count(), 400);
+    }
+
+    #[test]
+    fn long_title_is_capped() {
+        let s = format_past_sessions(&[hit(&"t".repeat(5000), "x", 0)]).unwrap();
+        let (_, entries) = parse_block(&s);
+        let e: Value = serde_json::from_str(&entries[0]).unwrap();
+        let title = e["title"].as_str().unwrap();
+        assert!(title.ends_with('…'));
+        assert_eq!(title.chars().filter(|c| *c == 't').count(), 120);
     }
 
     #[test]
