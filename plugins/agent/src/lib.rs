@@ -548,13 +548,13 @@ pub async fn handle_action(
             ok(json!({"total": book.routines.len(), "routines": book.routines}), None)
         }
         AgentRequest::RoutineDelete { id } => {
-            let mut book = routines::store::load(&rpc, config.db_timeout_ms).await;
-            let before = book.routines.len();
-            book.routines.retain(|r| r.id != id);
-            let deleted = book.routines.len() != before;
-            if deleted {
-                routines::store::save(&rpc, config.db_timeout_ms, &book).await?;
-            }
+            let deleted = routines::store::update(&rpc, config.db_timeout_ms, |book| {
+                let before = book.routines.len();
+                book.routines.retain(|r| r.id != id);
+                let deleted = book.routines.len() != before;
+                (deleted, deleted)
+            })
+            .await?;
             ok(json!({"deleted": deleted}), None)
         }
         AgentRequest::RoutineMine => {

@@ -328,25 +328,25 @@ pub async fn run(rpc: &Rpc, db: &Db, catalog: &Catalog) -> Result<Value, String>
         }
     }
 
-    let mut book = store::load(rpc, db.timeout_ms()).await;
-    let (mut created, mut updated, mut dropped) = (0, 0, 0);
     let now = now_ms();
-    for (c, e, hash) in &enriched {
-        match merge(&mut book, c, e, hash, now) {
-            MergeOutcome::Created => created += 1,
-            MergeOutcome::Updated => updated += 1,
-            MergeOutcome::Dropped => {
-                eprintln!(
-                    "[agent] routines: dropped {} {:?}: learn={}",
-                    c.tool, c.texts, e.learn
-                );
-                dropped += 1
+    let (created, updated, dropped) = store::update(rpc, db.timeout_ms(), |book| {
+        let (mut created, mut updated, mut dropped) = (0, 0, 0);
+        for (c, e, hash) in &enriched {
+            match merge(book, c, e, hash, now) {
+                MergeOutcome::Created => created += 1,
+                MergeOutcome::Updated => updated += 1,
+                MergeOutcome::Dropped => {
+                    eprintln!(
+                        "[agent] routines: dropped {} {:?}: learn={}",
+                        c.tool, c.texts, e.learn
+                    );
+                    dropped += 1
+                }
             }
         }
-    }
-    if created + updated > 0 {
-        store::save(rpc, db.timeout_ms(), &book).await?;
-    }
+        (created + updated > 0, (created, updated, dropped))
+    })
+    .await?;
     let summary = json!({
         "candidates": found.len(),
         "created": created,

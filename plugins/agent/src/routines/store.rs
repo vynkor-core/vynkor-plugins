@@ -38,3 +38,24 @@ pub async fn save(rpc: &Rpc, timeout_ms: u32, book: &Book) -> Result<(), String>
     }
     Ok(())
 }
+
+/// Read-modify-write of the book under one process-wide lock. Goals, mining
+/// and `routine_delete` all write the whole doc; without the lock a writer
+/// holding an older copy (a fire waiting on its tool) overwrote the others —
+/// e.g. re-enabling a routine a correction had just disabled. `f` returns
+/// whether it changed anything; only then is the book saved. Keep slow work
+/// (tool dispatch, LLM calls) outside `f`.
+pub async fn update<T>(
+    rpc: &Rpc,
+    timeout_ms: u32,
+    f: impl FnOnce(&mut Book) -> (bool, T),
+) -> Result<T, String> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _held = LOCK.lock().await;
+    let mut book = load(rpc, timeout_ms).await;
+    let (changed, out) = f(&mut book);
+    if changed {
+        save(rpc, timeout_ms, &book).await?;
+    }
+    Ok(out)
+}
