@@ -2278,6 +2278,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goal_delete_refuses_a_running_goal() {
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply("ok").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "g"})).await.unwrap();
+        let id = res["id"].as_str().unwrap().to_string();
+        let key = format!("{}{id}", agent_plugin::store::KEY_PREFIX);
+        shim.db.lock().await.kv.get_mut(&key).unwrap()["status"] = "running".into();
+        let err = shim.call("goal_delete", serde_json::json!({"id": id})).await.unwrap_err();
+        assert!(err.contains("still running"), "{err}");
+        assert!(shim.db.lock().await.kv.contains_key(&key), "doc kept");
+    }
+
+    #[tokio::test]
     async fn goal_delete_removes_doc_and_is_idempotent() {
         let shim = start_plugin(Config::default()).await;
         shim.push_ai_reply("ok").await;
