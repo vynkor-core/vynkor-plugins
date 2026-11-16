@@ -2,10 +2,13 @@
 
 use std::collections::HashMap;
 
-/// Hard ceiling on `timeout_ms`; matches the kernel's default action
-/// timeout. A caller-supplied value above this is clamped down, never
-/// rejected.
-pub const MAX_TIMEOUT_MS: u64 = 30_000;
+/// `timeout_ms` when the caller names none; matches the kernel's default
+/// action timeout.
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+/// Hard ceiling on `timeout_ms`. Above the default because a local CPU
+/// model behind `ai` routinely needs minutes per completion; a caller that
+/// asks for more than this is clamped down, never rejected.
+pub const MAX_TIMEOUT_MS: u64 = 300_000;
 
 /// Hard ceiling on `max_retries`. Retries are opt-in per request — a caller
 /// that doesn't set `max_retries` gets none, so an unmodified caller sees no
@@ -187,7 +190,7 @@ pub fn parse_request(params_json: &[u8]) -> Result<HttpRequestParams, String> {
         }
     }
 
-    let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
     let max_retries = raw.max_retries.unwrap_or(0).min(MAX_RETRIES);
     let retry_backoff_ms = raw
         .retry_backoff_ms
@@ -290,7 +293,7 @@ mod tests {
             parse_request(br#"{"method": "get", "url": "https://example.com/thing"}"#).unwrap();
         assert_eq!(params.method, "GET");
         assert_eq!(params.url, "https://example.com/thing");
-        assert_eq!(params.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(params.timeout_ms, DEFAULT_TIMEOUT_MS);
         assert!(params.body.is_none());
     }
 
@@ -301,6 +304,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(params.timeout_ms, MAX_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn honors_timeout_between_default_and_cap() {
+        let params = parse_request(
+            br#"{"method": "GET", "url": "https://example.com", "timeout_ms": 180000}"#,
+        )
+        .unwrap();
+        assert_eq!(params.timeout_ms, 180_000);
     }
 
     #[test]

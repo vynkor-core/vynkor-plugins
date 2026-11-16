@@ -21,6 +21,10 @@ use crate::Rpc;
 
 pub const MEMORY_ENV: &str = "AGENT_PLUGIN_MEMORY";
 pub const COLLECTION_ENV: &str = "AGENT_PLUGIN_MEMORY_COLLECTION";
+/// Optional `ai` agent profile for fact extraction. The pass is a short,
+/// fixed-format prompt, so a small local model handles it; unset keeps the
+/// goal's own (often a large cloud) model.
+pub const MEMORY_AGENT_ENV: &str = "AGENT_PLUGIN_MEMORY_AGENT_ID";
 pub const DEFAULT_COLLECTION: &str = "agent-memory";
 /// Index of fact ids in our own database namespace (drives clear/forget/list).
 pub const INDEX_KEY: &str = "memory:index";
@@ -41,11 +45,36 @@ pub fn enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// The plan fact extraction runs on: the goal's own, or the
+/// [`MEMORY_AGENT_ENV`] profile when the operator named one.
+pub fn extraction_plan(goal_plan: &LlmPlan) -> LlmPlan {
+    match std::env::var(MEMORY_AGENT_ENV).ok().map(|s| s.trim().to_string()) {
+        Some(id) if !id.is_empty() => llm::fallback_plan(goal_plan, &id),
+        _ => goal_plan.clone(),
+    }
+}
+
 fn collection() -> String {
     std::env::var(COLLECTION_ENV)
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_COLLECTION.to_string())
+}
+
+/// Stems of words that describe a passing state, not a durable fact. The
+/// local extractor ignores "no one-off task state" in its prompt: a goal
+/// run while the ESP was offline stored "ESP сейчас оффлайн", and the next
+/// goal answered "unavailable" from memory without calling the tool.
+const TRANSIENT_STEMS: &[&str] = &[
+    "оффлайн", "офлайн", "недоступ", "не доступ", "не ответ", "не отвеча", "тайм-аут",
+    "таймаут", "не удалось", "не смог", "не может", "невозможно", "неизвест", "сейчас", "временно",
+    "offline", "timeout", "timed out", "unavailable", "not available", "failed",
+];
+
+/// A fact about how things are right now goes stale and then misleads.
+pub fn is_transient(fact: &str) -> bool {
+    let f = fact.to_lowercase().replace('ё', "е");
+    TRANSIENT_STEMS.iter().any(|s| f.contains(s))
 }
 
 /// Extract the JSON array of fact strings from a raw model reply — lenient:
@@ -67,7 +96,7 @@ pub fn parse_facts(content: &str) -> Vec<String> {
         .into_iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .map(|f| f.trim().to_string())
-        .filter(|f| !f.is_empty())
+        .filter(|f| !f.is_empty() && !is_transient(f))
         .map(|f| f.chars().take(MAX_FACT_CHARS).collect::<String>())
         .take(MAX_FACTS_PER_GOAL)
         .collect()
@@ -186,7 +215,8 @@ pub async fn remember(
         role: "user".to_string(),
         content: extraction_prompt,
     }];
-    let outcome = match llm::chat_with_fallback(rpc, plan, &transcript, &[]).await {
+    let tag = llm::CallTag { purpose: "memory_extract", goal_id };
+    let outcome = match llm::chat_with_fallback(rpc, plan, &transcript, &[], &tag).await {
         Ok(o) => o.content,
         Err(e) => {
             eprintln!("[agent] memory extraction failed for goal {goal_id}: {e}");
@@ -362,6 +392,24 @@ pub async fn list(rpc: &Rpc) -> Result<Vec<Value>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the live extractor stored while the ESP and the phone were offline.
+    #[test]
+    fn transient_state_never_becomes_a_fact() {
+        for f in [
+            "ESP offline",
+            "ESP сейчас оффлайн.",
+            "Батарея телефона не доступна для получения процентов зарядки.",
+            "Бехзод не смог узнать заряд батареи на телефоне, так как текущий инструмент недоступен.",
+            "ESP не ответила, поймал тайм-аут",
+        ] {
+            assert!(is_transient(f), "{f}");
+        }
+        for f in ["Бехзод использует фонарик на телефоне", "Светодиод D1 подключён к ESP-12E"] {
+            assert!(!is_transient(f), "{f}");
+        }
+        assert_eq!(parse_facts(r#"["ESP сейчас оффлайн", "У Бехзода Pixel 6 Pro"]"#), vec!["У Бехзода Pixel 6 Pro"]);
+    }
     use crate::ProxyMsg;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

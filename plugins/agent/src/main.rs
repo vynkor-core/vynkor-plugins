@@ -25,8 +25,8 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
-const PLUGIN_VERSION: &str = "0.1.6";
-const ACTIONS: [&str; 10] = [
+const PLUGIN_VERSION: &str = "0.1.7";
+const ACTIONS: [&str; 13] = [
     "goal_start",
     "goal_get",
     "goal_list",
@@ -35,6 +35,9 @@ const ACTIONS: [&str; 10] = [
     "memory_forget",
     "memory_clear",
     "memory_list",
+    "routine_list",
+    "routine_delete",
+    "routine_mine",
     "memory_forget_session",
     "goal_delete",
 ];
@@ -115,6 +118,9 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(64);
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<ProxyMsg>(64);
     let rpc = Rpc::new(rpc_tx);
+    if agent_plugin::routines::enabled() {
+        tokio::spawn(agent_plugin::routine_mining_loop(rpc.clone(), Arc::clone(&config)));
+    }
 
     let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> =
         HashMap::new();
@@ -344,6 +350,19 @@ mod tests {
                      "params_schema": "{\"type\":\"object\"}", "risk": "low",
                      "requires_confirmation": false}
                 ]
+            },
+            // Allowlisted test tools: a running plugin must declare them, or
+            // the catalog drops them as offline (`tools::drop_offline`).
+            "ping": {
+                "actions": ["ping_a", "ping_b"],
+                "action_specs": [
+                    {"name": "ping_a", "description": "Ping A",
+                     "params_schema": "{\"type\":\"object\"}", "risk": "low",
+                     "requires_confirmation": false},
+                    {"name": "ping_b", "description": "Ping B",
+                     "params_schema": "{\"type\":\"object\"}", "risk": "low",
+                     "requires_confirmation": false}
+                ]
             }
         })
     }
@@ -490,6 +509,33 @@ mod tests {
                 // Not emulated: expiry filtering (this map has no TTL column),
                 // and `json_array_length` of a missing `steps` array yields 0
                 // here where SQLite would yield NULL.
+                // routine mining's projection (store.rs::mining_rows)
+                "db_query"
+                    if params["sql"].as_str().unwrap_or_default().contains("as steps") =>
+                {
+                    let bound =
+                        params.get("params").and_then(Value::as_array).cloned().unwrap_or_default();
+                    let prefix = bound[0].as_str().unwrap_or("").trim_end_matches('%').to_string();
+                    let since = bound[2].as_i64().unwrap_or(0);
+                    let rows: Vec<Value> = self
+                        .kv
+                        .iter()
+                        .filter(|(k, doc)| {
+                            k.starts_with(&prefix)
+                                && doc["updated_at_ms"].as_i64().unwrap_or(0) >= since
+                        })
+                        .map(|(_, doc)| {
+                            // SQLite's json_extract hands arrays back as text
+                            serde_json::json!({
+                                "goal": doc["goal"],
+                                "status": doc["status"],
+                                "steps": doc["steps"].to_string(),
+                                "updated_at_ms": doc["updated_at_ms"],
+                            })
+                        })
+                        .collect();
+                    Ok(serde_json::json!({ "rows": rows }))
+                }
                 "db_query" => {
                     let sql = params.get("sql").and_then(Value::as_str).unwrap_or_default();
                     assert!(
@@ -1051,7 +1097,7 @@ mod tests {
         let shim = start_plugin(Config::default()).await;
         shim.chats_normal("S1", true, vec![]).await;
         shim.push_ai_reply("fine").await;
-        let res = shim.call("goal_start", serde_json::json!({"goal": "hello"})).await.unwrap();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "check my notes"})).await.unwrap();
         assert_eq!(res["status"], "completed");
         assert_eq!(res["session_id"], "S1");
         let calls = shim.chats_calls("chat_session_resolve").await;
@@ -1532,6 +1578,201 @@ mod tests {
         // Dynamic catalog: no file words in the goal, so fs_* is filtered out.
         assert_eq!(names, vec!["notify_send", "secret_get", "ping_a", "ping_b"]);
         assert_eq!(tools[0]["input_schema"]["type"], "object");
+    }
+
+    /// Turns learned routines on for one test (set after `start_plugin`,
+    /// so the nightly timer is never spawned) and restores the env after.
+    struct RoutineEnvGuard;
+
+    impl RoutineEnvGuard {
+        fn enable() -> Self {
+            std::env::set_var(agent_plugin::routines::ROUTINES_ENV, "on");
+            std::env::set_var(agent_plugin::routines::ROUTINE_TOOLS_ENV, "notify_send");
+            std::env::set_var(agent_plugin::routines::ROUTINES_AGENT_ENV, "memory");
+            RoutineEnvGuard
+        }
+    }
+
+    impl Drop for RoutineEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(agent_plugin::routines::ROUTINES_ENV);
+            std::env::remove_var(agent_plugin::routines::ROUTINE_TOOLS_ENV);
+            std::env::remove_var(agent_plugin::routines::ROUTINES_AGENT_ENV);
+        }
+    }
+
+    /// `spec_hash` of the effective `notify_send` exactly as the engine sees it.
+    async fn notify_spec_hash(shim: &Shim) -> String {
+        let listed = shim.call("tools_list", serde_json::json!({})).await.unwrap();
+        let t = listed["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "notify_send")
+            .unwrap()
+            .clone();
+        agent_plugin::routines::spec_hash(&agent_plugin::tools::ToolSpec {
+            name: "notify_send".into(),
+            description: t["description"].as_str().unwrap().into(),
+            parameters: t["parameters"].clone(),
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 0,
+            cooldown_ms: 0,
+            max_per_goal: 0,
+            source: agent_plugin::tools::Source::Minimal,
+        })
+    }
+
+    async fn seed_light_routine(shim: &Shim, spec_hash: &str) {
+        shim.db.lock().await.kv.insert(
+            agent_plugin::routines::store::BOOK_KEY.to_string(),
+            serde_json::json!({"routines": [{
+                "id": "r1",
+                "tool": "notify_send",
+                "params": {"title": "свет"},
+                "phrases": ["включи свет"],
+                "replies": ["Готово.", "Сделано."],
+                "spec_hash": spec_hash,
+            }]}),
+        );
+    }
+
+    async fn stored_routine(shim: &Shim) -> Value {
+        shim.db.lock().await.kv[agent_plugin::routines::store::BOOK_KEY]["routines"][0].clone()
+    }
+
+    #[tokio::test]
+    async fn routine_fires_without_llm() {
+        let shim = start_plugin(Config::default()).await;
+        let _env = RoutineEnvGuard::enable();
+        let hash = notify_spec_hash(&shim).await;
+        seed_light_routine(&shim, &hash).await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "Включи свет!"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        assert!(["Готово.", "Сделано."].contains(&res["final_answer"].as_str().unwrap()), "{res}");
+        assert!(shim.ai_requests().await.is_empty(), "a routine must not call the LLM");
+        let dispatched = shim.dispatched().await;
+        assert_eq!(dispatched.len(), 1);
+        assert_eq!(dispatched[0].0, "notify_send");
+        assert_eq!(dispatched[0].1, serde_json::json!({"title": "свет"}));
+        assert_eq!(res["steps"][0]["detail"]["routine"], "r1", "{res}");
+        assert_eq!(stored_routine(&shim).await["hits"], 1);
+    }
+
+    #[tokio::test]
+    async fn correction_disables_last_fired_routine() {
+        let shim = start_plugin(Config::default()).await;
+        let _env = RoutineEnvGuard::enable();
+        let hash = notify_spec_hash(&shim).await;
+        seed_light_routine(&shim, &hash).await;
+        shim.call("goal_start", serde_json::json!({"goal": "включи свет"})).await.unwrap();
+
+        shim.push_ai_reply("Понял, что включить?").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "Не тот!"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let r = stored_routine(&shim).await;
+        assert_eq!(r["status"], "disabled");
+        assert_eq!(r["disabled_reason"], "user_correction");
+    }
+
+    #[tokio::test]
+    async fn routine_with_changed_spec_is_disabled_and_goal_runs_normally() {
+        let shim = start_plugin(Config::default()).await;
+        let _env = RoutineEnvGuard::enable();
+        seed_light_routine(&shim, "stale").await;
+        shim.push_ai_reply("Done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "включи свет"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        assert_eq!(shim.ai_requests().await.len(), 1);
+        assert!(shim.dispatched().await.is_empty());
+        let r = stored_routine(&shim).await;
+        assert_eq!(r["status"], "disabled");
+        assert_eq!(r["disabled_reason"], "tool_changed");
+    }
+
+    #[tokio::test]
+    async fn corrupt_routine_book_never_breaks_a_goal() {
+        let shim = start_plugin(Config::default()).await;
+        let _env = RoutineEnvGuard::enable();
+        shim.db
+            .lock()
+            .await
+            .kv
+            .insert(agent_plugin::routines::store::BOOK_KEY.to_string(), serde_json::json!("garbage"));
+        shim.push_ai_reply("Done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "включи свет"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let listed = shim.call("routine_list", serde_json::json!({})).await.unwrap();
+        assert_eq!(listed["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn routine_mine_learns_from_history_and_then_serves_it() {
+        let shim = start_plugin(Config::default()).await;
+        let _env = RoutineEnvGuard::enable();
+        for _ in 0..2 {
+            shim.push_ai_reply(r#"{"tool": "notify_send", "params": {"title": "свет"}}"#).await;
+            shim.push_ai_reply("Готово.").await;
+            let res = shim.call("goal_start", serde_json::json!({"goal": "Включи свет"})).await.unwrap();
+            assert_eq!(res["status"], "completed", "{res}");
+        }
+        shim.push_ai_reply(
+            r#"{"learn": true, "paraphrases": ["свет вкл"], "replies": ["Свет горит.", "Включил."]}"#,
+        )
+        .await;
+
+        let mined = shim.call("routine_mine", serde_json::json!({})).await.unwrap();
+        assert_eq!(mined["candidates"], 1, "{mined}");
+        assert_eq!(mined["created"], 1, "{mined}");
+        let reqs = shim.ai_requests().await;
+        let last = reqs.last().unwrap();
+        assert_eq!(last["agent_id"], "memory");
+        assert_eq!(last["purpose"], "routine_mine");
+
+        let before = reqs.len();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "свет вкл"})).await.unwrap();
+        // "Свет горит" names no state word the guard knows; stock replies top up
+        // (notify_send carries no on/off, so the neutral ones)
+        let answer = res["final_answer"].as_str().unwrap();
+        let allowed: Vec<&str> =
+            ["Включил."].into_iter().chain(agent_plugin::routines::guard::stock_replies(None).iter().copied()).collect();
+        assert!(allowed.contains(&answer), "{res}");
+        assert_eq!(shim.ai_requests().await.len(), before, "learned paraphrase must skip the LLM");
+    }
+
+    #[tokio::test]
+    async fn goal_step_calls_carry_usage_tags() {
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply("All done.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "anything"})).await.unwrap();
+        let requests = shim.ai_requests().await;
+        assert_eq!(requests[0]["purpose"], "goal_step");
+        assert_eq!(requests[0]["goal_id"], res["id"], "{res}");
+    }
+
+    #[tokio::test]
+    async fn small_talk_skips_the_tool_loop_when_enabled() {
+        let shim = start_plugin(Config::default()).await;
+        // Only greeting goals ever qualify, and no other test may send one, so
+        // flipping the env here can't change another test's path.
+        std::env::set_var(agent_plugin::smalltalk::SMALL_TALK_ENV, "on");
+        shim.push_ai_reply("Привет, Лонер.").await;
+
+        let res = shim.call("goal_start", serde_json::json!({"goal": "Привет!"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        assert_eq!(res["final_answer"], "Привет, Лонер.");
+
+        let requests = shim.ai_requests().await;
+        assert_eq!(requests.len(), 1, "one call, no memory or loop");
+        assert!(requests[0].get("tools").is_none(), "small talk must not ship the catalog");
+        assert_eq!(requests[0]["purpose"], "small_talk");
+        let seed = requests[0]["messages"][0]["content"].as_str().unwrap();
+        assert!(!seed.contains("EXACTLY ONE JSON object"), "tool protocol leaked: {seed}");
     }
 
     #[tokio::test]
@@ -2152,7 +2393,7 @@ mod tests {
         seed_tool_hits(&shim).await;
         shim.seed_fact("__fail_vector__", "agent-tools", "").await;
         shim.push_ai_reply("ok").await;
-        let res = shim.call("goal_start", serde_json::json!({"goal": "hello"})).await.unwrap();
+        let res = shim.call("goal_start", serde_json::json!({"goal": "check my notes"})).await.unwrap();
         assert_eq!(res["status"], "completed", "{res}");
         let q: Vec<Value> = shim
             .vec_calls("vec_query")
@@ -2255,11 +2496,11 @@ mod tests {
         shim.push_ai_reply("ok").await;
         shim.push_ai_reply("ok").await;
         for _ in 0..2 {
-            let res = shim.call("goal_start", serde_json::json!({"goal": "hi"})).await.unwrap();
+            let res = shim.call("goal_start", serde_json::json!({"goal": "check my notes"})).await.unwrap();
             assert_eq!(res["status"], "completed", "{res}");
         }
         for r in shim.ai_requests().await {
-            assert_eq!(goal_message(&r), "hi");
+            assert_eq!(goal_message(&r), "check my notes");
         }
     }
 

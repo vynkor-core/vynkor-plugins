@@ -13,11 +13,14 @@ use serde_json::{json, Value};
 
 use crate::llm::{self, Reply};
 use crate::memory;
+use crate::routines;
+use crate::smalltalk;
 use crate::recall::{self, QueryVec};
 use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
                    STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
 use crate::sessions::TraceRec;
 use crate::tools::Catalog;
+use crate::watchdog;
 use crate::{Config, Rpc};
 
 /// Cap on a single tool result fed back into the transcript (chars).
@@ -27,6 +30,32 @@ const OBSERVATION_MAX: usize = 8192;
 const TRANSCRIPT_MAX_CHARS: usize = 262_144;
 const TOOLS_COLLECTION: &str = "agent-tools";
 const EMBEDDING_FILTER_ENV: &str = "AGENT_PLUGIN_EMBEDDING_FILTER";
+/// How many nearest tools the embedding filter asks `vector-db` for. The
+/// historical 35 keeps most of a ~40-tool catalog, i.e. barely filters;
+/// operators with a large catalog want ~10-15.
+const EMBED_TOP_K_ENV: &str = "AGENT_PLUGIN_EMBED_TOP_K";
+const DEFAULT_EMBED_TOP_K: u32 = 35;
+/// Cosine floor below which a nearest tool is dropped anyway.
+const EMBED_MIN_SCORE_ENV: &str = "AGENT_PLUGIN_EMBED_MIN_SCORE";
+const DEFAULT_EMBED_MIN_SCORE: f64 = 0.35;
+/// Optional JSON object `{"tool_name": "extra words"}`. The words are added to
+/// the text a tool is embedded from and never sent to the model, so a tool
+/// described in English can still be found by a Russian goal without paying
+/// tokens for the Russian phrases on every step. Re-read on every goal.
+const EMBED_HINTS_FILE_ENV: &str = "AGENT_PLUGIN_EMBED_HINTS_FILE";
+
+/// Below 3 the filter falls back to the keyword catalog anyway.
+fn parse_top_k(raw: Option<&str>) -> u32 {
+    raw.and_then(|s| s.trim().parse::<u32>().ok())
+        .map(|k| k.clamp(3, 200))
+        .unwrap_or(DEFAULT_EMBED_TOP_K)
+}
+
+fn parse_min_score(raw: Option<&str>) -> f64 {
+    raw.and_then(|s| s.trim().parse::<f64>().ok())
+        .filter(|f| (0.0..=1.0).contains(f))
+        .unwrap_or(DEFAULT_EMBED_MIN_SCORE)
+}
 
 #[allow(clippy::match_like_matches_macro)]
 fn embedding_filter_enabled() -> bool {
@@ -49,6 +78,30 @@ fn embedding_filter_enabled() -> bool {
 /// keeps hits present in `catalog.tools`.
 const CATALOG_HASH_ID: &str = "__catalog_hash__";
 
+fn embed_hints() -> std::collections::BTreeMap<String, String> {
+    let Some(path) = std::env::var(EMBED_HINTS_FILE_ENV).ok().filter(|p| !p.trim().is_empty()) else {
+        return Default::default();
+    };
+    match std::fs::read_to_string(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|raw| serde_json::from_str(&raw).map_err(|e| e.to_string()))
+    {
+        Ok(map) => map,
+        Err(e) => {
+            eprintln!("[agent] embed hints file {path} unusable: {e}");
+            Default::default()
+        }
+    }
+}
+
+/// What a tool is embedded from: name, description and the operator's hint.
+fn embed_text(tool: &crate::tools::ToolSpec, hints: &std::collections::BTreeMap<String, String>) -> String {
+    match hints.get(&tool.name).filter(|h| !h.trim().is_empty()) {
+        Some(hint) => format!("{} — {} {}", tool.name, tool.description, hint.trim()),
+        None => format!("{} — {}", tool.name, tool.description),
+    }
+}
+
 /// Hash every tool's exact embedded text (name + description), order-
 /// independent, so renaming/adding/removing a tool OR editing an existing
 /// tool's description (without changing the count) both invalidate the
@@ -58,8 +111,8 @@ const CATALOG_HASH_ID: &str = "__catalog_hash__";
 fn catalog_content_hash(catalog: &Catalog) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
-    let mut texts: Vec<String> =
-        catalog.tools.iter().map(|t| format!("{} — {}", t.name, t.description)).collect();
+    let hints = embed_hints();
+    let mut texts: Vec<String> = catalog.tools.iter().map(|t| embed_text(t, &hints)).collect();
     texts.sort_unstable();
     let mut hasher = DefaultHasher::new();
     texts.hash(&mut hasher);
@@ -77,11 +130,12 @@ async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), Stri
     if cached_hash.as_deref() == Some(expected_hash.as_str()) {
         return Ok(());
     }
+    let hints = embed_hints();
     let docs: Vec<Value> = catalog
         .tools
         .iter()
         .map(|t| {
-            let text = format!("{} — {}", t.name, t.description);
+            let text = embed_text(t, &hints);
             json!({"id": t.name, "text": text, "metadata": {"name": t.name}})
         })
         .collect();
@@ -119,7 +173,15 @@ async fn embedding_filtered_catalog(
         eprintln!("[agent] embedding filter: ensure failed: {e}");
         return None;
     }
-    let resp = recall::vec_query(rpc, TOOLS_COLLECTION, query, goal, 35, 10000).await;
+    let resp = recall::vec_query(
+        rpc,
+        TOOLS_COLLECTION,
+        query,
+        goal,
+        parse_top_k(std::env::var(EMBED_TOP_K_ENV).ok().as_deref()),
+        10000,
+    )
+    .await;
     let results = match resp {
         Ok(v) => v,
         Err(e) => {
@@ -127,6 +189,23 @@ async fn embedding_filtered_catalog(
             return None;
         }
     };
+    let min_score = parse_min_score(std::env::var(EMBED_MIN_SCORE_ENV).ok().as_deref());
+    // Scores are what top_k / min_score / the small-family padding get tuned
+    // against, so they are logged next to the names.
+    let scored: Vec<String> = results
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|o| {
+                    let id = o.get("id").and_then(|i| i.as_str())?;
+                    let score = o.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                    Some(format!("{id}:{score:.2}"))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    eprintln!("[agent] embedding scores: {}", scored.join(" "));
     let hits: Vec<String> = results
         .get("results")
         .and_then(|r| r.as_array())
@@ -134,7 +213,7 @@ async fn embedding_filtered_catalog(
             arr.iter()
                 .filter_map(|o| {
                     let score = o.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-                    if score < 0.35 {
+                    if score < min_score {
                         return None;
                     }
                     o.get("id").and_then(|i| i.as_str()).map(|s| s.to_string())
@@ -145,7 +224,7 @@ async fn embedding_filtered_catalog(
     if hits.len() < 3 {
         return None;
     }
-    let hit_set: std::collections::HashSet<String> = hits.into_iter().collect();
+    let hit_set = with_small_families(catalog, hits.into_iter().collect());
     let filtered: Vec<_> = catalog
         .tools
         .iter()
@@ -174,11 +253,136 @@ async fn effective_catalog(
             "[agent] embedding filter: {} -> {} tools (goal: {})",
             catalog.tools.len(),
             emb.tools.len(),
-            &goal[..goal.len().min(60)]
+            goal.chars().take(60).collect::<String>()
         );
         return emb;
     }
-    llm::filtered_catalog(catalog, goal, context)
+    cap_native_tools(llm::filtered_catalog(catalog, goal, context), goal)
+}
+
+/// Name prefix before the first `_`: `launch`, `launch_list` and
+/// `launch_providers` are one plugin's family.
+fn family(name: &str) -> &str {
+    name.split('_').next().unwrap_or(name)
+}
+
+/// Families this small come whole: the filter picked `launch` without
+/// `launch_list`, and the model called `launch {"providers": []}` (the
+/// list call's params under the launch name) for "what can you launch?".
+const SMALL_FAMILY: usize = 5;
+
+fn with_small_families(
+    catalog: &Catalog,
+    mut hits: std::collections::HashSet<String>,
+) -> std::collections::HashSet<String> {
+    let mut sizes: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for t in &catalog.tools {
+        *sizes.entry(family(&t.name)).or_default() += 1;
+    }
+    let picked: std::collections::HashSet<String> = hits.iter().map(|h| family(h).to_string()).collect();
+    for t in &catalog.tools {
+        let f = family(&t.name);
+        if picked.contains(f) && sizes[f] <= SMALL_FAMILY {
+            hits.insert(t.name.clone());
+        }
+    }
+    hits
+}
+
+/// Required params the call left out, per the tool's JSON Schema.
+fn missing_required(spec: &crate::tools::ToolSpec, params: &Value) -> Vec<String> {
+    spec.parameters
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|k| params.get(k).is_none_or(Value::is_null))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Logged loudly and sent as a desktop notification, detached: an alert
+/// must never hold up or fail the goal that tripped it.
+fn raise_token_alert(rpc: &Rpc, alert: String) {
+    eprintln!("[agent] TOKEN ALERT: {alert}");
+    let rpc = rpc.clone();
+    tokio::spawn(async move {
+        let params = json!({"message": alert, "app_name": "vynkor-agent"});
+        if let Err(e) = rpc.call("notify_send", params, 5_000).await {
+            eprintln!("[agent] token alert notify_send failed: {e}");
+        }
+    });
+}
+
+/// Real tool names sharing a name part with a guessed one, best first: the
+/// model invents `system_info` for `sys_info` when the filter missed it.
+/// Parts match when one is a prefix of the other ("sys" ~ "system").
+fn suggest_tools<'a>(catalog: &'a Catalog, guess: &str) -> Vec<&'a str> {
+    fn parts(s: &str) -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|p| p.len() >= 3)
+            .map(str::to_string)
+            .collect()
+    }
+    let wanted = parts(guess);
+    let mut scored: Vec<(usize, &str)> = catalog
+        .tools
+        .iter()
+        .map(|t| {
+            let have = parts(&t.name);
+            let hits = wanted
+                .iter()
+                .filter(|w| have.iter().any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str())))
+                .count();
+            (hits, t.name.as_str())
+        })
+        .filter(|(hits, _)| *hits > 0)
+        .collect();
+    scored.sort_by_key(|(hits, _)| std::cmp::Reverse(*hits));
+    scored.into_iter().take(8).map(|(_, n)| n).collect()
+}
+
+/// Unknown-tool replies in a row before the model loses its tools. Live,
+/// "free disk space?" (no such tool exists) burned six invented names and
+/// ~32k tokens before giving up; after two misses the next turn goes out
+/// without tools so the model has to answer in words.
+const UNKNOWN_TOOL_LIMIT: usize = 2;
+
+/// Trailing run of `unknown_tool` steps: any other step breaks the streak.
+fn unknown_tool_streak(steps: &[StepRec]) -> usize {
+    steps.iter().rev().take_while(|s| s.kind == "unknown_tool").count()
+}
+
+/// The ai plugin rejects more than this many native tools.
+const MAX_NATIVE_TOOLS: usize = 64;
+
+/// Without the embedding filter the keyword filter keeps every tool it does
+/// not recognise (106 live), the provider rejects them all, and the goal
+/// degrades to the text protocol with the full catalog: ~22k prompt tokens
+/// a step instead of ~5k, unnoticed for a month while the filter was broken.
+/// Keep the tools whose name or description shares the most words with the
+/// goal instead.
+fn cap_native_tools(mut catalog: Catalog, goal: &str) -> Catalog {
+    if catalog.tools.len() <= MAX_NATIVE_TOOLS {
+        return catalog;
+    }
+    let stems: Vec<String> = crate::smalltalk::normalize(goal)
+        .split(' ')
+        .filter(|w| w.chars().count() >= 4)
+        .map(|w| w.chars().take(5).collect())
+        .collect();
+    let score = |t: &crate::tools::ToolSpec| {
+        let hay = format!("{} {}", t.name, t.description).to_lowercase().replace('ё', "е");
+        stems.iter().filter(|s| hay.contains(s.as_str())).count()
+    };
+    let before = catalog.tools.len();
+    // stable: equal scores keep catalog order
+    catalog.tools.sort_by_key(|t| std::cmp::Reverse(score(t)));
+    catalog.tools.truncate(MAX_NATIVE_TOOLS);
+    eprintln!("[agent] embedding filter unavailable: capped {before} -> {MAX_NATIVE_TOOLS} tools by keyword");
+    catalog
 }
 
 /// History as one string for tool filtering (questions and answers).
@@ -227,8 +431,14 @@ fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
+        // Spelled out: a bare "[truncated]" launch_list cut at "L" made the
+        // model answer "Telegram is not installed".
         let cut: String = s.chars().take(max).collect();
-        format!("{cut}…[truncated]")
+        let total = s.chars().count();
+        format!(
+            "{cut}…[truncated: {max} of {total} chars shown. The rest is NOT shown, so do not \
+             conclude anything is missing; call again with a narrower query or filter]"
+        )
     }
 }
 
@@ -270,7 +480,7 @@ fn is_device_target(name: &str) -> bool {
 }
 
 /// Dispatch one tool call and append the observation turn.
-async fn dispatch_and_observe(
+pub(crate) async fn dispatch_and_observe(
     rpc: &Rpc,
     doc: &mut GoalDoc,
     spec_timeout_ms: u32,
@@ -304,7 +514,7 @@ async fn dispatch_and_observe(
     Ok(ok)
 }
 
-fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), String> {
+pub(crate) fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), String> {
     let count = doc.tool_counts.get(&spec.name).copied().unwrap_or(0);
     if spec.max_per_goal > 0 && count >= spec.max_per_goal {
         return Err(format!(
@@ -331,6 +541,36 @@ fn check_quota(doc: &GoalDoc, spec: &crate::tools::ToolSpec) -> Result<(), Strin
 
 /// Run (or continue) one goal to a terminal or halting state. Storage
 /// failures bubble as `Err`; every other outcome is recorded on the doc.
+/// One persona-only chat call for a goal [`smalltalk::is_small_talk`]
+/// matched. `Ok(false)` — the call failed or came back empty — leaves the
+/// doc untouched for the normal loop to take over, so the fast path can
+/// only ever save tokens, never lose a goal.
+async fn run_small_talk(db: &Db, rpc: &Rpc, doc: &mut GoalDoc) -> Result<bool, String> {
+    let mut plan = doc.llm.clone();
+    if let Some(id) = smalltalk::agent_id() {
+        plan = llm::fallback_plan(&plan, &id);
+    }
+    let transcript = llm::small_talk_messages(&doc.goal, &doc.context);
+    let tag = llm::CallTag { purpose: "small_talk", goal_id: &doc.id };
+    let answer = match llm::chat_with_fallback(rpc, &plan, &transcript, &[], &tag).await {
+        Ok(o) => llm::strip_tool_markup(&o.content).trim().to_string(),
+        Err(e) => {
+            eprintln!("[agent] small-talk fast path failed ({e}); running the full loop");
+            return Ok(false);
+        }
+    };
+    if answer.is_empty() {
+        return Ok(false);
+    }
+    doc.transcript = transcript;
+    push_turn(doc, "assistant", answer.clone())?;
+    doc.status = STATUS_COMPLETED.to_string();
+    doc.final_answer = answer;
+    next_step(doc, "final", json!({"fast_path": "small_talk"}));
+    persist(db, doc).await?;
+    Ok(true)
+}
+
 pub async fn run(
     db: &Db,
     rpc: &Rpc,
@@ -339,6 +579,20 @@ pub async fn run(
     doc: &mut GoalDoc,
     entry: Entry,
 ) -> Result<(), String> {
+    if matches!(entry, Entry::Fresh { .. })
+        && routines::enabled()
+        && routines::fire::try_fire(db, rpc, catalog, doc).await?
+    {
+        return Ok(());
+    }
+    if matches!(entry, Entry::Fresh { .. })
+        && doc.transcript.is_empty()
+        && smalltalk::enabled()
+        && smalltalk::is_small_talk(&doc.goal)
+        && run_small_talk(db, rpc, doc).await?
+    {
+        return Ok(());
+    }
     let query = match &entry {
         Entry::Fresh { history, query } => {
             doc.history_hint = history_text(history);
@@ -360,6 +614,9 @@ pub async fn run(
             // reach via `want_native_tools` below — the seed and the first
             // `tools` param are always in sync.
             let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+            // A routine that failed its dispatch left [goal, observation]:
+            // keep the observation so the model sees why the shortcut failed.
+            let carried: Vec<Turn> = std::mem::take(&mut doc.transcript).into_iter().skip(1).collect();
             // Session history wins over the caller's `context`: both would
             // carry the same exchanges twice.
             let context = if history.is_empty() { doc.context.as_str() } else { "" };
@@ -394,6 +651,10 @@ pub async fn run(
                 doc.recalled_sessions = past.iter().map(|p| p.session_id.clone()).collect();
                 check_budget(doc)?;
             }
+            for turn in carried {
+                push_turn(doc, &turn.role, turn.content)?;
+            }
+            eprintln!("{}", llm::prompt_breakdown(&doc.id, llm_catalog, dispatch_catalog, &doc.transcript));
             persist(db, doc).await?;
         }
         Entry::ApprovedResume => {
@@ -426,14 +687,18 @@ pub async fn run(
             return Ok(());
         }
 
-        let want_native = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+        // Out of guesses: no tools param, so neither a retry nor the text
+        // protocol fallback hands the model another catalog to guess from.
+        let tools_off = unknown_tool_streak(&doc.steps) >= UNKNOWN_TOOL_LIMIT;
+        let want_native = !tools_off && llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
         let tools = if want_native {
             llm::catalog_tools_param(llm_catalog)
         } else {
             Vec::new()
         };
 
-        let outcome = llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &tools).await;
+        let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+        let outcome = llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &tools, &tag).await;
         let outcome = match outcome {
             Ok(o) => o,
             Err(e) if want_native => {
@@ -447,7 +712,8 @@ pub async fn run(
                 // retry, so the model isn't left with neither channel
                 // informed for the rest of the goal.
                 push_turn(doc, "user", llm::degraded_tool_catalog_block(llm_catalog))?;
-                match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[]).await {
+                let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+                match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[], &tag).await {
                     Ok(o) => o,
                     Err(e2) => {
                         doc.status = STATUS_ERROR.to_string();
@@ -467,18 +733,30 @@ pub async fn run(
             }
         };
         push_turn(doc, "assistant", outcome.content.clone())?;
+        if let Some(alert) = watchdog::observe(outcome.input_tokens, store::now_ms()) {
+            raise_token_alert(rpc, alert);
+        }
 
         match llm::outcome_to_reply(&outcome) {
             Reply::Final(answer) => {
+                // LLM calls = steps so far + this final turn
+                if let Some(alert) = watchdog::observe_goal(doc.steps.len() as u64 + 1, store::now_ms()) {
+                    raise_token_alert(rpc, alert);
+                }
                 doc.status = STATUS_COMPLETED.to_string();
                 doc.final_answer = answer.clone();
                 next_step(doc, "final", json!({}));
                 persist(db, doc).await?;
-                if memory::enabled() {
+                // a goal that hit a tool error ends in a failure report, not
+                // knowledge — extracting from it stored "ESP offline" as a fact
+                // Same for a goal that found no tool ("no disk tool" is a
+                // gap in the catalog, not a fact about the user).
+                let failed_tool = doc.steps.iter().any(|s| s.kind == "tool_error" || s.kind == "unknown_tool");
+                if memory::enabled() && !failed_tool {
                     // Detached: extraction is one extra LLM round-trip and
                     // must not sit between the finished goal and its caller.
                     let rpc = rpc.clone();
-                    let plan = doc.llm.clone();
+                    let plan = memory::extraction_plan(&doc.llm);
                     let goal_id = doc.id.clone();
                     let session_id = doc.session_id.clone();
                     let goal = doc.goal.clone();
@@ -490,19 +768,60 @@ pub async fn run(
             }
             Reply::ToolCall { name, params } => {
                 let Some(spec) = catalog.get(&name) else {
-                    let msg = format!(
-                        "unknown tool \"{name}\": not in the operator's tool catalog"
-                    );
+                    if tools_off {
+                        // Asked to answer in words and still guessing: stop
+                        // here rather than spend steps up to `max_steps`.
+                        let answer = "Не нашёл подходящего инструмента для этой задачи.".to_string();
+                        let msg = format!("unknown tool \"{name}\": not in the operator's tool catalog");
+                        doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
+                        next_step(doc, "unknown_tool", json!({"tool": name}));
+                        doc.status = STATUS_COMPLETED.to_string();
+                        doc.final_answer = answer;
+                        next_step(doc, "final", json!({"reason": "unknown_tool_limit"}));
+                        persist(db, doc).await?;
+                        return Ok(());
+                    }
+                    let near = suggest_tools(catalog, &name);
+                    let msg = if near.is_empty() {
+                        format!("unknown tool \"{name}\": not in the operator's tool catalog")
+                    } else {
+                        format!(
+                            "unknown tool \"{name}\": not in the operator's tool catalog. \
+                             Real tools with similar names: {}",
+                            near.join(", ")
+                        )
+                    };
+                    next_step(doc, "unknown_tool", json!({"tool": name}));
+                    let msg = if unknown_tool_streak(&doc.steps) >= UNKNOWN_TOOL_LIMIT {
+                        format!(
+                            "{msg}\nNo tool for this exists. Do not call tools any more: answer \
+                             the user now in plain text with what you can say without one."
+                        )
+                    } else {
+                        msg
+                    };
                     doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(
                         doc,
                         "user",
                         format!("[TOOL RESULT name={name} status=error]\n{msg}"),
                     )?;
-                    next_step(doc, "unknown_tool", json!({"tool": name}));
                     persist(db, doc).await?;
                     continue;
                 };
+                // Before the confirmation gate: asking the operator to approve
+                // `launch` without an `app_id` only to fail afterwards is noise.
+                let missing = missing_required(spec, &params);
+                if !missing.is_empty() {
+                    let msg = format!(
+                        "{name}: missing required params {}; check the tool's schema or use another tool",
+                        missing.join(", ")
+                    );
+                    push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
+                    next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
+                    persist(db, doc).await?;
+                    continue;
+                }
                 if spec.requires_confirmation {
                     doc.status = STATUS_NEEDS_CONFIRMATION.to_string();
                     doc.pending_tool = name.clone();
@@ -532,13 +851,92 @@ pub async fn run(
 mod tests {
     use super::*;
 
+    fn steps(kinds: &[&str]) -> Vec<StepRec> {
+        let mut out = Vec::new();
+        for (i, k) in kinds.iter().enumerate() {
+            out.push(StepRec { n: i as u32 + 1, kind: k.to_string(), detail: json!({}) });
+        }
+        out
+    }
+
+    #[test]
+    fn embed_text_appends_the_hint_and_ignores_blank_ones() {
+        let t = spec("clipboard_read", "read the clipboard");
+        let mut hints = std::collections::BTreeMap::new();
+        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
+        hints.insert("clipboard_read".to_string(), "  буфер обмена  ".to_string());
+        assert!(embed_text(&t, &hints).ends_with(" буфер обмена"));
+        hints.insert("clipboard_read".to_string(), "   ".to_string());
+        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
+    }
+
+    #[test]
+    fn small_families_come_whole_big_ones_do_not() {
+        let mut tools = vec![spec("launch", ""), spec("launch_list", ""), spec("launch_providers", "")];
+        tools.extend((0..8).map(|i| spec(&format!("tg_action{i}"), "")));
+        let c = cat(tools);
+        let hits = with_small_families(&c, ["launch".to_string(), "tg_action0".to_string()].into());
+        assert!(hits.contains("launch_list") && hits.contains("launch_providers"));
+        assert!(!hits.contains("tg_action1"), "telegram-sized families stay filtered");
+    }
+
+    #[test]
+    fn missing_required_params_are_named() {
+        let mut s = spec("launch", "");
+        s.parameters = json!({"type": "object", "required": ["app_id"], "properties": {"app_id": {"type": "string"}}});
+        assert_eq!(missing_required(&s, &json!({"providers": []})), vec!["app_id"]);
+        assert_eq!(missing_required(&s, &json!({"app_id": null})), vec!["app_id"]);
+        assert!(missing_required(&s, &json!({"app_id": "telegram"})).is_empty());
+        assert!(missing_required(&spec("x", ""), &json!({})).is_empty(), "no schema, no check");
+    }
+
+    #[test]
+    fn unknown_tool_streak_counts_only_the_trailing_run() {
+        assert_eq!(unknown_tool_streak(&steps(&[])), 0);
+        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "unknown_tool"])), 2);
+        assert_eq!(
+            unknown_tool_streak(&steps(&["unknown_tool", "tool_ok", "unknown_tool"])),
+            1,
+            "a real call in between resets the guessing"
+        );
+        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "tool_error"])), 0);
+    }
+
+    #[test]
+    fn unknown_tool_gets_real_names_that_look_alike() {
+        let names = ["sys_info", "sys_battery", "tg_send_message", "fs_read", "uptime_check"];
+        let catalog = Catalog {
+            tools: names.iter().map(|n| spec(n, "d")).collect(),
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
+        let got = suggest_tools(&catalog, "system_info");
+        assert_eq!(got[0], "sys_info", "two matching parts rank first: {got:?}");
+        assert!(got.contains(&"sys_battery") && !got.contains(&"tg_send_message"), "{got:?}");
+        assert!(suggest_tools(&catalog, "zz").is_empty());
+    }
+
+    #[test]
+    fn oversized_catalog_is_capped_keeping_goal_matches() {
+        let mut tools: Vec<_> = (0..100).map(|i| spec(&format!("tool_{i}"), "unrelated")).collect();
+        tools.push(spec("phone.battery", "Battery level of the phone (батарея, заряд)"));
+        let catalog = Catalog { tools, allowed_actions: vec![], tools_file_set: false };
+        let capped = cap_native_tools(catalog, "Сколько заряда у батареи?");
+        assert_eq!(capped.tools.len(), MAX_NATIVE_TOOLS);
+        assert_eq!(capped.tools[0].name, "phone.battery");
+        assert_eq!(capped.tools[1].name, "tool_0", "ties keep catalog order");
+
+        let small = Catalog { tools: vec![spec("a", "x")], allowed_actions: vec![], tools_file_set: false };
+        assert_eq!(cap_native_tools(small, "anything").tools.len(), 1);
+    }
+
     #[test]
     fn truncates_on_char_boundaries() {
         assert_eq!(truncate_chars("short", 10), "short");
         let long = "ж".repeat(20);
         let cut = truncate_chars(&long, 5);
         assert!(cut.starts_with("жжжжж"));
-        assert!(cut.ends_with("[truncated]"));
+        assert!(cut.contains("[truncated: 5 of 20 chars shown"), "{cut}");
     }
 
     fn spec(name: &str, description: &str) -> crate::tools::ToolSpec {
@@ -580,6 +978,23 @@ mod tests {
         let before = cat(vec![spec("a", "old description")]);
         let after = cat(vec![spec("a", "new description")]);
         assert_ne!(catalog_content_hash(&before), catalog_content_hash(&after));
+    }
+
+    #[test]
+    fn embed_top_k_defaults_and_clamps() {
+        assert_eq!(parse_top_k(None), DEFAULT_EMBED_TOP_K);
+        assert_eq!(parse_top_k(Some("12")), 12);
+        assert_eq!(parse_top_k(Some(" 1 ")), 3);
+        assert_eq!(parse_top_k(Some("9999")), 200);
+        assert_eq!(parse_top_k(Some("junk")), DEFAULT_EMBED_TOP_K);
+    }
+
+    #[test]
+    fn embed_min_score_rejects_out_of_range() {
+        assert_eq!(parse_min_score(None), DEFAULT_EMBED_MIN_SCORE);
+        assert_eq!(parse_min_score(Some("0.45")), 0.45);
+        assert_eq!(parse_min_score(Some("1.5")), DEFAULT_EMBED_MIN_SCORE);
+        assert_eq!(parse_min_score(Some("-0.1")), DEFAULT_EMBED_MIN_SCORE);
     }
 
     #[test]

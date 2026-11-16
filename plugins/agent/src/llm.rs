@@ -19,7 +19,8 @@ use crate::store::{LlmPlan, Turn};
 use crate::tools::Catalog;
 use crate::Rpc;
 
-/// Hard cap matching `ai`'s own `MAX_TIMEOUT_MS`.
+/// Default per-completion timeout, matching `ai`'s `DEFAULT_TIMEOUT_MS`;
+/// [`chat_timeout_ms`] may raise it up to `ai`'s 300 s cap.
 pub const CHAT_TIMEOUT_MS: u32 = 30_000;
 
 /// Operator env var: per-completion timeout override. Local CPU models
@@ -101,6 +102,8 @@ pub fn want_native_tools(catalog: &Catalog, disabled: bool) -> bool {
 pub struct ChatOutcome {
     pub content: String,
     pub tool_calls: Vec<NativeToolCall>,
+    /// Prompt tokens ai reported; 0 when the provider gave none.
+    pub input_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +147,15 @@ pub fn fallback_plan(plan: &LlmPlan, fallback_agent_id: &str) -> LlmPlan {
     p
 }
 
+/// Analytics labels `ai` stores next to the call's token usage (see its
+/// `usage_stats`): which goal the call served and why it was made.
+#[derive(Debug, Clone, Copy)]
+pub struct CallTag<'a> {
+    /// `goal_step` | `memory_extract` | `small_talk`
+    pub purpose: &'a str,
+    pub goal_id: &'a str,
+}
+
 /// One chat round-trip with a single operator-configured retry: when
 /// [`FALLBACK_AGENT_ENV`] names a different profile and the primary call
 /// fails, the same transcript is replayed through the fallback profile.
@@ -152,8 +164,9 @@ pub async fn chat_with_fallback(
     plan: &LlmPlan,
     transcript: &[Turn],
     tools: &[Value],
+    tag: &CallTag<'_>,
 ) -> Result<ChatOutcome, String> {
-    match chat(rpc, plan, transcript, tools).await {
+    match chat(rpc, plan, transcript, tools, tag).await {
         Ok(outcome) => Ok(outcome),
         Err(primary_err) => {
             let fb = std::env::var(FALLBACK_AGENT_ENV).ok().filter(|s| !s.is_empty());
@@ -163,7 +176,7 @@ pub async fn chat_with_fallback(
                         "[agent] primary LLM failed ({primary_err}); falling back to agent '{fb}'"
                     );
                     let retry_plan = fallback_plan(plan, &fb);
-                    chat(rpc, &retry_plan, transcript, tools).await.map_err(|e| {
+                    chat(rpc, &retry_plan, transcript, tools, tag).await.map_err(|e| {
                         format!("{primary_err}; fallback '{fb}' also failed: {e}")
                     })
                 }
@@ -367,29 +380,16 @@ fn default_plugin_prompt(group: &str) -> Option<String> {
     }
 }
 
+/// Names every tool, also in native mode: dispatch resolves names against the
+/// full catalog, so this list is how a tool the embedding filter missed
+/// stays reachable. A count-only overview (tried 2026-10-27, ~1.2k tokens a
+/// step saved) made the model invent names from group labels instead
+/// ("system_info", "system.df" for sys_info).
 fn catalog_groups_overview(catalog: &Catalog) -> String {
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for tool in &catalog.tools {
-        let prefix = tool.name.split('_').next().unwrap_or("other").to_string();
-        let key = match prefix.as_str() {
-            "tg" => "telegram".to_string(),
-            "db" => "database".to_string(),
-            "vec" => "vector-db".to_string(),
-            "note" => "notes".to_string(),
-            "contact" => "contacts".to_string(),
-            "email" => "email".to_string(),
-            "event" | "schedule" => "calendar/scheduler".to_string(),
-            "fs" => "filesystem".to_string(),
-            "media" => "media".to_string(),
-            "sys" => "system".to_string(),
-            "web" | "http" => "web/network".to_string(),
-            "secret" => "secrets".to_string(),
-            "notify" => "notifications".to_string(),
-            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice".to_string(),
-            "launch" | "clipboard" | "hotkey" => "desktop".to_string(),
-            other => other.to_string(),
-        };
+        let key = tool_group(&tool.name).to_string();
         groups.entry(key).or_default().push(tool.name.clone());
     }
     let mut lines = Vec::new();
@@ -403,10 +403,53 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
         // group uncallable in practice, even when explicitly named in the
         // goal text (e.g. tg_get_unread, alphabetically past telegram's
         // first 6, silently invisible to text-protocol models).
-        let all = names.join(", ");
-        lines.push(format!("- {} ({} tools): {}", group, count, all));
+        // `[group]` reads as a label, not a name: "- system (5 tools)" got
+        // called as a tool named "system".
+        lines.push(format!("- [{}] {} tools: {}", group, count, names.join(", ")));
     }
     lines.join("\n")
+}
+
+/// Prompt group of a tool, from its name prefix (`tg_*` → telegram, ...).
+/// One mapping for the overview and for plugin-prompt selection.
+fn tool_group(name: &str) -> &str {
+    let prefix = name.split('_').next().unwrap_or("other");
+    match prefix {
+        "tg" => "telegram",
+        "db" => "database",
+        "vec" => "vector-db",
+        "note" => "notes",
+        "contact" => "contacts",
+        "email" => "email",
+        "event" | "schedule" => "calendar/scheduler",
+        "fs" => "filesystem",
+        "media" => "media",
+        "sys" => "system",
+        "web" | "http" => "web/network",
+        "secret" => "secrets",
+        "notify" => "notifications",
+        "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice",
+        "launch" | "clipboard" | "hotkey" => "desktop",
+        other => other,
+    }
+}
+
+/// A group's prompt only loads when the filtered catalog holds at least this
+/// many of its tools. The embedding filter always fills its top_k, so a goal
+/// about CPU load still pulls a stray `tg_*` or `mqtt_*` tool in; one tool is
+/// noise, and its group prompt (telegram.md alone is ~1.5k tokens) is not.
+const MIN_GROUP_TOOLS_FOR_PROMPT: usize = 2;
+
+fn groups_with_prompts(filtered: &Catalog) -> std::collections::BTreeSet<String> {
+    let mut counts: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+    for tool in &filtered.tools {
+        *counts.entry(tool_group(&tool.name)).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n >= MIN_GROUP_TOOLS_FOR_PROMPT.min(filtered.tools.len()))
+        .map(|(g, _)| g.to_string())
+        .collect()
 }
 
 fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
@@ -414,29 +457,7 @@ fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
         return None;
     }
     let env_map = plugin_prompts_map();
-    let mut groups: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for tool in &filtered.tools {
-        let prefix = tool.name.split('_').next().unwrap_or("other");
-        let group = match prefix {
-            "tg" => "telegram",
-            "db" => "database",
-            "vec" => "vector-db",
-            "note" => "notes",
-            "contact" => "contacts",
-            "email" => "email",
-            "event" | "schedule" => "calendar/scheduler",
-            "fs" => "filesystem",
-            "media" => "media",
-            "sys" => "system",
-            "web" | "http" => "web/network",
-            "secret" => "secrets",
-            "notify" => "notifications",
-            "tts" | "stt" | "mic" | "sound" | "daemon" => "audio/voice",
-            "launch" | "clipboard" | "hotkey" => "desktop",
-            other => other,
-        };
-        groups.insert(group.to_string());
-    }
+    let groups = groups_with_prompts(filtered);
     let mut parts = Vec::new();
     for g in groups {
         // Precedence: env JSON (hot-fix, wins) > prompts dir (the normal
@@ -458,6 +479,40 @@ fn plugin_prompt_section(filtered: &Catalog) -> Option<String> {
     } else {
         Some(parts.join("\n"))
     }
+}
+
+/// Who the agent is and how it talks (identity, personality, channel,
+/// discipline, operator facts) — the head of every seed prompt, shared by
+/// the tool loop and the small-talk fast path so both sound the same.
+pub(crate) fn persona_block() -> String {
+    const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
+    const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
+    const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
+    // Was duplicated per `ai_plugin`'s `agent_id` profile system_prompt
+    // (default/ollama-cloud/mimo/flash/local all carried this verbatim or
+    // near-verbatim) before every profile was trimmed to model-specific
+    // format notes only. Universal across every group and every model, so
+    // it belongs here once, not five times upstream.
+    const DISCIPLINE: &str = "Честность: никогда не выдумывай факты, статусы или результаты; если не знаешь или инструмент недоступен — скажи прямо, не изображай, что проверил. Обязательства: если ты уже сообщил, что сейчас что-то сделаешь («секунду», «сейчас будет», «ищу») — это обязывает вызвать нужный инструмент в ЭТОМ ЖЕ цикле, прежде чем отвечать final; текстовое обещание без последующего вызова инструмента — невыполненная цель.";
+    // Appended to the persona rather than threaded through each prompt
+    // builder: the facts are context for every group, not a group of
+    // their own.
+    let facts_section = facts_block()
+        .map(|facts| {
+            format!(
+                "\n\nFacts (authoritative data about the user and environment — \
+                 prefer these over inference, and never contradict them):\n{facts}"
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{}\n\n{}\n\n{}\n\n{}{}",
+        core_block("_identity", IDENTITY),
+        core_block("_personality", PERSONALITY),
+        core_block("_channel", CHANNEL),
+        core_block("_discipline", DISCIPLINE),
+        facts_section,
+    )
 }
 
 /// Build the instructions message that carries the tool catalog. `ai`
@@ -569,34 +624,7 @@ pub fn opening_messages_with_full(
     }
     let overview = catalog_groups_overview(full);
     let plugin_prompts = plugin_prompt_section(filtered);
-    const IDENTITY: &str = "Ты — персональный агент Лонера (Бехзод). Ты не «ИИ», не чат-бот общего назначения — ты его личный агент/лакей, работаешь только на него. Обращайся к нему по имени, помни контекст, никогда не называй себя ИИ.";
-    const PERSONALITY: &str = "Основной характер — Технический соратник: собранный, с лёгким профессиональным юмором, ориентированный на результат. Без ритуальных вежливостей («Как дела? Чем могу помочь?»), сразу суть: коротко, точно, без лишней романтики. Высокий сигнал/шум: начинай с главного вывода, а не с предыстории. Контекстная проактивность: вместо «Нагрузка 95%» → «Нагрузка 95%, PID 4042 жрёт CPU. Завершить?». Характер без душности: лёгкая ирония и тех-метафоры ок, но табу на иронию в алертах/ошибках.";
-    const CHANNEL: &str = "Каналы: Голос (TTS/STT/daemon) — Спокойный собеседник: естественная плавность, чуть медленнее, диалоговые конструкции, легко на слух. Текст (Telegram/Email) — Лаконичный диспетчер: короткие предложения, минимум формата, читается за секунду, без вводных.";
-    // Was duplicated per `ai_plugin`'s `agent_id` profile system_prompt
-    // (default/ollama-cloud/mimo/flash/local all carried this verbatim or
-    // near-verbatim) before every profile was trimmed to model-specific
-    // format notes only. Universal across every group and every model, so
-    // it belongs here once, not five times upstream.
-    const DISCIPLINE: &str = "Честность: никогда не выдумывай факты, статусы или результаты; если не знаешь или инструмент недоступен — скажи прямо, не изображай, что проверил. Обязательства: если ты уже сообщил, что сейчас что-то сделаешь («секунду», «сейчас будет», «ищу») — это обязывает вызвать нужный инструмент в ЭТОМ ЖЕ цикле, прежде чем отвечать final; текстовое обещание без последующего вызова инструмента — невыполненная цель.";
-    // Appended to the persona rather than threaded through both format!
-    // arms below: the facts are context for every group, not a group of
-    // their own.
-    let facts_section = facts_block()
-        .map(|facts| {
-            format!(
-                "\n\nFacts (authoritative data about the user and environment — \
-                 prefer these over inference, and never contradict them):\n{facts}"
-            )
-        })
-        .unwrap_or_default();
-    let identity_block = format!(
-        "{}\n\n{}\n\n{}\n\n{}{}",
-        core_block("_identity", IDENTITY),
-        core_block("_personality", PERSONALITY),
-        core_block("_channel", CHANNEL),
-        core_block("_discipline", DISCIPLINE),
-        facts_section,
-    );
+    let identity_block = persona_block();
     let tools_section = if native {
         format!("Detailed tools for this goal: {NATIVE_TOOLS_NOTE}")
     } else {
@@ -610,13 +638,13 @@ pub fn opening_messages_with_full(
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
-             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Tool groups overview ([group] labels are not tool names; call the names listed after them):\n{}\n\n\
              Plugin identities (how to behave for relevant groups):\n{}\n\n\
              {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - Call a tool only by an exact name listed above, in the detailed list or in the groups overview (dispatch accepts both); never invent a name.\n\
              - After each call you receive a message starting with \
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
@@ -630,12 +658,12 @@ pub fn opening_messages_with_full(
         format!(
             "{}\n\nYou are the vynkor host agent: you complete the user's goal by \
              calling host tools step by step.\n\n\
-             Tool groups overview (pre-catalog: general essence of all groups):\n{}\n\n\
+             Tool groups overview ([group] labels are not tool names; call the names listed after them):\n{}\n\n\
              {}\n\n\
              Reply rules:\n\
              - To call a tool, reply with EXACTLY ONE JSON object and nothing \
              else: {{\"tool\": \"<name>\", \"params\": {{...}}}}.\n\
-             - Only tool names from the detailed list above are valid (other groups exist but need a more specific goal to unlock their details).\n\
+             - Call a tool only by an exact name listed above, in the detailed list or in the groups overview (dispatch accepts both); never invent a name.\n\
              - After each call you receive a message starting with \
              \"[TOOL RESULT\" containing the outcome.\n\
              - When the goal is achieved (or impossible), reply with the final \
@@ -681,6 +709,53 @@ pub fn opening_messages_with_full(
     msgs
 }
 
+/// One-line size report of a fresh goal's prompt, in chars (tokens are not
+/// known here), so a step's `input_tokens` can be traced back to a part:
+/// the seed's persona, tool-name overview and per-group plugin prompts, the
+/// native `tools` param, and the session-memory/recall text.
+pub fn prompt_breakdown(goal_id: &str, filtered: &Catalog, full: &Catalog, transcript: &[Turn]) -> String {
+    let chars = |s: &str| s.chars().count();
+    let plugin_prompts = plugin_prompt_section(filtered).unwrap_or_default();
+    let groups: Vec<&str> = plugin_prompts
+        .lines()
+        .filter_map(|l| l.strip_prefix("**").and_then(|r| r.split_once("**:")).map(|(g, _)| g))
+        .collect();
+    let tools_param = serde_json::to_string(&catalog_tools_param(filtered)).unwrap_or_default();
+    let turn_chars: Vec<String> = transcript.iter().map(|t| chars(&t.content).to_string()).collect();
+    format!(
+        "[agent] prompt goal={goal_id} persona={} overview={} plugin_prompts={} ({}) \
+         tools_param={} ({} tools: {}) turns=[{}]",
+        chars(&persona_block()),
+        chars(&catalog_groups_overview(full)),
+        chars(&plugin_prompts),
+        groups.join(","),
+        chars(&tools_param),
+        filtered.tools.len(),
+        filtered.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+        turn_chars.join(","),
+    )
+}
+
+/// Seed for the small-talk fast path: the persona and the goal, no tool
+/// catalog, overview or reply protocol — a greeting needs none of them,
+/// and they are most of a normal seed's tokens.
+pub fn small_talk_messages(goal: &str, context: &str) -> Vec<Turn> {
+    let instructions = format!(
+        "{}\n\nThe user's message is small talk (a greeting, thanks or goodbye). \
+         Answer briefly in their language, in character, as plain text.",
+        persona_block(),
+    );
+    let goal_msg = if context.is_empty() {
+        goal.to_string()
+    } else {
+        format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
+    };
+    vec![
+        Turn { role: "user".into(), content: instructions },
+        Turn { role: "user".into(), content: goal_msg },
+    ]
+}
+
 /// The text catalog a native seed deliberately left out, for the engine to
 /// inject into the transcript the moment a provider rejects the native
 /// `tools` param — see `engine.rs`'s degrade branch. Carries both the full
@@ -713,6 +788,7 @@ pub async fn chat(
     plan: &LlmPlan,
     transcript: &[Turn],
     tools: &[Value],
+    tag: &CallTag<'_>,
 ) -> Result<ChatOutcome, String> {
     let messages: Vec<Value> = transcript
         .iter()
@@ -745,6 +821,8 @@ pub async fn chat(
     let timeout = chat_timeout_ms();
     params.insert("timeout_ms".into(), json!(timeout));
     params.insert("max_retries".into(), json!(ai_max_retries()));
+    params.insert("purpose".into(), json!(tag.purpose));
+    params.insert("goal_id".into(), json!(tag.goal_id));
 
     let v = rpc.call("chat_completion", Value::Object(params), timeout).await?;
     let content = v
@@ -771,7 +849,8 @@ pub async fn chat(
                 .collect()
         })
         .unwrap_or_default();
-    Ok(ChatOutcome { content, tool_calls })
+    let input_tokens = v.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
+    Ok(ChatOutcome { content, tool_calls, input_tokens })
 }
 
 /// Interpret a chat outcome: a native tool invocation wins (structured
@@ -800,7 +879,7 @@ pub enum Reply {
 }
 
 /// Extract the first balanced `{...}` substring, respecting string literals.
-fn first_balanced_object(text: &str) -> Option<&str> {
+pub(crate) fn first_balanced_object(text: &str) -> Option<&str> {
     let start = text.find('{')?;
     let bytes = text.as_bytes();
     let mut depth = 0usize;
@@ -1261,6 +1340,52 @@ mod tests {
     }
 
     #[test]
+    fn a_group_prompt_needs_two_tools_in_the_filtered_catalog() {
+        let mk = |n: &str| crate::tools::ToolSpec {
+            name: n.into(),
+            description: String::new(),
+            parameters: Value::Null,
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: crate::tools::Source::Kernel,
+        };
+        let cat = |names: &[&str]| Catalog {
+            tools: names.iter().map(|n| mk(n)).collect(),
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
+        let groups = groups_with_prompts(&cat(&["sys_info", "sys_procs", "tg_send_message", "mqtt_status"]));
+        assert_eq!(groups.into_iter().collect::<Vec<_>>(), vec!["system".to_string()]);
+        // a catalog of one tool still gets its group's prompt
+        let solo = groups_with_prompts(&cat(&["tg_send_message"]));
+        assert!(solo.contains("telegram"));
+    }
+
+    #[test]
+    fn prompt_breakdown_reports_part_sizes_and_tool_count() {
+        let spec = crate::tools::ToolSpec {
+            name: "launch".into(),
+            description: "Launch an app".into(),
+            parameters: json!({"type": "object", "properties": {}}),
+            requires_confirmation: false,
+            risk: String::new(),
+            timeout_ms: 30_000,
+            cooldown_ms: 0,
+            max_per_goal: 16,
+            source: crate::tools::Source::Kernel,
+        };
+        let cat = Catalog { tools: vec![spec], allowed_actions: vec!["launch".into()], tools_file_set: false };
+        let turns = vec![Turn { role: "user".into(), content: "abcd".into() }];
+        let line = prompt_breakdown("g1", &cat, &cat, &turns);
+        assert!(line.contains("goal=g1"), "{line}");
+        assert!(line.contains("(1 tools: launch)"), "{line}");
+        assert!(line.contains("turns=[4]"), "{line}");
+    }
+
+    #[test]
     fn catalog_tools_param_maps_schema_and_guards_minimal_specs() {
         let spec = crate::tools::ToolSpec {
             name: "launch".into(),
@@ -1300,6 +1425,7 @@ mod tests {
                 name: "launch".into(),
                 arguments_json: r#"{"app_id": "firefox"}"#.into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1316,6 +1442,7 @@ mod tests {
                 name: "launch".into(),
                 arguments_json: "not json".into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1332,6 +1459,7 @@ mod tests {
                 name: String::new(),
                 arguments_json: "{}".into(),
             }],
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&outcome),
@@ -1344,6 +1472,7 @@ mod tests {
         let outcome = ChatOutcome {
             content: "All done.".into(),
             tool_calls: Vec::new(),
+            input_tokens: 0,
         };
         assert_eq!(outcome_to_reply(&outcome), Reply::Final("All done.".into()));
 
@@ -1351,6 +1480,7 @@ mod tests {
         let text_proto = ChatOutcome {
             content: "{\"tool\": \"b\", \"params\": {}}".into(),
             tool_calls: Vec::new(),
+            input_tokens: 0,
         };
         assert_eq!(
             outcome_to_reply(&text_proto),

@@ -41,6 +41,24 @@ AGENT_PLUGIN_DB_TIMEOUT_MS=5000 # per-call timeout for database round-trips
 #   memory_forget {"query": "..."} / memory_clear {} / memory_list {}
 AGENT_PLUGIN_MEMORY=off                       # on | off
 AGENT_PLUGIN_MEMORY_COLLECTION=agent-memory   # vector-db collection name
+# AGENT_PLUGIN_MEMORY_AGENT_ID=memory          # ai profile for fact extraction (small local model)
+
+# --- Token savers -------------------------------------------------------------
+# AGENT_PLUGIN_EMBED_TOP_K=12          # nearest tools the embedding filter keeps (default 35)
+# AGENT_PLUGIN_EMBED_MIN_SCORE=0.35    # cosine floor for that filter
+AGENT_PLUGIN_SMALL_TALK=off            # on: greetings/thanks skip the tool loop
+# AGENT_PLUGIN_SMALL_TALK_AGENT_ID=    # ai profile for those replies (default: the goal's)
+
+# --- Learned routines -----------------------------------------------------------
+# Repeated single-tool device commands are mined nightly on a LOCAL model and
+# then served with no LLM call. Operator commands:
+#   routine_list {} / routine_delete {"id": "..."} / routine_mine {}
+AGENT_PLUGIN_ROUTINES=off                     # on | off
+# AGENT_PLUGIN_ROUTINE_TOOLS=mqtt_device_command,pixel-6pro.flashlight,...
+# AGENT_PLUGIN_ROUTINES_AGENT_ID=memory       # local ai profile; default MEMORY_AGENT_ID; unset = no mining
+# AGENT_PLUGIN_ROUTINES_AT=03:30              # local time of the nightly pass
+# AGENT_PLUGIN_ROUTINES_LOOKBACK_DAYS=30
+# AGENT_PLUGIN_TOKEN_ALERT=12000               # avg prompt tokens/step over 8 steps that raises an alert; off disables
 
 # --- Chat sessions (chats plugin; optional, a missing chats never breaks goals) ---
 # AGENT_PLUGIN_LOCAL_DEVICE=host        # device name for goals from local plugins
