@@ -1,6 +1,6 @@
 {
   "plugin_id": "agent",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -764,6 +764,10 @@
         "type": "string",
         "description": "Cosine floor for the embedding filter (0-1). Default 0.35."
       },
+      "AGENT_PLUGIN_EMBED_HINTS_FILE": {
+        "type": "string",
+        "description": "JSON file {\"tool_name\": \"extra words\"} appended to a tool's text before it is embedded for the embedding filter, so a tool matches phrasings its description lacks. Unset = no hints."
+      },
       "AGENT_PLUGIN_LOCAL_DEVICE": {
         "type": "string",
         "default": "host",
@@ -780,6 +784,39 @@
         "minimum": 1,
         "default": 2000,
         "description": "Per-call timeout for chats round-trips; a slow chats never delays a goal longer (2000)."
+      },
+      "AGENT_PLUGIN_RECALL": {
+        "type": "string",
+        "enum": [
+          "on",
+          "off"
+        ],
+        "default": "on",
+        "description": "Blend related past chat sessions (chat_recall) into the goal message; off skips the lookup (on)."
+      },
+      "AGENT_PLUGIN_RECALL_TOP_K": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 10,
+        "default": 3,
+        "description": "Max past sessions blended into a turn (3)."
+      },
+      "AGENT_PLUGIN_RECALL_MIN_SCORE": {
+        "type": "number",
+        "default": 0.72,
+        "description": "Minimum similarity of a past session to be blended in (0.72)."
+      },
+      "AGENT_PLUGIN_RECALL_BUDGET_MS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 150,
+        "description": "Time budget of the past-session lookup; a slower chats means no block for that turn (150)."
+      },
+      "AGENT_PLUGIN_EMBED_TIMEOUT_MS": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 5000,
+        "description": "Timeout of the once-per-goal vec_embed of the goal text (5000)."
       }
     },
     "additionalProperties": true
