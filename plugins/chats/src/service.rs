@@ -60,8 +60,14 @@ impl Service {
 
     pub async fn handle(&self, action: &str, params: &[u8], now: i64) -> Result<Value, String> {
         match action {
-            "chat_search" if self.cfg.semantic => {
-                self.hybrid_search(request::parse(action, params)?).await
+            "chat_search" => {
+                let r = if self.cfg.semantic {
+                    self.hybrid_search(request::parse(action, params)?).await?
+                } else {
+                    self.sync_action(action, params, now).await?
+                };
+                self.mark_hits(&r, now, false).await;
+                Ok(r)
             }
             "chat_recall" => {
                 // validate first: a malformed call is an error with or without
@@ -70,17 +76,42 @@ impl Service {
                 if !self.cfg.semantic {
                     return Ok(json!({"hits": []}));
                 }
-                self.recall(p).await
+                let r = self.recall(p).await?;
+                self.mark_hits(&r, now, true).await;
+                Ok(r)
             }
-            _ => {
-                let (action, params, cfg) =
-                    (action.to_string(), params.to_vec(), Arc::clone(&self.cfg));
-                with_db(&self.db, move |c| {
-                    request::handle(c, &cfg, &action, &params, now)
-                })
-                .await?
-            }
+            _ => self.sync_action(action, params, now).await,
         }
+    }
+
+    async fn sync_action(&self, action: &str, params: &[u8], now: i64) -> Result<Value, String> {
+        let (action, params, cfg) = (action.to_string(), params.to_vec(), Arc::clone(&self.cfg));
+        with_db(&self.db, move |c| {
+            request::handle(c, &cfg, &action, &params, now)
+        })
+        .await?
+    }
+
+    /// Sessions in `result.hits` were surfaced: count the use (retention).
+    /// Failures are ignored: usage tracking must never fail a search.
+    async fn mark_hits(&self, result: &Value, now: i64, recall: bool) {
+        let mut ids: Vec<String> = result["hits"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|h| h["session_id"].as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids.dedup();
+        if ids.is_empty() || !self.cfg.retention {
+            return;
+        }
+        let _ = with_db(&self.db, move |c| {
+            crate::retention::mark_used(c, &ids, now, recall)
+        })
+        .await;
     }
 
     async fn hybrid_search(&self, p: SearchParams) -> Result<Value, String> {
@@ -691,6 +722,43 @@ mod tests {
         }
         assert_eq!(f.fake.calls("vec_stats").len(), 1);
         assert!(f.fake.calls("vec_query").is_empty());
+    }
+
+    #[tokio::test]
+    async fn recall_and_search_mark_usage_without_rev() {
+        let (f, s1, s2) = recall_fixture().await;
+        let s = svc(&f);
+        let revs = |f: &Fixture| -> (i64, i64) {
+            (
+                f.q("SELECT rev FROM sessions WHERE id=?", [&s1]),
+                f.q("SELECT value FROM meta WHERE key='rev'", []),
+            )
+        };
+        let before = revs(&f);
+        let usage = |f: &Fixture, id: &str| -> (i64, i64) {
+            f.q2(
+                "SELECT recall_count, last_used_at FROM sessions WHERE id=?",
+                id,
+            )
+        };
+        assert_eq!(usage(&f, &s1), (0, 0));
+        // chat_recall: counts and stamps the hit session only
+        s.handle(
+            "chat_recall",
+            &recall_params(&f, "weather sunny today pasta", json!({})),
+            T0 + 7,
+        )
+        .await
+        .unwrap();
+        assert_eq!(usage(&f, &s1), (1, T0 + 7));
+        assert_eq!(usage(&f, &s2), (0, 0));
+        // chat_search: stamps last_used_at, not recall_count
+        let p = serde_json::to_vec(&json!({"query": "hello"})).unwrap();
+        let r = s.handle("chat_search", &p, T0 + 9).await.unwrap();
+        assert!(!r["hits"].as_array().unwrap().is_empty());
+        let (n, used) = usage(&f, &s1);
+        assert_eq!((n, used), (1, T0 + 9));
+        assert_eq!(revs(&f), before, "usage never bumps rev (not synced)");
     }
 
     /// Run with: cargo test --release --manifest-path plugins/chats/Cargo.toml -- --ignored --nocapture hybrid_search_20k

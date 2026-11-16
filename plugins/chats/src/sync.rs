@@ -102,6 +102,13 @@ pub fn sync(
     sync_max: usize,
 ) -> Result<Value, String> {
     let limit = limit.min(sync_max).max(1);
+    let review_pending: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reviews WHERE status = 'pending')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(db_err)?;
     let current: i64 = conn
         .query_row("SELECT value FROM meta WHERE key = 'rev'", [], |r| r.get(0))
         .map_err(db_err)?;
@@ -109,7 +116,7 @@ pub fn sync(
         // The caller is ahead of this store (restored/replaced database):
         // it must drop its local copy and resync from 0.
         return Ok(
-            json!({"changes": [], "rev": current, "more": false, "review_pending": false, "reset": true}),
+            json!({"changes": [], "rev": current, "more": false, "review_pending": review_pending, "reset": true}),
         );
     }
     let mut page = fetch(conn, since_rev, i64::MAX, limit as i64)?;
@@ -117,7 +124,7 @@ pub fn sync(
     let last_rev = match page.last() {
         None => {
             return Ok(
-                json!({"changes": [], "rev": since_rev, "more": false, "review_pending": false, "reset": false}),
+                json!({"changes": [], "rev": since_rev, "more": false, "review_pending": review_pending, "reset": false}),
             );
         }
         Some(c) => c.rev,
@@ -128,7 +135,7 @@ pub fn sync(
     let more = !fetch(conn, last_rev, i64::MAX, 1)?.is_empty();
     let changes: Vec<Value> = page.into_iter().map(|c| c.body).collect();
     Ok(
-        json!({"changes": changes, "rev": last_rev, "more": more, "review_pending": false, "reset": false}),
+        json!({"changes": changes, "rev": last_rev, "more": more, "review_pending": review_pending, "reset": false}),
     )
 }
 
