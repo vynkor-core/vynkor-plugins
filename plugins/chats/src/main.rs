@@ -20,7 +20,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "chats";
-const PLUGIN_VERSION: &str = "0.2.0";
+const PLUGIN_VERSION: &str = "0.3.0";
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -101,8 +101,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     ));
     let worker = Worker::new(Arc::clone(&conn), rpc, Arc::clone(&config), {
         let out = outbound_tx.clone();
-        Arc::new(move || {
-            let payload = serde_json::json!({"action": "worker"});
+        Arc::new(move |action: &str| {
+            let payload = serde_json::json!({"action": action});
             let _ = out.try_send(event_envelope("changed", &payload));
         })
     });
@@ -425,6 +425,20 @@ mod serve_tests {
         .await
         .unwrap_err();
         assert!(e.contains("invalid params"), "{e}");
+
+        let r = call(&mut kernel, 11, "chat_review_get", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(r, json!({"review": null}));
+        let e = call(
+            &mut kernel,
+            12,
+            "chat_review_apply",
+            json!({"id": "nope", "accept": ["junk"]}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e, "review not found");
 
         let shutdown = Envelope {
             payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {

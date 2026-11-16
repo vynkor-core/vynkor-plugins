@@ -98,7 +98,8 @@ fn candidates(
     let mut stmt = conn
         .prepare(
             "SELECT id, rev FROM sessions
-             WHERE state = 'live' AND turns > 0 AND last_at <= ?1 AND summarized_rev < rev
+             WHERE state = 'live' AND tier = 'full' AND last_at <= ?1 AND summarized_rev < rev
+               AND EXISTS (SELECT 1 FROM turns t WHERE t.session_id = sessions.id AND t.status = 'ok')
              ORDER BY last_at LIMIT ?2",
         )
         .map_err(db_err)?;
