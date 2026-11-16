@@ -332,6 +332,9 @@ mod tests {
         fail_goal: bool,
         fail_tts: bool,
         fail_sound: bool,
+        /// `Some(status)`: `goal_start` parks on a confirmation gate and
+        /// `goal_get` then reports this status.
+        confirm: Option<&'static str>,
     }
 
     impl Default for Script {
@@ -344,6 +347,7 @@ mod tests {
                 fail_goal: false,
                 fail_tts: false,
                 fail_sound: false,
+                confirm: None,
             }
         }
     }
@@ -531,6 +535,12 @@ mod tests {
                 if script.fail_goal {
                     return Err("ai transport down".into());
                 }
+                if script.confirm.is_some() {
+                    return Ok(serde_json::json!({
+                        "id": "7", "status": "needs_confirmation", "final_answer": "",
+                        "error": "", "steps": [], "pending_tool": "fs_write"
+                    }));
+                }
                 Ok(serde_json::json!({
                     "id": "7",
                     "status": "completed",
@@ -542,6 +552,11 @@ mod tests {
                     "max_steps": params["max_steps"]
                 }))
             }
+            "goal_get" => Ok(serde_json::json!({"goal": {
+                "id": "7", "status": script.confirm.unwrap_or("completed"),
+                "final_answer": "Saved after approval.", "error": "", "steps": []
+            }})),
+            "goal_resume" => Ok(serde_json::json!({"id": params["id"], "status": "failed"})),
             "tts_synthesize" => {
                 if script.fail_tts {
                     return Err("sherpa model not loaded".into());
@@ -957,6 +972,33 @@ mod tests {
         })
         .await;
         assert!(event.is_some(), "silent turn must publish its outcome");
+    }
+
+    #[tokio::test]
+    async fn confirmed_goal_speaks_the_resumed_answer() {
+        let shim = start_plugin(fast_config()).await;
+        shim.tweak(|s| s.confirm = Some("completed")).await;
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({"text": "save my note"}))
+            .await
+            .unwrap();
+        assert_eq!(resp["status"], "answered", "{resp}");
+        assert_eq!(resp["answer"], "Saved after approval.");
+        assert!(shim.params_of("goal_resume").await.is_empty(), "nothing denied");
+    }
+
+    #[tokio::test]
+    async fn unanswered_confirmation_is_denied_when_the_turn_gives_up() {
+        let shim = start_plugin(Config { goal_timeout_ms: 1_000, ..fast_config() }).await;
+        shim.tweak(|s| s.confirm = Some("needs_confirmation")).await;
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({"text": "save my note"}))
+            .await
+            .unwrap();
+        assert_eq!(resp["status"], "error", "{resp}");
+        assert!(resp["error"].as_str().unwrap().contains("1000 ms"), "{resp}");
+        let denied = shim.params_of("goal_resume").await;
+        assert_eq!(denied, vec![serde_json::json!({"id": "7", "approve": false})]);
     }
 
     #[tokio::test]

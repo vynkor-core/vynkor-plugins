@@ -975,9 +975,18 @@ async fn await_confirmation(rpc: &Rpc, config: &Config, goal_id: &str) -> Result
             return Ok(doc);
         }
         if Instant::now() >= deadline {
+            // Deny the parked tool: an approval arriving after this turn gave
+            // up must not run it behind the user's back. Best effort — the
+            // turn fails either way.
+            let _ = rpc
+                .call(
+                    "goal_resume",
+                    json!({ "id": goal_id, "approve": false }),
+                    config.timeout_ms,
+                )
+                .await;
             return Err(format!(
-                "goal {goal_id} still awaits confirmation after {} ms",
-                config.goal_timeout_ms
+                "goal {goal_id} still awaited confirmation after {budget_ms} ms; denied"
             ));
         }
         tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
