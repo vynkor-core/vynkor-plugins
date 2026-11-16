@@ -44,7 +44,9 @@ jobs:
           # gone fails speech/stt/tts with "could not find native static
           # library sherpa-onnx-c-api". Persist the directory with the rest of
           # the cache; the new prefix-key retires caches saved without it.
-          prefix-key: v1-rust
+          # v2: v1 fallback restores still failed to link sherpa in PRs whose
+          # Cargo.lock differs from develop (#96).
+          prefix-key: v2-rust
           cache-directories: target/sherpa-onnx-prebuilt
       # vynkor-wire's build.rs runs protoc; the pipe-masked test loop hid
       # that no plugin had ever compiled in CI without it
