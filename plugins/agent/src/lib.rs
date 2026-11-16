@@ -504,7 +504,10 @@ pub async fn handle_action(
     match req {
         AgentRequest::GoalStart(params) => start_goal(&db, &rpc, config, caller, params).await,
         AgentRequest::GoalGet { id } => match db.get(&id).await? {
-            Some(doc) => ok(json!({"found": true, "goal": doc}), None),
+            Some(mut doc) => {
+                sessions::redact_goal(&mut doc);
+                ok(json!({"found": true, "goal": doc}), None)
+            }
             None => ok(json!({"found": false, "goal": null}), None),
         },
         AgentRequest::GoalList { limit } => {
