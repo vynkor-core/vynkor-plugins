@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{envelope, Envelope, EventPublish};
 
@@ -181,7 +181,9 @@ impl Config {
     pub fn from_env() -> Self {
         let mut c = Self::default();
         let read_u64 = |k: &str| -> Option<u64> {
-            std::env::var(k).ok().and_then(|s| s.trim().parse::<u64>().ok())
+            std::env::var(k)
+                .ok()
+                .and_then(|s| s.trim().parse::<u64>().ok())
         };
         if let Ok(v) = std::env::var("DAEMON_PLUGIN_ENABLED") {
             let v = v.trim().to_ascii_lowercase();
@@ -240,10 +242,7 @@ impl Config {
         }
         if let Ok(v) = std::env::var("DAEMON_PLUGIN_TTS_FORMAT") {
             let v = v.trim();
-            if matches!(
-                v,
-                "wav" | "mp3" | "pcm" | "opus" | "aac" | "flac" | "ulaw"
-            ) {
+            if matches!(v, "wav" | "mp3" | "pcm" | "opus" | "aac" | "flac" | "ulaw") {
                 c.tts_format = v.into();
             }
         }
@@ -278,7 +277,8 @@ impl Config {
 fn parse_slug(v: &str) -> Option<String> {
     let v = v.trim();
     let ok = !v.is_empty()
-        && v.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        && v.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
     ok.then(|| v.to_string())
 }
 
@@ -317,7 +317,12 @@ impl Rpc {
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(RpcCall { action: action.to_string(), params_json, timeout_ms, reply })
+            .send(RpcCall {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                reply,
+            })
             .await
             .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
@@ -350,7 +355,10 @@ const MEMORY_TURNS: usize = 5;
 
 impl DaemonState {
     pub fn new(enabled_at_boot: bool) -> Self {
-        Self { enabled: AtomicBool::new(enabled_at_boot), ..Default::default() }
+        Self {
+            enabled: AtomicBool::new(enabled_at_boot),
+            ..Default::default()
+        }
     }
 
     /// Remember a finished exchange; evicts beyond [`MEMORY_TURNS`].
@@ -477,9 +485,7 @@ pub async fn handle_action(
         DaemonRequest::Status => ok(state.snapshot(config.mode.as_str()), None),
         DaemonRequest::Turn { text } => {
             if !state.try_begin_turn() {
-                return Err(
-                    "ERR_DAEMON_BUSY: another voice turn is already in progress".into()
-                );
+                return Err("ERR_DAEMON_BUSY: another voice turn is already in progress".into());
             }
             let result = run_voice_turn(&rpc, state.clone(), config, text, bus).await;
             state.end_turn(&result);
@@ -547,7 +553,15 @@ pub async fn run_voice_turn(
     };
     let listen_ms = started.elapsed().as_millis() as u64;
     let memory_ctx = state.recent_context().unwrap_or_default();
-    let result = respond(rpc, config, transcript.clone(), started, listen_ms, &memory_ctx).await;
+    let result = respond(
+        rpc,
+        config,
+        transcript.clone(),
+        started,
+        listen_ms,
+        &memory_ctx,
+    )
+    .await;
     state.remember_exchange(&transcript, &result);
     result
 }
@@ -574,8 +588,7 @@ pub async fn respond(
     let answer = match run_agent(rpc, config, &transcript, memory_ctx).await {
         Ok(a) => a,
         Err(e) => {
-            let mut v =
-                turn_result("error", transcript, None, false, started, Some(e));
+            let mut v = turn_result("error", transcript, None, false, started, Some(e));
             attach_stages(&mut v, listen_ms, t_agent.elapsed().as_millis() as u64, 0);
             return v;
         }
@@ -607,7 +620,12 @@ pub async fn respond(
         Err(e) => {
             let mut v =
                 turn_result_with_goal("error", transcript, false, started, Some(e), &answer);
-            attach_stages(&mut v, listen_ms, agent_ms, t_speak.elapsed().as_millis() as u64);
+            attach_stages(
+                &mut v,
+                listen_ms,
+                agent_ms,
+                t_speak.elapsed().as_millis() as u64,
+            );
             return v;
         }
     };
@@ -685,18 +703,19 @@ async fn start_capture(rpc: &Rpc, config: &Config) -> Result<CaptureSession, Str
     )
     .await?;
 
-    let mic = rpc.call(
-        "mic_start",
-        json!({
-            "target": config.stt_target,
-            "stream_id": config.stream_id,
-            "sample_rate_hz": config.sample_rate_hz,
-            "num_channels": 1,
-            "chunk_ms": config.chunk_ms,
-        }),
-        config.timeout_ms,
-    )
-    .await;
+    let mic = rpc
+        .call(
+            "mic_start",
+            json!({
+                "target": config.stt_target,
+                "stream_id": config.stream_id,
+                "sample_rate_hz": config.sample_rate_hz,
+                "num_channels": 1,
+                "chunk_ms": config.chunk_ms,
+            }),
+            config.timeout_ms,
+        )
+        .await;
     let mic = match mic {
         Ok(m) => m,
         Err(e) => {
@@ -720,8 +739,17 @@ async fn start_capture(rpc: &Rpc, config: &Config) -> Result<CaptureSession, Str
 /// Close a capture and transcribe: `mic_stop` first — it flushes
 /// `end_of_stream` to stt — then `stt_listen_stop` over the complete buffer.
 /// The ordering below is load-bearing.
-async fn finish_capture(rpc: &Rpc, config: &Config, session: CaptureSession) -> Result<String, String> {
-    rpc.call("mic_stop", json!({ "session_id": session.session_id }), config.timeout_ms).await?;
+async fn finish_capture(
+    rpc: &Rpc,
+    config: &Config,
+    session: CaptureSession,
+) -> Result<String, String> {
+    rpc.call(
+        "mic_stop",
+        json!({ "session_id": session.session_id }),
+        config.timeout_ms,
+    )
+    .await?;
 
     let stop = rpc
         .call(
@@ -757,9 +785,13 @@ async fn wait_for_speech_end(config: &Config, bus: &Bus) -> SpeechEnd {
     let mut idle_deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(config.vad_wait_ms);
     loop {
-        let until_utterance_cap =
-            tokio::time::Instant::now() + std::time::Duration::from_millis(config.vad_max_utterance_ms);
-        let deadline = if speaking { until_utterance_cap } else { idle_deadline };
+        let until_utterance_cap = tokio::time::Instant::now()
+            + std::time::Duration::from_millis(config.vad_max_utterance_ms);
+        let deadline = if speaking {
+            until_utterance_cap
+        } else {
+            idle_deadline
+        };
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => {
                 return if speaking { SpeechEnd::MaxUtterance } else { SpeechEnd::Silent };
@@ -802,7 +834,15 @@ pub async fn run_ptt_turn(
     };
     let listen_ms = started.elapsed().as_millis() as u64;
     let memory_ctx = state.recent_context().unwrap_or_default();
-    let result = respond(rpc, config, transcript.clone(), started, listen_ms, &memory_ctx).await;
+    let result = respond(
+        rpc,
+        config,
+        transcript.clone(),
+        started,
+        listen_ms,
+        &memory_ctx,
+    )
+    .await;
     state.remember_exchange(&transcript, &result);
     result
 }
@@ -828,9 +868,7 @@ pub async fn ptt_task(
         if etype != EV_HOTKEY_PRESSED || !state.enabled() {
             continue;
         }
-        if payload.get("binding").and_then(Value::as_str)
-            != Some(config.ptt_binding.as_str())
-        {
+        if payload.get("binding").and_then(Value::as_str) != Some(config.ptt_binding.as_str()) {
             continue;
         }
         if !state.try_begin_turn() {
@@ -842,7 +880,10 @@ pub async fn ptt_task(
         let result = run_ptt_turn(&rpc, &config, &state, &mut rx).await;
         state.set_capturing(false);
         state.end_turn(&result);
-        let ev = ChangeEvent { event_type: "turn.completed", payload: result };
+        let ev = ChangeEvent {
+            event_type: "turn.completed",
+            payload: result,
+        };
         let _ = outbound.send(event_envelope(&ev)).await;
     }
 }
@@ -894,9 +935,15 @@ async fn run_agent(
     if !memory_ctx.is_empty() {
         body["context"] = json!(memory_ctx);
     }
-    let goal = rpc
-        .call("goal_start", body, config.goal_timeout_ms)
-        .await?;
+    let mut goal = rpc.call("goal_start", body, config.goal_timeout_ms).await?;
+    // `needs_confirmation` arrives before the tool runs and carries no prose;
+    // the resumed continuation finishes with the answer this turn must speak.
+    if goal["status"] == "needs_confirmation" {
+        let id = goal["id"].as_str().unwrap_or_default().to_string();
+        if !id.is_empty() {
+            goal = await_confirmation(rpc, config, &id).await?;
+        }
+    }
     Ok(AgentAnswer {
         goal_id: goal["id"].as_str().unwrap_or_default().to_string(),
         goal_status: goal["status"].as_str().unwrap_or_default().to_string(),
@@ -905,6 +952,45 @@ async fn run_agent(
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string),
     })
+}
+
+/// How often a turn re-checks a goal parked on a confirmation gate.
+const CONFIRM_POLL_MS: u64 = 400;
+
+/// Wait for a `needs_confirmation` goal to be resumed and run to a terminal
+/// state, returning its document (`goal_get`'s `goal` field) so the turn can
+/// speak the continuation instead of nothing.
+async fn await_confirmation(rpc: &Rpc, config: &Config, goal_id: &str) -> Result<Value, String> {
+    // Bounded: the voice worker is single-threaded, so an approval nobody grants
+    // must not make it deaf for the full goal budget.
+    let budget_ms = u64::from(config.goal_timeout_ms).min(45_000);
+    let deadline = Instant::now() + Duration::from_millis(budget_ms);
+    loop {
+        let reply = rpc
+            .call("goal_get", json!({ "id": goal_id }), config.timeout_ms)
+            .await?;
+        let doc = reply["goal"].clone();
+        let status = doc["status"].as_str().unwrap_or_default();
+        if status != "needs_confirmation" && status != "running" {
+            return Ok(doc);
+        }
+        if Instant::now() >= deadline {
+            // Deny the parked tool: an approval arriving after this turn gave
+            // up must not run it behind the user's back. Best effort — the
+            // turn fails either way.
+            let _ = rpc
+                .call(
+                    "goal_resume",
+                    json!({ "id": goal_id, "approve": false }),
+                    config.timeout_ms,
+                )
+                .await;
+            return Err(format!(
+                "goal {goal_id} still awaited confirmation after {budget_ms} ms; denied"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
+    }
 }
 
 struct AgentAnswer {
@@ -979,8 +1065,7 @@ fn turn_result_with_goal(
 }
 
 fn ok(data: Value, event: Option<ChangeEvent>) -> Result<ActionResult, String> {
-    let data =
-        serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
+    let data = serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
     Ok(ActionResult { data, event })
 }
 

@@ -18,7 +18,7 @@
   "actions": [
     {
       "name": "mqtt_connect",
-      "description": "Open the MQTT broker connection used by every other mqtt action: broker_host (+ optional port, client_id, username/password resolved vault-first via secrets, keepalive, CA/client certs for TLS or mTLS). One connection per plugin instance; connecting again replaces it.",
+      "description": "Open the MQTT broker connection used by every other mqtt action: broker_host (+ optional port, client_id, username/password used as given, keepalive, CA/client certs for TLS or mTLS). One connection per plugin instance; connecting again closes the previous one first. Wrong credentials fail the call; an unreachable broker returns connected=false and keeps retrying.",
       "risk": "medium",
       "permission": "network",
       "input": {
@@ -43,7 +43,7 @@
           },
           "password": {
             "type": "string",
-            "description": "MQTT password (vault-first via secrets plugin)"
+            "description": "MQTT password, used as given and visible to whoever builds the call; prefer auto-connect, which reads it from the secrets vault"
           },
           "keepalive_secs": {
             "type": "integer",
@@ -70,10 +70,14 @@
         "type": "object",
         "properties": {
           "connected": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "False when the broker is not reachable yet; the plugin keeps retrying in the background"
           },
           "broker": {
             "type": "string"
+          },
+          "last_error": {
+            "type": ["string", "null"]
           }
         },
         "required": ["connected"]
@@ -99,7 +103,7 @@
     },
     {
       "name": "mqtt_publish",
-      "description": "Publish a payload to an MQTT topic (qos, retain, encoding for base64 protobuf). Reaches whatever hardware listens on that topic, so a wrong topic actuates a real device; retain=true leaves the message on the broker for future subscribers.",
+      "description": "Publish a payload to an MQTT topic (qos, retain, encoding for base64 protobuf). Reaches whatever hardware listens on that topic, so a wrong topic actuates a real device; retain=true leaves the message on the broker for future subscribers. Bypasses the device-command allowlist, so it always asks first; prefer mqtt_device_command.",
       "risk": "high",
       "requires_confirmation": true,
       "permission": "network",
@@ -230,6 +234,10 @@
           "broker": {
             "type": "string"
           },
+          "last_error": {
+            "type": ["string", "null"],
+            "description": "Why the broker connection is down, if it is"
+          },
           "uptime_ms": {
             "type": "integer"
           },
@@ -344,7 +352,54 @@
     },
     {
       "name": "mqtt_device_command",
-      "description": "Send a VDP command to a device by device_id (command name plus a params object, e.g. set_relay {pin, state}). This actuates physical hardware — a relay, lock, light or motor moves in the real world.",
+      "description": "Send a VDP command to a device by device_id (command name plus a params object, e.g. set_pin {name, value}) without asking the user. Only commands on the operator's allowlist (MQTT_PLUGIN_COMMAND_ALLOWLIST, default: get_state and ping) run; anything else is refused with NotAllowed and must go through mqtt_device_command_confirmed.",
+      "risk": "low",
+      "permission": "network",
+      "input": {
+        "type": "object",
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "timeout_ms": {
+            "type": "integer",
+            "default": 5000
+          }
+        },
+        "required": ["device_id", "command"],
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "error_code": {
+            "type": "integer"
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "data": {
+            "type": "object"
+          },
+          "execution_ms": {
+            "type": "integer"
+          }
+        },
+        "required": ["success"]
+      }
+    },
+    {
+      "name": "mqtt_device_command_confirmed",
+      "description": "Send any VDP command to a device by device_id, after the user confirms. This actuates physical hardware — a relay, lock, light or motor moves in the real world. Use only when mqtt_device_command refused the command as not allowlisted.",
       "risk": "high",
       "requires_confirmation": true,
       "permission": "network",
@@ -482,8 +537,29 @@
   "config_schema": {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
-    "description": "No environment config yet: broker, credentials and TLS are passed per call to mqtt_connect. Env defaults + auto-connect are on plugins/mqtt/ROADMAP.md.",
-    "properties": {},
+    "description": "Optional auto-connect at startup; without MQTT_PLUGIN_BROKER_HOST the plugin waits for an explicit mqtt_connect.",
+    "properties": {
+      "MQTT_PLUGIN_BROKER_HOST": {
+        "type": "string",
+        "description": "Broker host to connect to at startup."
+      },
+      "MQTT_PLUGIN_BROKER_PORT": {
+        "type": "string",
+        "description": "Broker port for auto-connect (default 1883)."
+      },
+      "MQTT_PLUGIN_USERNAME": {
+        "type": "string",
+        "description": "Broker username for auto-connect."
+      },
+      "MQTT_PLUGIN_PASSWORD": {
+        "type": "string",
+        "description": "Fallback broker password for auto-connect. Auto-connect first asks the secrets vault for a secret of this same name (provision it with secrets-provision mqtt MQTT_PLUGIN_PASSWORD) and uses this env var only when the vault has none."
+      },
+      "MQTT_PLUGIN_COMMAND_ALLOWLIST": {
+        "type": "string",
+        "description": "Comma-separated device:command[:target] rules that mqtt_device_command may run without confirmation; * matches any device or command, target matches params.name or params.pin. Default: *:get_state,*:ping."
+      }
+    },
     "additionalProperties": true
   }
 }

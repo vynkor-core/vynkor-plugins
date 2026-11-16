@@ -52,6 +52,17 @@ pub struct UsageRow {
     pub model_id: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Kernel-stamped plugin id of the requester (`caller_plugin_id`) —
+    /// unspoofable, so embeddings from `vector-db` are told apart from
+    /// `agent`'s chats even when neither names an `agent_id`.
+    pub caller: String,
+    /// Caller-supplied label for why the call was made (`agent` sends
+    /// `goal_step` | `memory_extract` | `small_talk`); free-form, may be empty.
+    pub purpose: String,
+    /// Caller-supplied correlation id (`agent`'s goal id); may be empty.
+    pub goal_id: String,
+    /// Wall time of the provider round-trip, measured here.
+    pub latency_ms: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -66,6 +77,53 @@ pub struct UsageStats {
     pub totals: UsageBucket,
     pub by_model: Vec<(String, UsageBucket)>,
     pub by_agent: Vec<(String, UsageBucket)>,
+    #[serde(default)]
+    pub by_caller: Vec<(String, UsageBucket)>,
+    #[serde(default)]
+    pub by_purpose: Vec<(String, UsageBucket)>,
+}
+
+/// Columns added to `usage` after the first release. `CREATE TABLE IF NOT
+/// EXISTS` never alters an existing table, so `open` adds whichever of
+/// these an older `ai.db` lacks (rows recorded before then keep the default).
+const USAGE_ADDED_COLUMNS: &[(&str, &str)] = &[
+    ("caller", "TEXT NOT NULL DEFAULT ''"),
+    ("purpose", "TEXT NOT NULL DEFAULT ''"),
+    ("goal_id", "TEXT NOT NULL DEFAULT ''"),
+    ("latency_ms", "INTEGER NOT NULL DEFAULT 0"),
+];
+
+fn migrate_usage(conn: &Connection) -> rusqlite::Result<()> {
+    let existing: Vec<String> = conn
+        .prepare("PRAGMA table_info(usage)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (name, decl) in USAGE_ADDED_COLUMNS {
+        if !existing.iter().any(|c| c == name) {
+            conn.execute_batch(&format!("ALTER TABLE usage ADD COLUMN {name} {decl}"))?;
+        }
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_usage_goal ON usage(goal_id);")
+}
+
+/// `SELECT <column>, COUNT, SUM(in), SUM(out) ... GROUP BY <column>`.
+/// `column` is always one of this file's literals, never caller input.
+fn usage_grouped_by(conn: &Connection, column: &str) -> rusqlite::Result<Vec<(String, UsageBucket)>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {column}, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
+         FROM usage GROUP BY {column} ORDER BY 2 DESC"
+    ))?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            UsageBucket {
+                requests: r.get::<_, i64>(1)? as u64,
+                input_tokens: r.get::<_, i64>(2)? as u64,
+                output_tokens: r.get::<_, i64>(3)? as u64,
+            },
+        ))
+    })?;
+    rows.collect()
 }
 
 pub struct AiDb {
@@ -123,6 +181,7 @@ impl AiDb {
             CREATE INDEX IF NOT EXISTS idx_usage_agent ON usage(agent_id);
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);",
         )?;
+        migrate_usage(&conn)?;
         Ok(AiDb {
             conn: Mutex::new(conn),
         })
@@ -294,8 +353,9 @@ impl AiDb {
 
     pub fn record_usage(&self, row: &UsageRow) -> anyhow::Result<()> {
         self.conn().execute(
-            "INSERT INTO usage (id, agent_id, model_id, input_tokens, output_tokens, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO usage (id, agent_id, model_id, input_tokens, output_tokens, created_at,
+                                caller, purpose, goal_id, latency_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 uuid::Uuid::new_v4().to_string(),
                 row.agent_id,
@@ -303,6 +363,10 @@ impl AiDb {
                 row.input_tokens as i64,
                 row.output_tokens as i64,
                 now_millis(),
+                row.caller,
+                row.purpose,
+                row.goal_id,
+                row.latency_ms as i64,
             ],
         )?;
         Ok(())
@@ -330,39 +394,10 @@ impl AiDb {
                 };
             }
 
-            let mut by_model = conn.prepare(
-                "SELECT model_id, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
-                 FROM usage GROUP BY model_id ORDER BY 2 DESC",
-            )?;
-            for row in by_model.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    UsageBucket {
-                        requests: r.get::<_, i64>(1)? as u64,
-                        input_tokens: r.get::<_, i64>(2)? as u64,
-                        output_tokens: r.get::<_, i64>(3)? as u64,
-                    },
-                ))
-            })? {
-                stats.by_model.push(row?);
-            }
-
-            let mut by_agent = conn.prepare(
-                "SELECT agent_id, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
-                 FROM usage GROUP BY agent_id ORDER BY 2 DESC",
-            )?;
-            for row in by_agent.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    UsageBucket {
-                        requests: r.get::<_, i64>(1)? as u64,
-                        input_tokens: r.get::<_, i64>(2)? as u64,
-                        output_tokens: r.get::<_, i64>(3)? as u64,
-                    },
-                ))
-            })? {
-                stats.by_agent.push(row?);
-            }
+            stats.by_model = usage_grouped_by(&conn, "model_id")?;
+            stats.by_agent = usage_grouped_by(&conn, "agent_id")?;
+            stats.by_caller = usage_grouped_by(&conn, "caller")?;
+            stats.by_purpose = usage_grouped_by(&conn, "purpose")?;
         }
         Ok(stats)
     }
@@ -482,6 +517,8 @@ mod tests {
             model_id: "qwen".into(),
             input_tokens: 10,
             output_tokens: 5,
+            purpose: "goal_step".into(),
+            ..Default::default()
         })
         .unwrap();
         d.record_usage(&UsageRow {
@@ -489,6 +526,8 @@ mod tests {
             model_id: "qwen".into(),
             input_tokens: 2,
             output_tokens: 3,
+            purpose: "memory_extract".into(),
+            ..Default::default()
         })
         .unwrap();
         d.record_usage(&UsageRow {
@@ -496,6 +535,8 @@ mod tests {
             model_id: "llama".into(),
             input_tokens: 7,
             output_tokens: 1,
+            caller: "vector-db".into(),
+            ..Default::default()
         })
         .unwrap();
 
@@ -523,5 +564,35 @@ mod tests {
             .clone();
         assert_eq!(code.requests, 2);
         assert_eq!(code.output_tokens, 8);
+
+        let bucket = |v: &[(String, UsageBucket)], k: &str| {
+            v.iter().find(|(id, _)| id == k).map(|(_, b)| b.clone()).unwrap()
+        };
+        assert_eq!(bucket(&s.by_purpose, "memory_extract").input_tokens, 2);
+        assert_eq!(bucket(&s.by_purpose, "").requests, 1);
+        assert_eq!(bucket(&s.by_caller, "vector-db").input_tokens, 7);
+    }
+
+    #[test]
+    fn migrate_adds_attribution_columns_to_a_pre_existing_usage_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE usage (
+                id TEXT PRIMARY KEY, agent_id TEXT NOT NULL DEFAULT '',
+                model_id TEXT NOT NULL, input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL, created_at INTEGER NOT NULL
+            );
+            INSERT INTO usage VALUES ('old', 'default', 'm', 100, 1, 0);",
+        )
+        .unwrap();
+        migrate_usage(&conn).unwrap();
+        // idempotent: a second open must not try to re-add the columns
+        migrate_usage(&conn).unwrap();
+        let (purpose, latency): (String, i64) = conn
+            .query_row("SELECT purpose, latency_ms FROM usage WHERE id='old'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((purpose.as_str(), latency), ("", 0));
     }
 }

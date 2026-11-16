@@ -14,9 +14,34 @@ pub struct Subscription {
 }
 
 /// Stream manager for subscriptions
+#[derive(Clone)]
 pub struct StreamManager {
     /// Active subscriptions: topic -> subscription
     subscriptions: Arc<RwLock<HashMap<String, Subscription>>>,
+}
+
+/// MQTT topic filter matching (`+` = one level, `#` = rest).
+fn topic_matches(pattern: &str, topic: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.split('/').collect();
+    let topic_parts: Vec<&str> = topic.split('/').collect();
+
+    for (i, part) in pattern_parts.iter().enumerate() {
+        match *part {
+            "#" => return true,
+            "+" => {
+                if i >= topic_parts.len() {
+                    return false;
+                }
+            }
+            literal => {
+                if topic_parts.get(i) != Some(&literal) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    pattern_parts.len() == topic_parts.len()
 }
 
 impl StreamManager {
@@ -57,37 +82,29 @@ impl StreamManager {
     /// Dispatch incoming message to matching subscription
     pub async fn dispatch(&self, msg: &MqttMessage) {
         let subs = self.subscriptions.read().await;
-
-        // Exact match
-        if let Some(sub) = subs.get(&msg.topic) {
+        for sub in subs
+            .values()
+            .filter(|s| topic_matches(&s.topic, &msg.topic))
+        {
             let _ = sub.sender.send(msg.clone()).await;
-            return;
         }
+    }
 
-        // Wildcard match (simple: check if topic starts with subscription prefix)
-        for (pattern, sub) in subs.iter() {
-            if pattern.ends_with("#") {
-                let prefix = pattern.trim_end_matches('#');
-                if msg.topic.starts_with(prefix) {
-                    let _ = sub.sender.send(msg.clone()).await;
-                }
-            } else if pattern.contains('+') {
-                // Simple + matching (single level)
-                let pattern_parts: Vec<&str> = pattern.split('/').collect();
-                let topic_parts: Vec<&str> = msg.topic.split('/').collect();
-
-                if pattern_parts.len() == topic_parts.len() {
-                    let mut matches = true;
-                    for (p, t) in pattern_parts.iter().zip(topic_parts.iter()) {
-                        if *p != "+" && *p != *t {
-                            matches = false;
-                            break;
-                        }
-                    }
-                    if matches {
-                        let _ = sub.sender.send(msg.clone()).await;
-                    }
-                }
+    /// Non-blocking dispatch, callable from synchronous plugin hooks.
+    ///
+    /// Skips delivery (and logs) instead of awaiting when a subscriber is
+    /// full; a slow stream consumer must not stall the device command path.
+    pub fn dispatch_sync(&self, msg: &MqttMessage) {
+        let Ok(subs) = self.subscriptions.try_read() else {
+            tracing::debug!(topic = %msg.topic, "stream table busy, dropping dispatch");
+            return;
+        };
+        for sub in subs
+            .values()
+            .filter(|s| topic_matches(&s.topic, &msg.topic))
+        {
+            if let Err(e) = sub.sender.try_send(msg.clone()) {
+                tracing::warn!(topic = %msg.topic, "stream subscriber unavailable: {e}");
             }
         }
     }
@@ -99,12 +116,7 @@ impl StreamManager {
 
     /// Get all subscribed topics
     pub async fn subscribed_topics(&self) -> Vec<String> {
-        self.subscriptions
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect()
+        self.subscriptions.read().await.keys().cloned().collect()
     }
 }
 
@@ -122,10 +134,15 @@ mod tests {
     #[tokio::test]
     async fn test_add_subscription() {
         let manager = StreamManager::new();
-        let mut rx = manager.add_subscription("test/topic", rumqttc::QoS::AtMostOnce).await;
+        let mut rx = manager
+            .add_subscription("test/topic", rumqttc::QoS::AtMostOnce)
+            .await;
 
         assert_eq!(manager.subscription_count().await, 1);
-        assert!(manager.subscribed_topics().await.contains(&"test/topic".to_string()));
+        assert!(manager
+            .subscribed_topics()
+            .await
+            .contains(&"test/topic".to_string()));
 
         let msg = MqttMessage {
             topic: "test/topic".to_string(),
@@ -143,7 +160,9 @@ mod tests {
     #[tokio::test]
     async fn test_remove_subscription() {
         let manager = StreamManager::new();
-        let _rx = manager.add_subscription("test/topic", rumqttc::QoS::AtMostOnce).await;
+        let _rx = manager
+            .add_subscription("test/topic", rumqttc::QoS::AtMostOnce)
+            .await;
 
         assert_eq!(manager.subscription_count().await, 1);
 
@@ -162,7 +181,9 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_wildcard_hash() {
         let manager = StreamManager::new();
-        let mut rx = manager.add_subscription("vynkor/+/telemetry", rumqttc::QoS::AtMostOnce).await;
+        let mut rx = manager
+            .add_subscription("vynkor/+/telemetry", rumqttc::QoS::AtMostOnce)
+            .await;
 
         let msg = MqttMessage {
             topic: "vynkor/esp-kitchen/telemetry".to_string(),
@@ -179,7 +200,9 @@ mod tests {
     #[tokio::test]
     async fn test_dispatch_no_match() {
         let manager = StreamManager::new();
-        let mut rx = manager.add_subscription("test/topic", rumqttc::QoS::AtMostOnce).await;
+        let mut rx = manager
+            .add_subscription("test/topic", rumqttc::QoS::AtMostOnce)
+            .await;
 
         let msg = MqttMessage {
             topic: "other/topic".to_string(),
@@ -196,8 +219,12 @@ mod tests {
     #[tokio::test]
     async fn test_multiple_subscriptions() {
         let manager = StreamManager::new();
-        let mut rx1 = manager.add_subscription("topic1", rumqttc::QoS::AtMostOnce).await;
-        let mut rx2 = manager.add_subscription("topic2", rumqttc::QoS::AtMostOnce).await;
+        let mut rx1 = manager
+            .add_subscription("topic1", rumqttc::QoS::AtMostOnce)
+            .await;
+        let mut rx2 = manager
+            .add_subscription("topic2", rumqttc::QoS::AtMostOnce)
+            .await;
 
         assert_eq!(manager.subscription_count().await, 2);
 

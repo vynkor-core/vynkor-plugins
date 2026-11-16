@@ -54,6 +54,25 @@ its own file.
 Secret names are `[a-zA-Z0-9_.-]`, max 256 bytes. Values are max 256 KiB.
 Size caps reject — they never truncate.
 
+## Provisioning another plugin's vault
+
+`secret_set` writes the *caller's* vault, so an operator calling it (from
+`vyn-act`, the agent, a terminal client) fills their own vault — never the
+one `email`, `ai`, `search`, `stt` or `mqtt` reads with `secret_get`.
+`secrets-provision` writes a plugin's vault file directly, with the same key
+and format:
+
+```sh
+# same env the plugin runs with (plugins.d/secrets.yaml)
+export SECRETS_PLUGIN_DATA_DIR=... SECRETS_PLUGIN_MASTER_KEY=...
+printf %s "$PASSWORD" | secrets-provision mqtt MQTT_PLUGIN_PASSWORD
+vyn plugin -c ~/.config/vyn/config.yaml --token "$(cat ~/.config/vyn/admin_token)" restart secrets
+```
+
+The value comes from stdin (one trailing newline dropped), never argv.
+Restart `secrets` afterwards: a vault the plugin already loaded stays cached,
+and its next write for that caller would drop the provisioned value.
+
 ## Config
 
 Config is read from the environment (the kernel's plugin supervisor
