@@ -44,6 +44,39 @@ pub struct LlmPlan {
     pub max_tokens: u32,
 }
 
+/// The slice of a goal routine mining reads (see [`Db::mining_rows`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MiningRow {
+    pub goal: String,
+    pub status: String,
+    pub steps: Vec<StepRec>,
+    pub updated_at_ms: i64,
+}
+
+impl MiningRow {
+    /// `json_extract` of an array comes back as JSON *text*; accept both.
+    fn from_row(row: &Value) -> Option<MiningRow> {
+        let steps = match row.get("steps") {
+            Some(Value::String(text)) => serde_json::from_str(text),
+            Some(v) => serde_json::from_value(v.clone()),
+            None => Ok(Vec::new()),
+        };
+        let steps = match steps {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[agent] routines: skipping goal row with corrupt steps: {e}");
+                return None;
+            }
+        };
+        Some(MiningRow {
+            goal: row.get("goal")?.as_str()?.to_string(),
+            status: row.get("status")?.as_str()?.to_string(),
+            steps,
+            updated_at_ms: row.get("updated_at_ms").and_then(Value::as_i64).unwrap_or(0),
+        })
+    }
+}
+
 /// One line of the human-facing step log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepRec {
@@ -170,6 +203,10 @@ impl Db {
         Self { rpc, timeout_ms }
     }
 
+    pub fn timeout_ms(&self) -> u32 {
+        self.timeout_ms
+    }
+
     async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
         self.rpc.call(action, params, self.timeout_ms).await
     }
@@ -217,6 +254,30 @@ impl Db {
             .ok_or_else(|| format!("database.db_keys returned unexpected payload: {v}"))?;
         keys.sort_by_key(|k| std::cmp::Reverse(key_num(k)));
         Ok(keys)
+    }
+
+    /// What routine mining needs from every goal updated at or after
+    /// `since_ms`, via one server-side `db_query` projection: full docs
+    /// carry the transcript, and pulling them in `db_batch_get` chunks timed
+    /// out on the live store. Rows that fail to decode are skipped (logged).
+    pub async fn mining_rows(&self, since_ms: i64) -> Result<Vec<MiningRow>, String> {
+        let sql = "select \
+                json_extract(value, '$.goal') as goal, \
+                json_extract(value, '$.status') as status, \
+                json_extract(value, '$.steps') as steps, \
+                json_extract(value, '$.updated_at_ms') as updated_at_ms \
+             from kv \
+             where key like ?1 and (expires_at is null or expires_at > ?2) \
+               and json_extract(value, '$.updated_at_ms') >= ?3"
+            .to_string();
+        let pattern = format!("{KEY_PREFIX}%");
+        let params = serde_json::json!([pattern, now_ms(), since_ms]);
+        let v = self.call("db_query", serde_json::json!({"sql": sql, "params": params})).await?;
+        let rows = v
+            .get("rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("database.db_query returned unexpected payload: {v}"))?;
+        Ok(rows.iter().filter_map(MiningRow::from_row).collect())
     }
 
     /// Keys per `db_batch_get` call — small enough that a batch of full

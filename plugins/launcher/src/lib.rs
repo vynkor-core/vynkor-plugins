@@ -21,7 +21,7 @@ use crate::runner::{Launcher, RealLauncher};
 pub const PLUGIN_ID: &str = "launcher";
 pub const PLUGIN_VERSION: &str = "0.1.5";
 
-pub const ACTIONS: &[&str] = &["launch", "launch_list", "launch_providers"];
+pub const ACTIONS: &[&str] = &["launch", "launch_command", "launch_list", "launch_providers"];
 
 #[derive(Debug)]
 struct CachedEntries {
@@ -143,7 +143,13 @@ impl<L: Launcher> LauncherPlugin<L> {
         params_json: &[u8],
     ) -> Result<serde_json::Value, LauncherError> {
         match action {
-            "launch" => self.handle_launch(params_json).await,
+            "launch" => {
+                let (_, provider, args, _) =
+                    request::parse_launch(params_json).map_err(LauncherError::BadParams)?;
+                check_plain_launch(&provider, &args).map_err(LauncherError::BadParams)?;
+                self.handle_launch(params_json).await
+            }
+            "launch_command" => self.handle_launch(params_json).await,
             "launch_list" => self.handle_list(params_json).await,
             "launch_providers" => self.handle_providers(params_json).await,
             _ => Err(LauncherError::NotFound(format!("unknown action: {action}"))),
@@ -240,16 +246,24 @@ impl<L: Launcher> LauncherPlugin<L> {
         } else {
             vec![provider.clone()]
         };
+        // The unfiltered list is a catalog to pick from: with exec and path
+        // it was 14k chars live, past the agent's 8k observation cap, and cut
+        // at "LibreOffice" it read as "Telegram is not installed".
+        let detailed = query.is_some();
         let json_apps: Vec<serde_json::Value> = apps
             .into_iter()
             .map(|a| {
-                json!({
-                    "id": a.id,
-                    "name": a.name,
-                    "provider": a.provider,
-                    "exec": a.exec,
-                    "path": a.path.display().to_string(),
-                })
+                if detailed {
+                    json!({
+                        "id": a.id,
+                        "name": a.name,
+                        "provider": a.provider,
+                        "exec": a.exec,
+                        "path": a.path.display().to_string(),
+                    })
+                } else {
+                    json!({"id": a.id, "name": a.name, "provider": a.provider})
+                }
             })
             .collect();
         Ok(json!({ "apps": json_apps, "providers": providers_scanned }))
@@ -282,6 +296,22 @@ impl<L: Launcher> LauncherPlugin<L> {
             .collect();
         Ok(serde_json::Value::Array(out))
     }
+}
+
+/// `launch` opens installed apps and games as their desktop entry or Steam
+/// says, so it can be medium risk and run without an operator's approval.
+/// Terminal commands and extra argv can run anything: they go through
+/// `launch_command`, which stays high risk and confirmed.
+fn check_plain_launch(provider: &str, args: &[String]) -> Result<(), String> {
+    if !matches!(provider, "auto" | "desktop" | "steam") {
+        return Err(format!(
+            "ERR_LAUNCH_BAD_PARAMS: provider '{provider}' runs a command; use launch_command"
+        ));
+    }
+    if !args.is_empty() {
+        return Err("ERR_LAUNCH_BAD_PARAMS: `args` are not accepted by launch; use launch_command".to_string());
+    }
+    Ok(())
 }
 
 impl Plugin for LauncherPlugin<RealLauncher> {
@@ -502,6 +532,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_launch_refuses_commands_and_args() {
+        let cfg = test_cfg(None, None);
+        let plugin = LauncherPlugin::new(cfg, Arc::new(FakeLauncher::new_ok()));
+        for params in [
+            br#"{"app_id":"htop","provider":"tmux"}"#.as_slice(),
+            br#"{"app_id":"myapp","args":["-e","sh"]}"#.as_slice(),
+        ] {
+            let err = plugin.handle_action("launch", params).await.unwrap_err();
+            assert!(matches!(&err, LauncherError::BadParams(m) if m.contains("launch_command")), "{err:?}");
+        }
+        let v = plugin
+            .handle_action("launch_command", br#"{"app_id":"htop","provider":"tmux","dry_run":true}"#)
+            .await;
+        assert!(!matches!(v, Err(LauncherError::BadParams(ref m)) if m.contains("use launch_command")));
+    }
+
+    #[tokio::test]
     async fn launch_list_filters() {
         let td = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -523,6 +570,11 @@ mod tests {
             .unwrap();
         assert_eq!(v["apps"].as_array().unwrap().len(), 1);
         assert_eq!(v["apps"][0]["id"], "a");
+        assert_eq!(v["apps"][0]["exec"], "a", "a query lookup keeps the details");
+        let all = plugin.handle_action("launch_list", b"{}").await.unwrap();
+        assert_eq!(all["apps"].as_array().unwrap().len(), 2);
+        assert!(all["apps"][0].get("exec").is_none() && all["apps"][0].get("path").is_none(), "{all}");
+        assert_eq!(all["apps"][1]["name"], "Beta");
     }
 
     #[tokio::test]

@@ -356,6 +356,7 @@ impl Catalog {
         }
         match crate::discovery::discover(rpc).await {
             Ok(map) => {
+                drop_offline(&mut cat, &map);
                 for tool in cat.tools.iter_mut() {
                     let Some(found) = map.get(&tool.name) else { continue };
                     match tool.source {
@@ -375,6 +376,21 @@ impl Catalog {
         // holes nothing upstream filled.
         infer_missing_risk(&mut cat);
         Ok(cat)
+    }
+}
+
+/// Drops allowlisted tools no running plugin declares. A disabled plugin's
+/// tools stayed in the catalog from the operator file: "открой телеграм"
+/// went to `tg_list_unread` (telegram disabled) and failed with "action not
+/// found" instead of reaching the launcher. Device tools (`<device>.<cap>`)
+/// never appear in plugin manifests and are kept. `discover` fails whole on
+/// any manifest error, so an `Ok` map is the complete live set.
+fn drop_offline(catalog: &mut Catalog, live: &BTreeMap<String, ToolSpec>) {
+    let before = catalog.tools.len();
+    catalog.tools.retain(|t| live.contains_key(&t.name) || t.name.contains('.'));
+    let dropped = before - catalog.tools.len();
+    if dropped > 0 {
+        eprintln!("[agent] catalog: {dropped} tools of plugins not running left out");
     }
 }
 
@@ -452,7 +468,7 @@ fn infer_risk(name: &str) -> &'static str {
     //    spuriously starting a push-to-talk recording), so it lands in the
     //    "medium" bucket below with the other recoverable state-mutating
     //    actions, not here.
-    if matches!(name, "launch") {
+    if matches!(name, "launch" | "launch_command") {
         return "critical";
     }
 
@@ -745,6 +761,15 @@ mod tests {
     #[test]
     fn get_finds_by_name() {
         let cat = Catalog { tools: vec![spec("x")], allowed_actions: vec!["x".into()], tools_file_set: false };
+        let mut offline = Catalog {
+            tools: vec![spec("tg_send_message"), spec("launch"), spec("pixel-6pro.battery")],
+            allowed_actions: vec![],
+            tools_file_set: true,
+        };
+        let live: BTreeMap<String, ToolSpec> = [("launch".to_string(), spec("launch"))].into();
+        drop_offline(&mut offline, &live);
+        let names: Vec<&str> = offline.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["launch", "pixel-6pro.battery"], "disabled plugin out, device kept");
         assert!(cat.get("x").is_some());
         assert!(cat.get("y").is_none());
     }
@@ -896,7 +921,7 @@ mod tests {
             "email_send", "embedding", "event_create", "event_delete", "event_get", "event_list",
             "event_update", "fs_list", "fs_read", "fs_write", "hotkey_bind", "hotkey_inject",
             "hotkey_list", "hotkey_status", "hotkey_unbind", "http_request", "launch",
-            "launch_list", "launch_providers", "list_agents", "list_models",
+            "launch_command", "launch_list", "launch_providers", "list_agents", "list_models",
             "media_list_players", "media_loop", "media_next", "media_pause", "media_play",
             "media_play_pause", "media_prev", "media_seek", "media_seek_relative",
             "media_shuffle", "media_status", "media_stop", "media_volume", "mic_start",
@@ -919,7 +944,7 @@ mod tests {
             "capture_record_stop", "capture_ocr", "capture_status", "tg_upload_media",
             "tg_get_chat_info", "tg_mark_all_read",
         ];
-        assert_eq!(names.len(), 142, "the live catalog measured 142 tools — keep this list in sync");
+        assert_eq!(names.len(), 143, "the live catalog measured 142 tools, plus launch_command — keep this list in sync");
         let mut cat = catalog_of(names.iter().map(|n| spec(n)).collect());
         infer_missing_risk(&mut cat);
         for name in names {

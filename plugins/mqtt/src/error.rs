@@ -27,6 +27,8 @@ pub enum MqttError {
     Deserialization(String),
     /// Device not found
     DeviceNotFound(String),
+    /// Command refused by the allowlist
+    NotAllowed(String),
     /// OTA error
     OtaError(String),
     /// TLS error
@@ -49,6 +51,7 @@ impl fmt::Display for MqttError {
             MqttError::Serialization(e) => write!(f, "serialization error: {e}"),
             MqttError::Deserialization(e) => write!(f, "deserialization error: {e}"),
             MqttError::DeviceNotFound(e) => write!(f, "device not found: {e}"),
+            MqttError::NotAllowed(e) => write!(f, "not allowed: {e}"),
             MqttError::OtaError(e) => write!(f, "OTA error: {e}"),
             MqttError::TlsError(e) => write!(f, "TLS error: {e}"),
             MqttError::Internal(e) => write!(f, "internal error: {e}"),

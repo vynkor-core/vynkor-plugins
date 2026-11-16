@@ -1,0 +1,7 @@
+{
+  "wifi": {"ssid": "test", "password": "test"},
+  "mqtt": {"host": "127.0.0.1", "port": 1883, "user": "", "password": "", "keepalive": 10},
+  "device": {"id": "uesp12e-001", "type": "actuator", "firmware": "vynkor-gpio", "version": "0.2.0"},
+  "pins": {"onboard_led": {"pin": 2, "mode": "out", "active_low": true, "default": 0}},
+  "telemetry_interval_s": 15
+}

@@ -1,14 +1,21 @@
 pub mod actions;
 pub mod client;
+pub mod credentials;
 pub mod error;
+pub mod policy;
 pub mod stream;
+#[cfg(test)]
+pub(crate) mod test_support;
 
-use crate::client::MqttClient;
+use crate::client::{MqttClient, MqttMessage};
+use crate::policy::CommandPolicy;
 use crate::stream::StreamManager;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
+use tokio::sync::mpsc;
 use vynkor_sdk::proto::{envelope, ActionResponse, ActionStatus, Envelope, PluginManifest};
-use vynkor_sdk::{Plugin, VynkorError};
+use vynkor_sdk::{Plugin, VynkorClient, VynkorError};
 
 pub const PLUGIN_ID: &str = "mqtt";
 pub const PLUGIN_VERSION: &str = "0.1.0";
@@ -23,6 +30,7 @@ pub const ACTIONS: &[&str] = &[
     "mqtt_device_list",
     "mqtt_device_info",
     "mqtt_device_command",
+    "mqtt_device_command_confirmed",
     "mqtt_device_telemetry",
     "mqtt_ota_update",
 ];
@@ -56,14 +64,22 @@ pub struct TelemetryPoint {
     pub data: serde_json::Value,
 }
 
+/// What the plugin has learned from the broker. Written by the consumer
+/// task, read by actions.
+#[derive(Default)]
+pub(crate) struct Registry {
+    pub(crate) devices: HashMap<String, DeviceInfo>,
+    pub(crate) telemetry: Vec<TelemetryPoint>,
+    pub(crate) messages_received: u64,
+}
+
 pub struct MqttPlugin {
     pub(crate) client: Option<MqttClient>,
     pub(crate) stream_manager: StreamManager,
     pub(crate) start_instant: Instant,
     pub(crate) messages_sent: u64,
-    pub(crate) messages_received: u64,
-    pub(crate) devices: HashMap<String, DeviceInfo>,
-    pub(crate) telemetry: Vec<TelemetryPoint>,
+    pub(crate) registry: Arc<Mutex<Registry>>,
+    pub(crate) command_policy: CommandPolicy,
 }
 
 impl MqttPlugin {
@@ -73,13 +89,37 @@ impl MqttPlugin {
             stream_manager: StreamManager::new(),
             start_instant: Instant::now(),
             messages_sent: 0,
-            messages_received: 0,
-            devices: HashMap::new(),
-            telemetry: Vec::new(),
+            registry: Arc::new(Mutex::new(Registry::default())),
+            command_policy: CommandPolicy::from_env(),
         }
     }
 
-    pub(crate) fn process_mqtt_message(&mut self, msg: &client::MqttMessage) {
+    pub(crate) fn registry(&self) -> MutexGuard<'_, Registry> {
+        self.registry.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Consume broker messages as they arrive, independently of actions.
+    ///
+    /// The task ends when the client's event loop does (disconnect, replace,
+    /// permanent refusal), because that drops the sending side.
+    pub(crate) fn start_consumer(&self, mut messages: mpsc::Receiver<MqttMessage>) {
+        let registry = self.registry.clone();
+        let streams = self.stream_manager.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = messages.recv().await {
+                registry
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .process(&msg);
+                streams.dispatch_sync(&msg);
+            }
+        });
+    }
+}
+
+impl Registry {
+    pub(crate) fn process(&mut self, msg: &MqttMessage) {
+        self.messages_received += 1;
         let topic = &msg.topic;
         let parts: Vec<&str> = topic.split('/').collect();
         if parts.len() < 3 || parts[0] != "vynkor" {
@@ -121,8 +161,17 @@ impl MqttPlugin {
 
                 entry.online = online;
                 entry.last_seen = now;
+                if let Some(kind) = json["device_type"].as_str() {
+                    entry.device_type = kind.to_string();
+                }
+                // Firmware may be reported either pre-formatted or split.
                 if let Some(fw) = json["firmware"].as_str() {
                     entry.firmware = Some(fw.to_string());
+                } else if let Some(name) = json["firmware_name"].as_str() {
+                    entry.firmware = Some(match json["firmware_version"].as_str() {
+                        Some(version) => format!("{name} {version}"),
+                        None => name.to_string(),
+                    });
                 }
                 if let Some(ip) = json["ip_address"].as_str() {
                     entry.ip = Some(ip.to_string());
@@ -133,14 +182,45 @@ impl MqttPlugin {
                 if let Some(uptime) = json["uptime_s"].as_u64() {
                     entry.uptime_s = Some(uptime as u32);
                 }
+                if let Some(cmds) = json["supported_commands"].as_array() {
+                    entry.supported_commands = cmds
+                        .iter()
+                        .filter_map(|c| c.as_str().map(String::from))
+                        .collect();
+                }
+                if let Some(pins) = json["pins"].as_array() {
+                    entry.pins = pins
+                        .iter()
+                        .filter_map(|p| {
+                            Some(PinInfo {
+                                name: p["name"].as_str()?.to_string(),
+                                pin_type: p["pin_type"].as_str().unwrap_or("gpio").to_string(),
+                                writable: p["writable"].as_bool().unwrap_or(true),
+                            })
+                        })
+                        .collect();
+                }
+                tracing::info!(
+                    device_id = %device_id,
+                    online,
+                    pins = entry.pins.len(),
+                    "device status observed"
+                );
             }
             "telemetry" => {
-                let stream = json["telemetry"]["stream"]
+                // Flat form is what devices send; the nested one is kept for
+                // older firmware that wrapped payload in a "telemetry" object.
+                let stream = json["stream"]
                     .as_str()
+                    .or_else(|| json["telemetry"]["stream"].as_str())
                     .unwrap_or("default")
                     .to_string();
-                let data = json["telemetry"]["data"].clone();
-                let timestamp = json["timestamp"].as_u64().unwrap_or(0);
+                let data = if json["data"].is_null() {
+                    json["telemetry"]["data"].clone()
+                } else {
+                    json["data"].clone()
+                };
+                let timestamp = json["timestamp"].as_u64().unwrap_or(now);
 
                 self.telemetry.push(TelemetryPoint {
                     device_id: device_id.clone(),
@@ -206,6 +286,29 @@ impl Plugin for MqttPlugin {
         }
     }
 
+    async fn on_init(&mut self, client: &mut VynkorClient) -> Result<(), VynkorError> {
+        let Ok(host) = std::env::var("MQTT_PLUGIN_BROKER_HOST") else {
+            return Ok(());
+        };
+        let port = std::env::var("MQTT_PLUGIN_BROKER_PORT")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or(1883);
+        let mut params = serde_json::json!({ "broker_host": host, "broker_port": port });
+        if let Ok(username) = std::env::var("MQTT_PLUGIN_USERNAME") {
+            params["username"] = username.into();
+        }
+        if let Some((password, source)) = credentials::resolve_password(client).await {
+            tracing::info!(source, "MQTT broker password resolved");
+            params["password"] = password.into();
+        }
+        match actions::handle_connect(self, params.to_string().as_bytes()).await {
+            Ok(result) => tracing::info!(%result, "MQTT auto-connect on startup"),
+            Err(error) => tracing::warn!(%error, "MQTT auto-connect failed"),
+        }
+        Ok(())
+    }
+
     async fn on_message(&mut self, envelope: Envelope) -> Result<Option<Envelope>, VynkorError> {
         let Some(envelope::Payload::ActionRequest(req)) = envelope.payload else {
             return Ok(None);
@@ -247,7 +350,10 @@ async fn handle_action(
         "mqtt_status" => actions::handle_status(plugin, params_json).await,
         "mqtt_device_list" => actions::handle_device_list(plugin, params_json).await,
         "mqtt_device_info" => actions::handle_device_info(plugin, params_json).await,
-        "mqtt_device_command" => actions::handle_device_command(plugin, params_json).await,
+        "mqtt_device_command" => actions::handle_device_command(plugin, params_json, true).await,
+        "mqtt_device_command_confirmed" => {
+            actions::handle_device_command(plugin, params_json, false).await
+        }
         "mqtt_device_telemetry" => actions::handle_device_telemetry(plugin, params_json).await,
         "mqtt_ota_update" => actions::handle_ota_update(plugin, params_json).await,
         _ => Err(crate::error::MqttError::NotFound(format!(
@@ -278,14 +384,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

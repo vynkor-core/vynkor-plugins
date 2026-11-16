@@ -27,6 +27,9 @@ pub mod llm;
 pub mod memory;
 pub mod recall;
 pub mod request;
+pub mod routines;
+pub mod smalltalk;
+pub mod watchdog;
 pub mod sessions;
 pub mod store;
 pub mod tools;
@@ -539,6 +542,41 @@ pub async fn handle_action(
         AgentRequest::MemoryList => {
             let facts = memory::list(&rpc).await?;
             ok(json!({"total": facts.len(), "facts": facts}), None)
+        }
+        AgentRequest::RoutineList => {
+            let book = routines::store::load(&rpc, config.db_timeout_ms).await;
+            ok(json!({"total": book.routines.len(), "routines": book.routines}), None)
+        }
+        AgentRequest::RoutineDelete { id } => {
+            let deleted = routines::store::update(&rpc, config.db_timeout_ms, |book| {
+                let before = book.routines.len();
+                book.routines.retain(|r| r.id != id);
+                let deleted = book.routines.len() != before;
+                (deleted, deleted)
+            })
+            .await?;
+            ok(json!({"deleted": deleted}), None)
+        }
+        AgentRequest::RoutineMine => {
+            let catalog = Catalog::load_with_discovery(&rpc).await?;
+            ok(routines::mine::run(&rpc, &db, &catalog).await?, None)
+        }
+    }
+}
+
+/// Nightly routine mining: sleep until the configured local time, mine,
+/// repeat. Errors are logged; the loop never exits while the plugin runs.
+pub async fn routine_mining_loop(rpc: Rpc, config: Arc<Config>) {
+    loop {
+        let delay = routines::next_run_delay(chrono::Local::now(), routines::mining_at());
+        tokio::time::sleep(delay).await;
+        let db = Db::new(rpc.clone(), config.db_timeout_ms);
+        let result = match Catalog::load_with_discovery(&rpc).await {
+            Ok(catalog) => routines::mine::run(&rpc, &db, &catalog).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = result {
+            eprintln!("[agent] routines: nightly mining failed: {e}");
         }
     }
 }

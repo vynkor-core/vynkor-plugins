@@ -97,8 +97,14 @@ async fn handle_action_request(
     cfg: &config::AiConfig,
 ) -> Envelope {
     let outcome = match req.action.as_str() {
-        "chat_completion" => handler::handle_chat_completion(caller, &req.params_json, db).await,
-        "embedding" => handler::handle_embedding(caller, &req.params_json, db).await,
+        "chat_completion" => {
+            let meta = handler::CallMeta::new(&req.caller_plugin_id, &req.params_json);
+            handler::handle_chat_completion(caller, &meta, &req.params_json, db).await
+        }
+        "embedding" => {
+            let meta = handler::CallMeta::new(&req.caller_plugin_id, &req.params_json);
+            handler::handle_embedding(caller, &meta, &req.params_json, db).await
+        }
         "list_models" => handler::handle_list_models(db),
         "list_agents" => handler::handle_list_agents(db),
         "usage_stats" => handler::handle_usage_stats(db),
@@ -296,8 +302,10 @@ async fn run_loop(
                         let streams = inbound_streams.clone();
                         let mut caller = OutboundHandle::new(outbound_tx.clone());
                         tokio::spawn(async move {
+                            let meta = handler::CallMeta::new(&req.caller_plugin_id, &req.params_json);
                             let outcome = handler::handle_chat_completion_stream(
                                 &mut caller,
+                                &meta,
                                 &req.action_id,
                                 &req.params_json,
                                 &db,

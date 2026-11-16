@@ -68,19 +68,16 @@ pub async fn handle_action(rpc: Rpc, config: &Config, action: &str, params_json:
             ok(json!({"samples": page, "total": total}), None)
         }
         request::MetricsRequest::Latest => {
-            let mut samples = db.list().await?;
-            samples.sort_by(|a,b| b.timestamp_ms.cmp(&a.timestamp_ms));
-            if let Some(s) = samples.into_iter().next() {
+            if let Some(s) = db.latest().await? {
                 ok(json!({"found": true, "sample": s}), None)
             } else {
                 ok(json!({"found": false, "sample": Value::Null}), None)
             }
         }
         request::MetricsRequest::Stats => {
-            let samples = db.list().await?;
-            let count = samples.len();
-            let oldest_ms = samples.iter().map(|s| s.timestamp_ms).min();
-            let newest_ms = samples.iter().map(|s| s.timestamp_ms).max();
+            let (count, oldest, newest) = db.ends().await?;
+            let oldest_ms = oldest.map(|s| s.timestamp_ms);
+            let newest_ms = newest.map(|s| s.timestamp_ms);
             ok(json!({"count": count, "oldest_ms": oldest_ms, "newest_ms": newest_ms}), None)
         }
         request::MetricsRequest::Status => {
@@ -96,7 +93,11 @@ pub async fn sample_and_store(rpc: Rpc, config: &Config) -> Result<sampler::Samp
     let now = store::now_ms();
     let sample = sampler::sample_now(id.clone(), now);
     db.put(&sample).await?;
-    let _ = db.trim(config.max_samples).await;
+    // logged, not returned: a failing trim must not cost the sample, but
+    // swallowed silently it let the store grow to 46k samples unnoticed
+    if let Err(e) = db.trim(config.max_samples).await {
+        eprintln!("[metrics] trim failed: {e}");
+    }
     // best-effort event publish handled by caller via outbound channel
     Ok(sample)
 }
