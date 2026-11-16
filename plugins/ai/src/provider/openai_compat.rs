@@ -181,9 +181,13 @@ impl Provider for OpenAiCompatProvider {
 impl EmbeddingProvider for OpenAiCompatProvider {
     fn build_embedding_request(&self, params: &EmbeddingParams, api_key: &str) -> HttpRequestJson {
         let url = format!("{}/embeddings", params.base_url.trim_end_matches('/'));
+        let input = match &params.input {
+            crate::request::EmbedInput::One(t) => serde_json::json!(t),
+            crate::request::EmbedInput::Many(v) => serde_json::json!(v),
+        };
         let body = serde_json::json!({
             "model": params.model,
-            "input": params.input,
+            "input": input,
         })
         .to_string();
         let mut headers = HashMap::new();
@@ -202,10 +206,17 @@ impl EmbeddingProvider for OpenAiCompatProvider {
         }
     }
 
-    fn parse_embedding_response(&self, body: &[u8]) -> Result<EmbeddingResult, String> {
+    fn parse_embedding_response(
+        &self,
+        body: &[u8],
+        expected: usize,
+        many: bool,
+    ) -> Result<EmbeddingResult, String> {
         #[derive(serde::Deserialize)]
         struct EmbeddingData {
             embedding: Vec<f32>,
+            #[serde(default)]
+            index: Option<usize>,
         }
         #[derive(serde::Deserialize, Default)]
         #[allow(dead_code)]
@@ -225,20 +236,31 @@ impl EmbeddingProvider for OpenAiCompatProvider {
         }
         let resp: Response = serde_json::from_slice(body)
             .map_err(|e| format!("malformed openai embedding response: {e}"))?;
-        let datum = resp
-            .data
-            .into_iter()
-            .next()
-            .ok_or("openai embedding response has no data")?;
-        let dim = datum.embedding.len();
+        let mut data = resp.data;
+        if data.len() != expected {
+            return Err(format!(
+                "openai embedding response has {} vectors, expected {expected}",
+                data.len()
+            ));
+        }
+        // Providers may return batch items out of order; `index` is the input position.
+        data.sort_by_key(|d| d.index.unwrap_or(0));
+        let dim = data.first().map(|d| d.embedding.len()).unwrap_or(0);
+        let usage = Usage {
+            input_tokens: resp.usage.prompt_tokens,
+            output_tokens: 0,
+        };
+        let (embedding, embeddings) = if many {
+            (None, Some(data.into_iter().map(|d| d.embedding).collect()))
+        } else {
+            (data.into_iter().next().map(|d| d.embedding), None)
+        };
         Ok(EmbeddingResult {
-            embedding: datum.embedding,
+            embedding,
+            embeddings,
             dim,
             model: resp.model,
-            usage: Usage {
-                input_tokens: resp.usage.prompt_tokens,
-                output_tokens: 0,
-            },
+            usage,
         })
     }
 }

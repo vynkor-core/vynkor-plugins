@@ -152,5 +152,16 @@
       "stream"
     ],
     "status": "experimental"
+  },
+  "chats": {
+    "name": "Chats",
+    "description": "Shared conversation history for every device: sessions, turns, full-text search and revision-based sync.",
+    "category": "productivity",
+    "tags": [
+      "history",
+      "chat",
+      "search"
+    ],
+    "status": "experimental"
   }
 }

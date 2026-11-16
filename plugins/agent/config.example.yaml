@@ -59,3 +59,8 @@ AGENT_PLUGIN_ROUTINES=off                     # on | off
 # AGENT_PLUGIN_ROUTINES_AT=03:30              # local time of the nightly pass
 # AGENT_PLUGIN_ROUTINES_LOOKBACK_DAYS=30
 # AGENT_PLUGIN_TOKEN_ALERT=12000               # avg prompt tokens/step over 8 steps that raises an alert; off disables
+
+# --- Chat sessions (chats plugin; optional, a missing chats never breaks goals) ---
+# AGENT_PLUGIN_LOCAL_DEVICE=host        # device name for goals from local plugins
+# AGENT_PLUGIN_HISTORY_TURNS=6          # prior session turns fed to the model; 0 = off
+# AGENT_PLUGIN_CHATS_TIMEOUT_MS=2000    # per-call timeout for chats round-trips

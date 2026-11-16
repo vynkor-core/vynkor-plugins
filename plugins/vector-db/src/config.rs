@@ -30,13 +30,16 @@ pub struct EmbedConfig {
     pub api_key_env: String,
     pub timeout_ms: u32,
     pub fallback: EmbedFallback,
+    /// Texts per `ai.embedding` request (`VECTOR_DB_EMBED_BATCH`, 1..=64).
+    pub batch: usize,
 }
 
 impl EmbedConfig {
     pub fn from_env() -> Self {
         let model = std::env::var("VECTOR_DB_EMBED_MODEL").unwrap_or_default();
         let enabled = !model.trim().is_empty();
-        let provider = std::env::var("VECTOR_DB_EMBED_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+        let provider =
+            std::env::var("VECTOR_DB_EMBED_PROVIDER").unwrap_or_else(|_| "openai".to_string());
         let base_url = std::env::var("VECTOR_DB_EMBED_BASE_URL").unwrap_or_default();
         let api_key_env = std::env::var("VECTOR_DB_EMBED_API_KEY_ENV").unwrap_or_default();
         let timeout_ms = std::env::var("VECTOR_DB_EMBED_TIMEOUT_MS")
@@ -44,6 +47,11 @@ impl EmbedConfig {
             .and_then(|s| s.parse().ok())
             .unwrap_or(10000);
         let fallback = EmbedFallback::from_env();
+        let batch = std::env::var("VECTOR_DB_EMBED_BATCH")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(64)
+            .clamp(1, 64);
         Self {
             enabled,
             provider,
@@ -52,6 +60,7 @@ impl EmbedConfig {
             api_key_env,
             timeout_ms,
             fallback,
+            batch,
         }
     }
 }
@@ -62,6 +71,7 @@ pub struct Config {
     pub max_response_bytes: usize,
     pub default_dim: usize,
     pub embed: EmbedConfig,
+    pub cache: crate::cache::CacheConfig,
 }
 
 impl Config {
@@ -98,6 +108,18 @@ impl Config {
             max_response_bytes,
             default_dim,
             embed: EmbedConfig::from_env(),
+            cache: crate::cache::CacheConfig {
+                max_bytes: std::env::var("VECTOR_DB_CACHE_MAX_MB")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(256)
+                    .saturating_mul(1024 * 1024),
+                idle_ms: std::env::var("VECTOR_DB_CACHE_IDLE_SECS")
+                    .ok()
+                    .and_then(|s| s.parse::<i64>().ok())
+                    .unwrap_or(600)
+                    .saturating_mul(1000),
+            },
         }
     }
 }
