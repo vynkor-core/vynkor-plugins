@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use daemon_plugin::{
-    event_envelope, handle_action, ptt_task, run_voice_turn, Bus, ChangeEvent, Config,
-    DaemonState, Rpc, RpcCall,
+    event_envelope, handle_action, ptt_task, run_voice_turn, Bus, ChangeEvent, Config, DaemonState,
+    Rpc, RpcCall,
 };
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
@@ -83,8 +83,7 @@ fn action_response(
 /// stages. Malformed payloads become `Value::Null` — subscribers filter by
 /// event type first, so a broken payload just never matches.
 fn forward_event(bus: &Bus, event: &Event) {
-    let payload =
-        serde_json::from_slice::<Value>(&event.payload_json).unwrap_or(Value::Null);
+    let payload = serde_json::from_slice::<Value>(&event.payload_json).unwrap_or(Value::Null);
     bus.send(&event.event_type, payload);
 }
 
@@ -103,7 +102,11 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     println!("[{PLUGIN_ID}] registered with kernel");
     println!(
         "[{PLUGIN_ID}] listen loop {} (mode {}, turn window {} ms, gap {} ms, stt provider '{}')",
-        if config.enabled_at_boot { "on" } else { "off (daemon_enable to start)" },
+        if config.enabled_at_boot {
+            "on"
+        } else {
+            "off (daemon_enable to start)"
+        },
         config.mode.as_str(),
         config.turn_ms,
         config.gap_ms,
@@ -346,9 +349,16 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
         Tweak(fn(&mut Script)),
-        InjectEvent { event_type: String, payload: Value },
+        InjectEvent {
+            event_type: String,
+            payload: Value,
+        },
     }
 
     impl Shim {
@@ -367,9 +377,13 @@ mod tests {
             let tx = self.tx.clone();
             let action = action.to_string();
             async move {
-                tx.send(Cmd::Call { action, params, reply: reply_tx })
-                    .await
-                    .expect("shim loop died");
+                tx.send(Cmd::Call {
+                    action,
+                    params,
+                    reply: reply_tx,
+                })
+                .await
+                .expect("shim loop died");
                 tokio::time::timeout(Duration::from_secs(10), reply_rx)
                     .await
                     .expect("timed out waiting for plugin reply")
@@ -381,7 +395,10 @@ mod tests {
         /// the kernel would for a subscribed type.
         async fn inject_event(&self, event_type: &str, payload: Value) {
             self.tx
-                .send(Cmd::InjectEvent { event_type: event_type.into(), payload })
+                .send(Cmd::InjectEvent {
+                    event_type: event_type.into(),
+                    payload,
+                })
                 .await
                 .expect("shim loop died");
         }
@@ -405,7 +422,12 @@ mod tests {
         }
 
         async fn names(&self) -> Vec<String> {
-            self.calls.lock().await.iter().map(|(a, _)| a.clone()).collect()
+            self.calls
+                .lock()
+                .await
+                .iter()
+                .map(|(a, _)| a.clone())
+                .collect()
         }
 
         async fn params_of(&self, action: &str) -> Vec<Value> {
@@ -439,12 +461,21 @@ mod tests {
         tokio::spawn(async move {
             let _ = serve(plugin_client, config).await;
         });
-        Shim { tx, calls, published }
+        Shim {
+            tx,
+            calls,
+            published,
+        }
     }
 
     #[allow(clippy::type_complexity)]
-    fn start_shim_parts(
-    ) -> (Calls, Published, Arc<Mutex<Script>>, mpsc::Sender<Cmd>, mpsc::Receiver<Cmd>) {
+    fn start_shim_parts() -> (
+        Calls,
+        Published,
+        Arc<Mutex<Script>>,
+        mpsc::Sender<Cmd>,
+        mpsc::Receiver<Cmd>,
+    ) {
         let (tx, rx) = mpsc::channel::<Cmd>(32);
         (
             Arc::new(Mutex::new(Vec::new())),
@@ -546,8 +577,7 @@ mod tests {
         published: Published,
         script: Arc<Mutex<Script>>,
     ) {
-        let mut pending: HashMap<String, oneshot::Sender<Result<Value, String>>> =
-            HashMap::new();
+        let mut pending: HashMap<String, oneshot::Sender<Result<Value, String>>> = HashMap::new();
         let mut seq: u64 = 0;
 
         // Registration handshake FIRST, before the command loop: the
@@ -566,12 +596,20 @@ mod tests {
                         reg.manifest.map(|m| m.permissions).unwrap_or_default();
                     assert!(perms.contains(&"PERMISSION_AUDIO".to_string()));
                     assert!(perms.contains(&"PERMISSION_EVENT_PUBLISH".to_string()));
-                    let _ = kernel.send("daemon", Envelope {
-                        payload: Some(envelope::Payload::PluginRegisterAck(
-                            PluginRegisterAck { accepted: true, ..Default::default() },
-                        )),
-                        ..Default::default()
-                    }).await;
+                    let _ = kernel
+                        .send(
+                            "daemon",
+                            Envelope {
+                                payload: Some(envelope::Payload::PluginRegisterAck(
+                                    PluginRegisterAck {
+                                        accepted: true,
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
                     break;
                 }
                 _ => continue,
@@ -736,7 +774,6 @@ mod tests {
         }
     }
 
-
     #[tokio::test]
     async fn say_speaks_via_tts_then_sound() {
         let shim = start_plugin(Config::default()).await;
@@ -751,10 +788,14 @@ mod tests {
         assert_eq!(resp["format"], "wav");
 
         let calls = shim.calls.lock().await.clone();
-        let tts_idx =
-            calls.iter().position(|(a, _)| a == "tts_synthesize").expect("no tts call");
-        let snd_idx =
-            calls.iter().position(|(a, _)| a == "sound_play").expect("no sound call");
+        let tts_idx = calls
+            .iter()
+            .position(|(a, _)| a == "tts_synthesize")
+            .expect("no tts call");
+        let snd_idx = calls
+            .iter()
+            .position(|(a, _)| a == "sound_play")
+            .expect("no sound call");
         assert!(tts_idx < snd_idx, "synthesize must precede play: {calls:?}");
 
         let synth = &calls[tts_idx].1;
@@ -771,8 +812,10 @@ mod tests {
     async fn ask_roundtrips_the_agent_and_speaks_the_answer() {
         let shim = start_plugin(Config::default()).await;
 
-        let resp =
-            shim.call("daemon_ask", serde_json::json!({"prompt": "duck chrome"})).await.unwrap();
+        let resp = shim
+            .call("daemon_ask", serde_json::json!({"prompt": "duck chrome"}))
+            .await
+            .unwrap();
         assert_eq!(resp["answer"], "It is noon.");
         assert_eq!(resp["goal_id"], "7");
         assert_eq!(resp["goal_status"], "completed");
@@ -790,8 +833,10 @@ mod tests {
         let shim = start_plugin(Config::default()).await;
         shim.tweak(|s| s.answer = String::new()).await;
 
-        let resp =
-            shim.call("daemon_ask", serde_json::json!({"prompt": "hi"})).await.unwrap();
+        let resp = shim
+            .call("daemon_ask", serde_json::json!({"prompt": "hi"}))
+            .await
+            .unwrap();
         assert_eq!(resp["answer"], Value::Null);
         assert_eq!(resp["spoken"], false);
         assert!(shim.params_of("tts_synthesize").await.is_empty());
@@ -801,7 +846,10 @@ mod tests {
     async fn turn_runs_the_full_pipeline_in_order() {
         let shim = start_plugin(fast_config()).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "answered");
         assert_eq!(resp["transcript"], "what time is it");
         assert_eq!(resp["answer"], "It is noon.");
@@ -854,16 +902,28 @@ mod tests {
         let shim = start_plugin(fast_config()).await;
 
         let resp = shim
-            .call("daemon_turn", serde_json::json!({"text": "summarize my notes"}))
+            .call(
+                "daemon_turn",
+                serde_json::json!({"text": "summarize my notes"}),
+            )
             .await
             .unwrap();
         assert_eq!(resp["status"], "answered");
         assert_eq!(resp["transcript"], "summarize my notes");
 
         let names = shim.names().await;
-        assert!(!names.iter().any(|n| n.starts_with("stt_")), "names: {names:?}");
-        assert!(!names.iter().any(|n| n.starts_with("mic_")), "names: {names:?}");
-        assert_eq!(shim.params_of("goal_start").await[0]["goal"], "summarize my notes");
+        assert!(
+            !names.iter().any(|n| n.starts_with("stt_")),
+            "names: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.starts_with("mic_")),
+            "names: {names:?}"
+        );
+        assert_eq!(
+            shim.params_of("goal_start").await[0]["goal"],
+            "summarize my notes"
+        );
     }
 
     #[tokio::test]
@@ -871,7 +931,10 @@ mod tests {
         let shim = start_plugin(fast_config()).await;
         shim.tweak(|s| s.transcript = "   ".to_string()).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "silent");
         assert_eq!(resp["spoken"], false);
 
@@ -880,8 +943,14 @@ mod tests {
             names.contains(&"mic_stop".to_string()),
             "capture must still be stopped: {names:?}"
         );
-        assert!(!names.contains(&"goal_start".to_string()), "names: {names:?}");
-        assert!(!names.contains(&"tts_synthesize".to_string()), "names: {names:?}");
+        assert!(
+            !names.contains(&"goal_start".to_string()),
+            "names: {names:?}"
+        );
+        assert!(
+            !names.contains(&"tts_synthesize".to_string()),
+            "names: {names:?}"
+        );
 
         let event = wait_for_published(&shim, |(t, p)| {
             t == "turn.completed" && p["status"] == "silent"
@@ -895,7 +964,10 @@ mod tests {
         let shim = start_plugin(fast_config()).await;
         shim.tweak(|s| s.fail_goal = true).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "error");
         assert!(
             resp["error"].as_str().unwrap().contains("goal_start"),
@@ -918,10 +990,16 @@ mod tests {
         let shim = start_plugin(fast_config()).await;
         shim.tweak(|s| s.answer = String::new()).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "error");
         assert!(
-            resp["error"].as_str().unwrap().contains("without an answer"),
+            resp["error"]
+                .as_str()
+                .unwrap()
+                .contains("without an answer"),
             "error was: {:?}",
             resp["error"]
         );
@@ -934,7 +1012,10 @@ mod tests {
         let shim = start_plugin(fast_config()).await;
         shim.tweak(|s| s.fail_mic = true).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "error");
         assert!(resp["error"].as_str().unwrap().contains("mic_start"));
 
@@ -951,9 +1032,8 @@ mod tests {
         let shim = start_plugin(vad_config()).await;
 
         let shim2 = shim.clone();
-        let turn = tokio::spawn(async move {
-            shim2.call("daemon_turn", serde_json::json!({})).await
-        });
+        let turn =
+            tokio::spawn(async move { shim2.call("daemon_turn", serde_json::json!({})).await });
         // Drive the event feed while the turn is in flight: wait for the
         // capture to open, then play speech start + end off the bus.
         shim.wait_for_calls("mic_start", 1).await;
@@ -968,7 +1048,10 @@ mod tests {
         )
         .await;
 
-        let resp = turn.await.expect("turn task joined").expect("vad turn must reply");
+        let resp = turn
+            .await
+            .expect("turn task joined")
+            .expect("vad turn must reply");
         assert_eq!(resp["status"], "answered");
         assert_eq!(resp["transcript"], "what time is it");
         assert_eq!(resp["spoken"], true);
@@ -977,8 +1060,16 @@ mod tests {
         assert_eq!(mics.len(), 1, "exactly one capture per vad turn");
 
         let names = shim.names().await;
-        for stage in ["stt_listen_start", "mic_start", "mic_stop", "stt_listen_stop"] {
-            assert!(names.contains(&stage.to_string()), "{stage} missing: {names:?}");
+        for stage in [
+            "stt_listen_start",
+            "mic_start",
+            "mic_stop",
+            "stt_listen_stop",
+        ] {
+            assert!(
+                names.contains(&stage.to_string()),
+                "{stage} missing: {names:?}"
+            );
         }
     }
 
@@ -986,7 +1077,10 @@ mod tests {
     async fn stt_provider_slug_drives_mic_target_and_vad_events() {
         // The merged `speech` plugin serves stt_* under its own slug: the
         // mic must stream to it and its VAD events arrive as plugin.speech.*.
-        let cfg = Config { stt_target: "speech".into(), ..vad_config() };
+        let cfg = Config {
+            stt_target: "speech".into(),
+            ..vad_config()
+        };
         let started = cfg.speech_started_event();
         let ended = cfg.speech_ended_event();
         assert_eq!(started, "plugin.speech.stt_speech_started");
@@ -994,15 +1088,21 @@ mod tests {
         let shim = start_plugin(cfg).await;
 
         let shim2 = shim.clone();
-        let turn = tokio::spawn(async move {
-            shim2.call("daemon_turn", serde_json::json!({})).await
-        });
+        let turn =
+            tokio::spawn(async move { shim2.call("daemon_turn", serde_json::json!({})).await });
         shim.wait_for_calls("mic_start", 1).await;
-        shim.inject_event(&started, serde_json::json!({"stream_id": 7})).await;
-        shim.inject_event(&ended, serde_json::json!({"stream_id": 7, "speech_ms": 900}))
+        shim.inject_event(&started, serde_json::json!({"stream_id": 7}))
             .await;
+        shim.inject_event(
+            &ended,
+            serde_json::json!({"stream_id": 7, "speech_ms": 900}),
+        )
+        .await;
 
-        let resp = turn.await.expect("turn task joined").expect("vad turn must reply");
+        let resp = turn
+            .await
+            .expect("turn task joined")
+            .expect("vad turn must reply");
         assert_eq!(resp["status"], "answered");
         let mics = shim.params_of("mic_start").await;
         assert_eq!(mics[0]["target"], "speech");
@@ -1017,20 +1117,31 @@ mod tests {
         // what a real silent window produces.
         shim.tweak(|s| s.transcript = "   ".to_string()).await;
 
-        let resp = shim.call("daemon_turn", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["status"], "silent");
 
         // The timed-out capture must still be closed cleanly.
         let names = shim.names().await;
         assert!(names.contains(&"mic_stop".to_string()), "names: {names:?}");
-        assert!(names.contains(&"stt_listen_stop".to_string()), "names: {names:?}");
-        assert!(!names.contains(&"goal_start".to_string()), "names: {names:?}");
+        assert!(
+            names.contains(&"stt_listen_stop".to_string()),
+            "names: {names:?}"
+        );
+        assert!(
+            !names.contains(&"goal_start".to_string()),
+            "names: {names:?}"
+        );
     }
 
     #[tokio::test]
     async fn ptt_turn_runs_between_press_and_release() {
         let shim = start_plugin(ptt_config()).await;
-        shim.call("daemon_enable", serde_json::json!({})).await.unwrap();
+        shim.call("daemon_enable", serde_json::json!({}))
+            .await
+            .unwrap();
 
         shim.inject_event(
             daemon_plugin::EV_HOTKEY_PRESSED,
@@ -1074,14 +1185,19 @@ mod tests {
         );
 
         // Enabled, but the binding id doesn't match → still ignored.
-        shim.call("daemon_enable", serde_json::json!({})).await.unwrap();
+        shim.call("daemon_enable", serde_json::json!({}))
+            .await
+            .unwrap();
         shim.inject_event(
             daemon_plugin::EV_HOTKEY_PRESSED,
             serde_json::json!({"binding": "other-key"}),
         )
         .await;
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(shim.params_of("mic_start").await.is_empty(), "wrong binding must not capture");
+        assert!(
+            shim.params_of("mic_start").await.is_empty(),
+            "wrong binding must not capture"
+        );
     }
 
     #[tokio::test]
@@ -1089,7 +1205,9 @@ mod tests {
         let mut cfg = ptt_config();
         cfg.ptt_max_hold_ms = 400;
         let shim = start_plugin(cfg).await;
-        shim.call("daemon_enable", serde_json::json!({})).await.unwrap();
+        shim.call("daemon_enable", serde_json::json!({}))
+            .await
+            .unwrap();
 
         shim.inject_event(
             daemon_plugin::EV_HOTKEY_PRESSED,
@@ -1112,8 +1230,13 @@ mod tests {
         );
 
         // Slot freed: a follow-up manual turn goes through.
-        let resp = shim.call("daemon_turn", serde_json::json!({"text": "ping"})).await;
-        assert!(resp.is_ok(), "busy slot must be free after max-hold release");
+        let resp = shim
+            .call("daemon_turn", serde_json::json!({"text": "ping"}))
+            .await;
+        assert!(
+            resp.is_ok(),
+            "busy slot must be free after max-hold release"
+        );
     }
 
     #[test]
@@ -1132,8 +1255,10 @@ mod tests {
         let shim = start_plugin(Config::default()).await;
         shim.tweak(|s| s.fail_tts = true).await;
 
-        let err =
-            shim.call("daemon_say", serde_json::json!({"text": "boom"})).await.unwrap_err();
+        let err = shim
+            .call("daemon_say", serde_json::json!({"text": "boom"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("tts_synthesize"), "error was: {err}");
 
         shim.tweak(|s| {
@@ -1141,8 +1266,10 @@ mod tests {
             s.fail_goal = true;
         })
         .await;
-        let err =
-            shim.call("daemon_ask", serde_json::json!({"prompt": "hi"})).await.unwrap_err();
+        let err = shim
+            .call("daemon_ask", serde_json::json!({"prompt": "hi"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("goal_start"), "error was: {err}");
 
         // Sound failing after a good synthesis fails the whole say.
@@ -1151,8 +1278,10 @@ mod tests {
             s.fail_sound = true;
         })
         .await;
-        let err =
-            shim.call("daemon_say", serde_json::json!({"text": "boom"})).await.unwrap_err();
+        let err = shim
+            .call("daemon_say", serde_json::json!({"text": "boom"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("sound_play"), "error was: {err}");
     }
 
@@ -1160,19 +1289,28 @@ mod tests {
     async fn validation_errors_are_action_errors_naming_the_field() {
         let shim = start_plugin(Config::default()).await;
 
-        let err =
-            shim.call("daemon_say", serde_json::json!({"text": "  "})).await.unwrap_err();
+        let err = shim
+            .call("daemon_say", serde_json::json!({"text": "  "}))
+            .await
+            .unwrap_err();
         assert!(err.contains("non-empty text"), "error was: {err}");
 
-        let err = shim.call("daemon_ask", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("daemon_ask", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("prompt"), "error was: {err}");
 
-        let err =
-            shim.call("daemon_enable", serde_json::json!({"x": 1})).await.unwrap_err();
+        let err = shim
+            .call("daemon_enable", serde_json::json!({"x": 1}))
+            .await
+            .unwrap_err();
         assert!(err.contains("empty params"), "error was: {err}");
 
-        let err =
-            shim.call("daemon_frobnicate", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("daemon_frobnicate", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("unknown action"), "error was: {err}");
     }
 
@@ -1187,15 +1325,20 @@ mod tests {
             "disabled loop captured audio"
         );
 
-        let resp = shim.call("daemon_enable", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_enable", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["enabled"], true);
 
         // Loop ticks every 100ms with a ~100ms window — a completed turn
         // must appear within a couple of seconds.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
         loop {
-            let status =
-                shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+            let status = shim
+                .call("daemon_status", serde_json::json!({}))
+                .await
+                .unwrap();
             if status["turns_completed"].as_u64().unwrap_or(0) >= 1 {
                 assert_eq!(status["enabled"], true);
                 break;
@@ -1212,23 +1355,34 @@ mod tests {
         let changed = wait_for_published(&shim, |(t, _)| t == "state.changed").await;
         assert!(changed.is_some(), "enable must publish state.changed");
 
-        let resp = shim.call("daemon_disable", serde_json::json!({})).await.unwrap();
+        let resp = shim
+            .call("daemon_disable", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(resp["enabled"], false);
 
         // Let any in-flight turn finish, then confirm quiescence.
         for _ in 0..60 {
-            let status =
-                shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+            let status = shim
+                .call("daemon_status", serde_json::json!({}))
+                .await
+                .unwrap();
             if !status["busy"].as_bool().unwrap_or(true) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let done = shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+        let done = shim
+            .call("daemon_status", serde_json::json!({}))
+            .await
+            .unwrap();
         let turns_at_disable = done["turns_completed"].as_u64().unwrap();
 
         tokio::time::sleep(Duration::from_millis(800)).await; // > gap + window
-        let after = shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+        let after = shim
+            .call("daemon_status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(
             after["turns_completed"].as_u64().unwrap(),
             turns_at_disable,
@@ -1250,19 +1404,32 @@ mod tests {
     async fn status_reflects_state_and_last_turn() {
         let shim = start_plugin(fast_config()).await;
 
-        let status = shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+        let status = shim
+            .call("daemon_status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(status["enabled"], false);
         assert_eq!(status["busy"], false);
         assert_eq!(status["turns_completed"], 0);
         assert_eq!(status["last_turn"], Value::Null);
 
-        shim.call("daemon_say", serde_json::json!({"text": "just speak"})).await.unwrap();
+        shim.call("daemon_say", serde_json::json!({"text": "just speak"}))
+            .await
+            .unwrap();
         // say is not a turn — counters stay put.
-        let status = shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+        let status = shim
+            .call("daemon_status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(status["turns_completed"], 0);
 
-        shim.call("daemon_turn", serde_json::json!({"text": "hello"})).await.unwrap();
-        let status = shim.call("daemon_status", serde_json::json!({})).await.unwrap();
+        shim.call("daemon_turn", serde_json::json!({"text": "hello"}))
+            .await
+            .unwrap();
+        let status = shim
+            .call("daemon_status", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(status["turns_completed"], 1);
         assert_eq!(status["busy"], false);
         let last = status["last_turn"].as_object().expect("last_turn set");
@@ -1274,7 +1441,11 @@ mod tests {
     async fn manual_turn_while_busy_is_rejected() {
         // A long capture window guarantees the first turn is still holding
         // the single slot when the second request lands.
-        let slow_cfg = Config { turn_ms: 1_500, gap_ms: 100, ..fast_config() };
+        let slow_cfg = Config {
+            turn_ms: 1_500,
+            gap_ms: 100,
+            ..fast_config()
+        };
         let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
         let (calls, published, script, tx, rx) = start_shim_parts();
         tokio::spawn(run_shim(
@@ -1287,24 +1458,31 @@ mod tests {
         tokio::spawn(async move {
             let _ = serve(VynkorClient::from_stream(plugin_side, None), slow_cfg).await;
         });
-        let shim = Shim { tx, calls, published };
+        let shim = Shim {
+            tx,
+            calls,
+            published,
+        };
 
         let first = {
             let shim = shim.clone();
-            tokio::spawn(async move {
-                shim.call("daemon_turn", serde_json::json!({})).await
-            })
+            tokio::spawn(async move { shim.call("daemon_turn", serde_json::json!({})).await })
         };
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let err = shim.call("daemon_turn", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("daemon_turn", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("ERR_DAEMON_BUSY"), "error was: {err}");
 
-        let first_result =
-            tokio::time::timeout(Duration::from_secs(8), first)
-                .await
-                .expect("first turn did not finish")
-                .is_ok();
-        assert!(first_result, "first turn should complete once the window ends");
+        let first_result = tokio::time::timeout(Duration::from_secs(8), first)
+            .await
+            .expect("first turn did not finish")
+            .is_ok();
+        assert!(
+            first_result,
+            "first turn should complete once the window ends"
+        );
     }
 }
 
@@ -1330,14 +1508,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

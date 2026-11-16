@@ -18,19 +18,26 @@ pub enum DaemonRequest {
     Disable,
     Status,
     /// One voice cycle. `text` bypasses the mic/stt listen stage.
-    Turn { text: Option<String> },
+    Turn {
+        text: Option<String>,
+    },
     /// Synthesize + play text through `tts` then `sound`.
-    Say { text: String },
+    Say {
+        text: String,
+    },
     /// Agent round-trip; the answer is spoken aloud.
-    Ask { prompt: String },
+    Ask {
+        prompt: String,
+    },
 }
 
 pub fn parse_request(action: &str, params_json: &[u8]) -> Result<DaemonRequest, String> {
     let params: Value = if params_json.is_empty() {
         Value::Null
     } else {
-        serde_json::from_slice(params_json)
-            .map_err(|e| format!("ERR_DAEMON_BAD_PARAMS: malformed params_json for {action}: {e}"))?
+        serde_json::from_slice(params_json).map_err(|e| {
+            format!("ERR_DAEMON_BAD_PARAMS: malformed params_json for {action}: {e}")
+        })?
     };
 
     match action {
@@ -65,10 +72,12 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<DaemonRequest, 
                 text: Option<String>,
             }
             let p: SayParams = parse_params(&params)?;
-            let text = p.text.ok_or_else(|| {
-                "ERR_DAEMON_BAD_PARAMS: missing required field: text".to_string()
-            })?;
-            Ok(DaemonRequest::Say { text: validate_text("text", &text)? })
+            let text = p
+                .text
+                .ok_or_else(|| "ERR_DAEMON_BAD_PARAMS: missing required field: text".to_string())?;
+            Ok(DaemonRequest::Say {
+                text: validate_text("text", &text)?,
+            })
         }
         "daemon_ask" => {
             #[derive(Deserialize)]
@@ -79,7 +88,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<DaemonRequest, 
             let prompt = p.prompt.ok_or_else(|| {
                 "ERR_DAEMON_BAD_PARAMS: missing required field: prompt".to_string()
             })?;
-            Ok(DaemonRequest::Ask { prompt: validate_text("prompt", &prompt)? })
+            Ok(DaemonRequest::Ask {
+                prompt: validate_text("prompt", &prompt)?,
+            })
         }
         other => Err(format!("unknown action: {other}")),
     }
@@ -163,8 +174,7 @@ mod tests {
 
     #[test]
     fn turn_text_validated() {
-        let err =
-            parse("daemon_turn", serde_json::json!({"text": "   "})).unwrap_err();
+        let err = parse("daemon_turn", serde_json::json!({"text": "   "})).unwrap_err();
         assert!(err.contains("non-empty text"), "error was: {err}");
 
         let long = "x".repeat(MAX_TEXT_CHARS + 1);
@@ -175,7 +185,10 @@ mod tests {
     #[test]
     fn say_requires_nonempty_text() {
         let err = parse("daemon_say", serde_json::json!({})).unwrap_err();
-        assert!(err.contains("missing required field: text"), "error was: {err}");
+        assert!(
+            err.contains("missing required field: text"),
+            "error was: {err}"
+        );
 
         let err = parse("daemon_say", serde_json::json!({"text": ""})).unwrap_err();
         assert!(err.contains("non-empty text"), "error was: {err}");
@@ -189,7 +202,10 @@ mod tests {
     #[test]
     fn ask_requires_prompt_and_trims() {
         let err = parse("daemon_ask", serde_json::json!({})).unwrap_err();
-        assert!(err.contains("missing required field: prompt"), "error was: {err}");
+        assert!(
+            err.contains("missing required field: prompt"),
+            "error was: {err}"
+        );
 
         match parse("daemon_ask", serde_json::json!({"prompt": " what? "})).unwrap() {
             DaemonRequest::Ask { prompt } => assert_eq!(prompt, "what?"),
@@ -205,11 +221,7 @@ mod tests {
 
     #[test]
     fn malformed_json_names_the_action() {
-        let err = parse_request(
-            "daemon_turn",
-            b"{not json",
-        )
-        .unwrap_err();
+        let err = parse_request("daemon_turn", b"{not json").unwrap_err();
         assert!(err.contains("daemon_turn"), "error was: {err}");
     }
 }
