@@ -291,7 +291,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1523,7 +1523,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1742,7 +1742,7 @@ dependencies = [
  "tracing-subscriber",
  "vynkor-plugin-manifest",
  "vynkor-sdk",
- "vynkor-wire 0.0.3",
+ "vynkor-wire",
 ]
 
 [[package]]
@@ -1752,10 +1752,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2043,9 +2043,9 @@ dependencies = [
 
 [[package]]
 name = "vynkor-sdk"
-version = "0.0.3"
+version = "0.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc02f9f9deff67c809fde0847364cd5726b8b7649d91c8bc8aff9f328a3206c4"
+checksum = "adaff7ac7f21d945d8421a54ab7f31005c8aa1e835a465071989a6aa3e2caffa"
 dependencies = [
  "crc32fast",
  "futures-util",
@@ -2053,31 +2053,14 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
- "vynkor-wire 0.0.2",
+ "vynkor-wire",
 ]
 
 [[package]]
 name = "vynkor-wire"
-version = "0.0.2"
+version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2e9f4eb057c7b8710ef73eb259584f741ff6f99dfb8b8f4b2eb1b589c36fe025"
-dependencies = [
- "crc32fast",
- "hkdf",
- "hmac",
- "nix",
- "prost",
- "prost-build",
- "sha2",
- "tokio",
- "zstd",
-]
-
-[[package]]
-name = "vynkor-wire"
-version = "0.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e12a3be8c1259a5fac3b7acfdee4d55fc190dda0509dae83e6d76de8f3b810c8"
+checksum = "2cc9b45810e5366bc7c6b5b10d98800a1c58cba4a960d65c208ed8a21819f41b"
 dependencies = [
  "crc32fast",
  "hkdf",

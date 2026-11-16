@@ -19,9 +19,11 @@ resolver = "2"
 # Constraint: these must stay out of the workspace. Each links its own sqlite
 # copy (ai via rusqlite, database/sync/vector-db via sqlx, telegram via
 # grammers) and cargo rejects two `links = "sqlite3"` packages in one resolve
-# graph. plugins/network is out too: it alone pins vynkor-sdk 0.0.5 /
-# vynkor-wire 0.0.4; plugins/mqtt pins vynkor-wire 0.0.3 while the rest
-# pin 0.0.2 — either would duplicate those crates for everyone.
+# graph. plugins/network and plugins/mqtt are out too: they were pinned to
+# different vynkor-sdk/wire versions than the rest. Everything now uses
+# vynkor-sdk 0.0.5 / vynkor-wire 0.0.4, so they could join the workspace
+# if they were wanted here (kept standalone for now).
+# examples/, reference/ and scripts/vyn-* are standalone crates (own lock).
 # They keep building standalone into their own target/.
 exclude = [
     "plugins/database",
@@ -30,6 +32,10 @@ exclude = [
     "plugins/telegram",
     "plugins/network",
     "plugins/mqtt",
+    "examples/ping-pong-rs",
+    "reference/gated-write",
+    "scripts/vyn-act",
+    "scripts/vyn-ask",
 ]
 members = [
     "plugins/_shared/plugin-manifest",
