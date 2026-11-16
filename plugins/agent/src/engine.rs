@@ -460,6 +460,10 @@ fn check_budget(doc: &GoalDoc) -> Result<(), String> {
 
 pub(crate) async fn persist(db: &Db, doc: &mut GoalDoc) -> Result<(), String> {
     doc.updated_at_ms = store::now_ms();
+    if doc.is_terminal() {
+        // raw tool output is only needed while the goal can still take a step
+        crate::sessions::redact_goal(doc);
+    }
     db.put(doc).await
 }
 

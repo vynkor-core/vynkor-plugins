@@ -2291,6 +2291,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finished_goal_keeps_no_raw_secret_output() {
+        let shim = start_plugin(Config::default()).await;
+        shim.push_ai_reply(r#"{"tool": "secret_get", "params": {"name": "gh"}}"#).await;
+        shim.push_ai_reply("Got it.").await;
+        let res = shim.call("goal_start", serde_json::json!({"goal": "read the gh secret"})).await.unwrap();
+        assert_eq!(res["status"], "completed", "{res}");
+        let id = res["id"].as_str().unwrap().to_string();
+        // the model saw the value while the goal ran ...
+        let reqs = shim.ai_requests().await;
+        assert!(reqs[1].to_string().contains("hunter2"), "raw result reaches the LLM");
+        // ... but neither the stored doc nor goal_get keep it
+        let key = format!("{}{id}", agent_plugin::store::KEY_PREFIX);
+        let stored = shim.db.lock().await.kv[&key].to_string();
+        assert!(!stored.contains("hunter2"), "stored: {stored}");
+        let got = shim.call("goal_get", serde_json::json!({"id": id})).await.unwrap();
+        assert!(!got.to_string().contains("hunter2"), "goal_get: {got}");
+        assert!(got.to_string().contains("[TOOL RESULT name=secret_get status=ok]"));
+    }
+
+    #[tokio::test]
     async fn goal_delete_removes_doc_and_is_idempotent() {
         let shim = start_plugin(Config::default()).await;
         shim.push_ai_reply("ok").await;
