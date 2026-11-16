@@ -533,6 +533,15 @@ pub async fn handle_action(
             ok(json!({"deleted": deleted}), None)
         }
         AgentRequest::GoalDelete { id } => {
+            // A running goal is persisted again by its engine after each step,
+            // which would resurrect a doc the history cascade deleted. Refuse;
+            // the cascade retries with backoff once the goal has finished.
+            // A parked `needs_confirmation` goal is not running and may go.
+            if let Some(doc) = db.get(&id).await? {
+                if doc.status == store::STATUS_RUNNING {
+                    return Err(format!("goal {id} is still running; retry after it finishes"));
+                }
+            }
             let deleted = db.delete(&id).await?;
             ok(json!({"deleted": deleted}), None)
         }
