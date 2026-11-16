@@ -62,6 +62,36 @@ pub fn junk_sessions(conn: &Connection, now: i64, cfg: &Config) -> Result<Vec<St
     .map_err(db_err)
 }
 
+/// Delete `id` only if it is still junk, re-checked in the same IMMEDIATE
+/// transaction as the delete: the owner may pin a session, or an `ok` turn
+/// may land, between [`junk_sessions`] and this call.
+pub fn delete_if_junk(conn: &mut Connection, id: &str, now: i64, cfg: &Config) -> Result<bool, String> {
+    let before = now - cfg.junk_age_secs.saturating_mul(1000);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(db_err)?;
+    let still_junk = tx
+        .query_row(
+            "SELECT 1 FROM sessions s
+             WHERE s.id = ?1 AND s.state = 'live' AND s.pinned = 0 AND s.tier != 'summary'
+               AND MAX(s.last_at, s.last_used_at) < ?2
+               AND NOT EXISTS (
+                    SELECT 1 FROM turns t WHERE t.session_id = s.id AND t.status = 'ok'
+                       AND trim(t.user_text) != '' AND trim(t.answer_text) != '')",
+            params![id, before],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(db_err)?
+        .is_some();
+    if !still_junk {
+        return Ok(false);
+    }
+    let deleted = store::delete_in_tx(&tx, id)?["deleted"] == true;
+    tx.commit().map_err(db_err)?;
+    Ok(deleted)
+}
+
 /// `full` sessions that have a summary, are older than `CHATS_COMPACT_AGE_SECS`,
 /// were not surfaced for `CHATS_COMPACT_UNUSED_SECS`, are unpinned and have no
 /// cleanup job pending.
@@ -470,7 +500,7 @@ pub fn maintenance(conn: &mut Connection, cfg: &Config, now: i64) -> Result<Outc
         return Ok(out);
     }
     for id in junk_sessions(conn, now, cfg)? {
-        if store::delete(conn, &id)?["deleted"] == true {
+        if delete_if_junk(conn, &id, now, cfg)? {
             out.deleted += 1;
         }
     }
@@ -532,9 +562,10 @@ impl Worker {
                 complete = false;
                 break;
             }
+            let c = std::sync::Arc::clone(&cfg);
             let r = with_db(&self.db, move |db| {
                 if is_junk {
-                    store::delete(db, &id).map(|v| v["deleted"] == true)
+                    delete_if_junk(db, &id, now, &c)
                 } else {
                     compact(db, &id)
                 }
@@ -613,6 +644,27 @@ mod tests {
         for keep in [&b, &c, &d] {
             assert_eq!(state(&f, keep), "live");
         }
+    }
+
+    #[tokio::test]
+    async fn junk_delete_rechecks_after_the_list_was_taken() {
+        let f = Fixture::new();
+        let now = T0 + 2 * DAY;
+        let pinned = f.session("p", "chat", T0);
+        turn_status(&f, &pinned, "q", "", "failed", T0);
+        let answered = f.session("o", "chat", T0);
+        turn_status(&f, &answered, "q", "", "failed", T0);
+        let junk = junk_sessions(&f.lock(), now, &f.cfg).unwrap();
+        assert!(junk.contains(&pinned) && junk.contains(&answered));
+        // Between the list and the delete: the owner pins one session and a
+        // meaningful turn lands in the other.
+        store::update(&mut f.lock(), &pinned, None, Some(true)).unwrap();
+        turn_status(&f, &answered, "q2", "a2", "ok", T0 + 1);
+        for id in &junk {
+            assert!(!delete_if_junk(&mut f.lock(), id, now, &f.cfg).unwrap());
+        }
+        assert_eq!(state(&f, &pinned), "live");
+        assert_eq!(state(&f, &answered), "live");
     }
 
     #[tokio::test]

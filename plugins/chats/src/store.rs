@@ -446,6 +446,14 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db_err)?;
+    let out = delete_in_tx(&tx, id)?;
+    tx.commit().map_err(db_err)?;
+    Ok(out)
+}
+
+/// [`delete`] inside a caller's transaction, so a caller can re-check its own
+/// conditions and delete atomically. The caller commits.
+pub(crate) fn delete_in_tx(tx: &Transaction, id: &str) -> Result<Value, String> {
     let existing: Option<i64> = tx
         .query_row("SELECT rev FROM tombstones WHERE id = ?", [id], |r| {
             r.get(0)
@@ -470,7 +478,7 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
             .map_err(db_err)?;
         return Ok(json!({"rev": rev, "deleted": false}));
     }
-    let rev = next_rev(&tx).map_err(db_err)?;
+    let rev = next_rev(tx).map_err(db_err)?;
     tx.execute(
         "UPDATE sessions SET state = 'deleting', title = '', summary = '', tags = '[]', rev = ? WHERE id = ?",
         params![rev, id],
@@ -532,7 +540,6 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<Value, String> {
         params![id, rev],
     )
     .map_err(db_err)?;
-    tx.commit().map_err(db_err)?;
     Ok(json!({"rev": rev, "deleted": true}))
 }
 
