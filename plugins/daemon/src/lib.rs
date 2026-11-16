@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{envelope, Envelope, EventPublish};
 
@@ -935,7 +935,15 @@ async fn run_agent(
     if !memory_ctx.is_empty() {
         body["context"] = json!(memory_ctx);
     }
-    let goal = rpc.call("goal_start", body, config.goal_timeout_ms).await?;
+    let mut goal = rpc.call("goal_start", body, config.goal_timeout_ms).await?;
+    // `needs_confirmation` arrives before the tool runs and carries no prose;
+    // the resumed continuation finishes with the answer this turn must speak.
+    if goal["status"] == "needs_confirmation" {
+        let id = goal["id"].as_str().unwrap_or_default().to_string();
+        if !id.is_empty() {
+            goal = await_confirmation(rpc, config, &id).await?;
+        }
+    }
     Ok(AgentAnswer {
         goal_id: goal["id"].as_str().unwrap_or_default().to_string(),
         goal_status: goal["status"].as_str().unwrap_or_default().to_string(),
@@ -944,6 +952,36 @@ async fn run_agent(
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string),
     })
+}
+
+/// How often a turn re-checks a goal parked on a confirmation gate.
+const CONFIRM_POLL_MS: u64 = 400;
+
+/// Wait for a `needs_confirmation` goal to be resumed and run to a terminal
+/// state, returning its document (`goal_get`'s `goal` field) so the turn can
+/// speak the continuation instead of nothing.
+async fn await_confirmation(rpc: &Rpc, config: &Config, goal_id: &str) -> Result<Value, String> {
+    // Bounded: the voice worker is single-threaded, so an approval nobody grants
+    // must not make it deaf for the full goal budget.
+    let budget_ms = u64::from(config.goal_timeout_ms).min(45_000);
+    let deadline = Instant::now() + Duration::from_millis(budget_ms);
+    loop {
+        let reply = rpc
+            .call("goal_get", json!({ "id": goal_id }), config.timeout_ms)
+            .await?;
+        let doc = reply["goal"].clone();
+        let status = doc["status"].as_str().unwrap_or_default();
+        if status != "needs_confirmation" && status != "running" {
+            return Ok(doc);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "goal {goal_id} still awaits confirmation after {} ms",
+                config.goal_timeout_ms
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(CONFIRM_POLL_MS)).await;
+    }
 }
 
 struct AgentAnswer {
