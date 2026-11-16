@@ -482,6 +482,7 @@ impl Handler {
                     .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| "{}".to_string()))
                     .unwrap_or_else(|| "{}".to_string());
 
+                self.reset_if_empty(&pool, caller, &collection).await?;
                 let info = self.collection_info(&pool, &collection).await?;
                 self.model_guard(&pool, caller, &collection, &info, rpc.as_ref(), embed_cfg)?;
                 let dim = info.as_ref().map(|(d, _)| *d);
@@ -532,6 +533,7 @@ impl Handler {
             }
             VectorRequest::BatchUpsert { collection, docs } => {
                 let collection = sanitize_collection(&collection)?.to_string();
+                self.reset_if_empty(&pool, caller, &collection).await?;
                 let info = self.collection_info(&pool, &collection).await?;
                 self.model_guard(&pool, caller, &collection, &info, rpc.as_ref(), embed_cfg)?;
                 let mut dim = info.as_ref().map(|(d, _)| *d);
@@ -756,16 +758,19 @@ impl Handler {
         }
     }
 
-    async fn collection_info(
+    /// An empty collection has no dimension worth keeping: drop its row (and
+    /// any cached slot, which would keep the old `dim`) so the write sets it.
+    /// Otherwise a collection created under one embedding model (384-d
+    /// all-minilm) rejects every write after the model changes (768-d
+    /// nomic) — forever, since nothing ever lands. Upsert paths only: reads
+    /// must not take the write lock.
+    async fn reset_if_empty(
         &self,
         pool: &sqlx::SqlitePool,
+        caller: &str,
         collection: &str,
-    ) -> Result<CollectionInfo, String> {
-        // An empty collection has no dimension worth keeping: drop its row so
-        // the next write sets it. Otherwise a collection created under one
-        // embedding model (384-d all-minilm) rejects every write after the
-        // model changes (768-d nomic) — forever, since nothing ever lands.
-        sqlx::query(
+    ) -> Result<(), String> {
+        let r = sqlx::query(
             "delete from collections where name = ?1 \
              and not exists (select 1 from vectors where collection = ?1)",
         )
@@ -773,6 +778,17 @@ impl Handler {
         .execute(pool)
         .await
         .map_err(|e| e.to_string())?;
+        if r.rows_affected() > 0 {
+            self.cache.invalidate(caller, collection).await;
+        }
+        Ok(())
+    }
+
+    async fn collection_info(
+        &self,
+        pool: &sqlx::SqlitePool,
+        collection: &str,
+    ) -> Result<CollectionInfo, String> {
         let row: Option<(i64, String)> =
             sqlx::query_as("select dim, model from collections where name = ?1")
                 .bind(collection)
@@ -1019,6 +1035,40 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("dimension mismatch"), "a non-empty one still does: {err}");
+        // The cached slot must follow: a query at the new dimension works.
+        let out = h
+            .handle(caller, "vec_query", br#"{"collection":"c","vector":[1,0,0,0,0],"top_k":1}"#)
+            .await
+            .expect("query after the dimension change");
+        let v = out;
+        assert_eq!(v["results"][0]["id"], "2", "{v}");
+    }
+
+    #[tokio::test]
+    async fn emptied_loaded_collection_resets_its_cached_dimension() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = make_handler(dir.path());
+        let caller = "agent";
+        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"1","vector":[1,0,0]}"#)
+            .await
+            .unwrap();
+        // load the slot at dim 3, then empty the collection
+        h.handle(caller, "vec_query", br#"{"collection":"c","vector":[1,0,0],"top_k":1}"#)
+            .await
+            .unwrap();
+        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#).await.unwrap();
+        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[0,1,0,0,0]}"#)
+            .await
+            .unwrap();
+        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[0,0,1,0,0]}"#)
+            .await
+            .expect("overwrite at the new dimension");
+        let out = h
+            .handle(caller, "vec_query", br#"{"collection":"c","vector":[0,0,1,0,0],"top_k":1}"#)
+            .await
+            .expect("query at the new dimension");
+        let v = out;
+        assert_eq!(v["results"][0]["id"], "2", "{v}");
     }
 
     #[tokio::test]
