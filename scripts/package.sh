@@ -139,7 +139,7 @@ cargo build --release --manifest-path "$plugin_dir/Cargo.toml"
 
 # Workspace members emit into the workspace root target/; excluded plugins
 # (see root Cargo.toml) still emit into their own target/.
-ws_root="$(cd "$REPO" && pwd)"
+ws_root="$repo_root"
 if [[ -f "$ws_root/target/release/$binary" && "$plugin_dir" != "$ws_root"*"/target"* ]]; then
     bin_path="$ws_root/target/release/$binary"
 else
