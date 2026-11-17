@@ -19,8 +19,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/agent/versions/0.1.0/agent-0.1.0.zip",
-        "sha256": "16b00d859295d903a54a140fb16faeac39017d9d785ff1b830359fddcad6bc26",
-        "signature": "9e47766952805498a191ecd07ef478dfcab4c89a699bea750acf609ce1084b4504c13d026058b020567c158068cfd70dfc9c320177c598a79b82ac6f51c9b407",
+        "sha256": "e1bc2e51e7707a69924c693cac048c4a8bc76e514b36b7e93a8663c47aa218ac",
+        "signature": "940c8f0ef2897bfa4ecac51eda80deaf0c7950437f9c6ce65776d881c15492836fd6d70c32bd4a34d7f7e4c362d933c609c03f4c12322c4285c8edd0a6339c0f",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -41,8 +41,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/ai/versions/0.1.0/ai-0.1.0.zip",
-        "sha256": "9784999fdba67e7f2251110eaf450303275a0d43f4544bfd90dd5b8db5fe12dd",
-        "signature": "0f1b59d421a5616ad2dc98d7ab39cbf3851aa19184f97da89f473f0d87965aced7710f7207b41fdfe5e2436c02debe16dfc8d516268572c231e04b0b4f6df509",
+        "sha256": "d447ff653181d6c89817c0a9cdf7a875926fba71fa76a4ae6a95af359b44ffd1",
+        "signature": "c5b6c5b9be940ab59593da0d4c43220e4c7ecc59aecc3f377386a16b567cb4403dd51cb2772f9c4e46a4cb854d0d2ecc753dde1a9c985b5c1bf5856b55c31107",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -62,8 +62,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/automations/versions/0.1.0/automations-0.1.0.zip",
-        "sha256": "9ce209b7c3616924ce07a4e23f39c9e1e274f5a2c4b00508112f48b398c58a70",
-        "signature": "59f4c111dee42937b3b166e817c46398fc1e98938153ec362833a1616c3c36b3ef10242ee77b9810a11361eb4d4365754c412b17899f322a5181e4ad562f3b00",
+        "sha256": "11b7830d4929c6dd845c05e4f14dc1e954d79c318f8e5582d2a5b59d24120f83",
+        "signature": "387f39babb1f458b804130b9811632f62074e8dbb26ad899218a80d0bb5dd7d2ef860fc87f036f89bc86ae5d69724ee44ff8af7d0bdee0fe80a6c61f728ce80b",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -84,8 +84,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/calendar/versions/0.1.0/calendar-0.1.0.zip",
-        "sha256": "12508ccf9dc6a3976272df9be2b8b64463281fa2c13daac097d2b4366e34027e",
-        "signature": "19d0760bdd5befa30ed8a0fa2d53cea6ce29b3d91c3a4dd66316b1a07fed653212104bc04a975733bf233a3fd2d3ecf6d16044348e5602e441937c19c2bede03",
+        "sha256": "474453c01c4df0ebeb4664bbb74c32960d0ad2ae7f597032f668f74e9cf41ec6",
+        "signature": "1eb8aa7fabe8642ebac531d56f25f93a262d49cca192a951ca3fde79d98525586ef772dd87ec7604ecbb3d6367ab04136120137c25d945c03ef9bc09de4f6f06",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -105,8 +105,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/capture/versions/0.1.0/capture-0.1.0.zip",
-        "sha256": "868c362f81611a989dbebda59bc1c2df94e7d762cb1b244f2bc36a97e97a7dce",
-        "signature": "cd46ece341cd376a730380993dd4dc7578f92262de8fe1f0e8216cfa6b027575be6f8f5884f0505af59a2407b519f8932c73848d0f4a6a56eeaafb7505c2740c",
+        "sha256": "b6187c58a619442031d047877530ce6f3b3f1100922a66864f917fafc92fb432",
+        "signature": "11f002d35167176e45e1acea4b51de0c2315f31e1c4dc5f0a8427ee87cccab0a78512d80946bfcd0fd55185b090facb0c6779642f9a29e94d7fe4aac797f0f05",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -126,8 +126,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/chats/versions/0.1.0/chats-0.1.0.zip",
-        "sha256": "cc9d7bb9bea29c1a7edbd63690cc91b217be51c7dcc4bfd281258965f0326fa0",
-        "signature": "be8a37a57389680bec31c9c4abb72ca29e0b3954a9287b1b5dd20cc7e0c3112e9f34dbc25ede396295eac4202f88c1a9fdda1b3841b49d858059be5cde64be00",
+        "sha256": "ecaa41a1242cad3263fba0548f730dd1b56b1ba14aafd1b994849110b2f18b29",
+        "signature": "b24ea60d28a612c9b8bcc9c124738ae8b443c4e75a64d374dbfed3a49e52e23dd2449efcff2659d81a425615404d59a59b3ddb8aea5c6ed7bb74b7f937086800",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -147,8 +147,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/clipboard/versions/0.1.0/clipboard-0.1.0.zip",
-        "sha256": "e9e4d1529103d6718f5a8aa2d40da6f985bbba24c2ba3f7b35420cec69147226",
-        "signature": "7f2d150fc4f8b750512b93391639ce88870be99894f3c311f44f6f0d6d27e2104466bb8237b42686f791d0c9279b4d407da89d81f787df4e14853d80edc64004",
+        "sha256": "ac33a4f094947c3ed222fa9d953afcdaec7a4983d2ade1e310c03adf403009e5",
+        "signature": "cdfc99386b77360636fa91f50492d3f3db81683100d1c227c47cbd600620c80cdb10908ab2844f048c7a2b1b178b2b2fbe4e00dd2d18a00d7e14b7690950eb0a",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -167,8 +167,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/contacts/versions/0.1.0/contacts-0.1.0.zip",
-        "sha256": "46a5a0dc2ad0585f14becf28b3d0de8b9181f8572ae7ce71c2ad258c03f3b5d2",
-        "signature": "818ee78377a76b6629e7cf2ffc80095560869e62e00b9bb8c79567569303ef2c035324037b98aa581d75b865cd3c517c3dd214b120f24bd85142bc20206af909",
+        "sha256": "44487c9bb1d9a365e3ccbf29ef0a2ddb290e137634c17215342a4ee50fd36729",
+        "signature": "5ef7c6f125f8ce62594def47a6d18cf399b39e9efddd28878b76f21718d95ab476f53cbb5b2b629b4a94a14a6d914a6662d90cc95dd67ca4935dd46f84316609",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -188,8 +188,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/daemon/versions/0.1.0/daemon-0.1.0.zip",
-        "sha256": "3213a40cf496af471e236cb3a974eb0a9f28331e07542840e0136dd478aea476",
-        "signature": "85087713742a0394b529b40ce908a217881befdcca3f2a3c054a767cad34aa5edf54c685b26701df3927f373a2e1ab9c17a59c536c6bed0b0309df9d6a705a04",
+        "sha256": "c02f34bfd70720e9cc720c981088526567fbe87973408b5bc1714b7490049bc8",
+        "signature": "51cfd6c65f0556ea36c7e1787dab1352504172535e4a0c75357add73551a3f1305f812f2103ac297c40196bead3b0a6f59f1c94cde903680f56286434b09970a",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -209,8 +209,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/database/versions/0.1.0/database-0.1.0.zip",
-        "sha256": "707d3e777d79f3779c8da3e433695760d8c738839e6347bd1acf58e04246f678",
-        "signature": "c79a51216b8c9bdf20ea5304027cb3312bb92717982bc7b715e3321c349d55e2264a19ba3cf0cdb647662ae96774aee724aca03903559aef3930538553d79d04",
+        "sha256": "3a2ff5ed0e42ae56478fa42d03e5a7fe84110aeb23f58709e704fbd23a9a3168",
+        "signature": "2b7460e20154818540530a210b06272118225b2bb58e4bcf20352b268b32d4920e20c160f4d64b2547e43b8f798cda8a4677779fbe1903cdbcbd3a3d6e4fed07",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -230,8 +230,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/email/versions/0.1.0/email-0.1.0.zip",
-        "sha256": "74815483768d538f9a2500d79eda0c69b4e0d3050e89b6188c26bfff9a1845ab",
-        "signature": "23c96527fa3a854ca1b886896e14b9044fc735a37e873d42c1c97aab62c5ce8325cc23ce13f72045b7b3e86b5180439c858d9b304b07c6eec98650fd2c345e05",
+        "sha256": "c27df5fbc4eb7e8e9117e4b364a6dece8da0a4d79c8fd0ab90358c89fec71091",
+        "signature": "0bb55f0b75526e9c445883d51888c81da5c2ef84465f5b1ae32e60c0b863787150809e869ad838c95fb25678831e956a1900c261390da3f4e8a6a607abc91205",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -250,8 +250,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/filesystem/versions/0.1.0/filesystem-0.1.0.zip",
-        "sha256": "322a418f98846938c3d85cf356f0babec05196f8773c4024c6edcd17fd80f4fb",
-        "signature": "c6d86b3590c35b55b311ea986e6372449f20117072d8c0656595c7e3c993e0100ac598d97d24a90bb1c56d4563b31fb87b323c8dcc8aa3e7568f1c42560dbc06",
+        "sha256": "da479c2e24d029c3ac63242d1d83a08ef654d90eb94b08b1e6ac620e8b61fef1",
+        "signature": "d53224a0da7c9132e16654b924aab259db16d6bfffb6aa5facdd8372f1c094209ed61d25d33cbddbf93324a0732854a9fb00d2cfbcff24ea69b18eefc10b630f",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -271,8 +271,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/github/versions/0.1.0/github-0.1.0.zip",
-        "sha256": "ad580f2787f6df57e76733efabc60157d49a79ff2959a93e2eb416b604bbbe37",
-        "signature": "a870d7b2678c7dd8e7433026ab04b1f81ceffd0a94f5889910d82eac971467ce20fdcc03a3b3d935bb23ffb5356fb08286cdabb1e2344b689af9b7b4de02b508",
+        "sha256": "538f7a79f294026ceefd937ed6fdde44829bb5e45ceff81f161942d22d8f6b07",
+        "signature": "663e92c0e3c3d3ec8d069d0bee1aa760d54b7094e37fffdb576c8adf6574fc042053d2967324732dbb90e5affd5070b7c1ba3179ddd2709e57e264b5aba92207",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -292,8 +292,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/hotkey/versions/0.1.0/hotkey-0.1.0.zip",
-        "sha256": "ac8ec38607b18adfe05aef035661f3a010ff2fa683253391cc7ed936b05aa481",
-        "signature": "65442dd3f6402cec55c3fb60005c023bc11a24608f6fcf05be6e950cd1cec1c6f0e037728af8565b9098ea048294ba969e00ae6b7c39c440b176245867413800",
+        "sha256": "349450957ec72ffd7ee38c01ff6865ec160957c983bfc75af6783c169ad1e3ad",
+        "signature": "680a92eaef61333658b2a070c56e610cd0425017e89d2f39f7ad3d3004ccd86620b7ad2066a47989dd89b9c8aef04fdd6d6fa97808c0353ac28214ec0a856c0e",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -313,8 +313,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/launcher/versions/0.1.0/launcher-0.1.0.zip",
-        "sha256": "182963346fe26f62bcfd60637ce36ed6fa59178a10916fa86d27e1ae38e74387",
-        "signature": "ac07ac586c402e306d62ae1a6d6a2441d007137d6f8e2698c9c7ddf0b2e4f7b8651dc6d7453da9a0d1ff8659c8fb2224dea04e545e38f6782c264ec783173b0f",
+        "sha256": "219b8698ccd87d4feee0e872e5de6070e1247373e1dbcb77a88ea3de8b0c6477",
+        "signature": "4b1288d367c94713b0c48dd59acd29173a76634b8312cbea1932f646dffa440128d473627f002abfae07e07caf0a88ff9542ffad57b7b9c8c2ce23c08a656304",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -335,8 +335,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/library/versions/0.1.0/library-0.1.0.zip",
-        "sha256": "03d78dbd890d44a5a74a61154ddca89a09f98416cdefd4069a96aa7f0e02e472",
-        "signature": "541a2b0077e55ccf909295a75c32a016ee62630de2272af34a17af6bf623b0201b071788181232426b1ec5f6c55bc644bb52a744190abee0bf46e2dbe0afca02",
+        "sha256": "c26f3e88481281ab91f26c8accacc6ba3fe3203f5e192706e1c1e57a45b03867",
+        "signature": "7c21d629e716b9e1c47e692b42636862e52dfba82319916367db7a4e431075c64ec0dec3e4fdb0cff05487c78f28fc870471571a5ba602c047daafe633ed4802",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -356,8 +356,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/media/versions/0.1.0/media-0.1.0.zip",
-        "sha256": "0e5a14bf0367031f1b35d7ed1f1df83574a244699eacbee73064785f0fb02c71",
-        "signature": "64dcb6bbdecedb00f4a7d014d04e66c270078fff4288045bdf0c3fd600a0015286447fee871dd7acc6b0cc8379587ec399c81228caa999517eb879c290c72105",
+        "sha256": "b0eaeedebd9525367931315f7585339f06e4f200bd4a70ba915d92bf16d6e24b",
+        "signature": "3cfda67d6f7b5ee4b8f3e32bc15da3bd0cf75e6309d73f68bb6b13aebe6c3841cc5c4a074d697faeb2551dfccbc3633b305d58fabc9f5a312035e90fbc4db604",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -376,8 +376,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/metrics/versions/0.1.0/metrics-0.1.0.zip",
-        "sha256": "ec07a8ecd62fe8c0e98667e6ce02c902155effb3747c3256ba770859d2d83a94",
-        "signature": "dd5ae1b57c62266e4bc3107f66c1a56ae5c39969e7301d60d7c5a009aed121a1c0f92118791f0f8d943053ec0a6943a73ade437f1da9a8390d694043f193900a",
+        "sha256": "2194185100f18f315e06b09c495099673feed9c805cb8ab79f2dd066eaf38fc7",
+        "signature": "9f5d6d877ec61e49c147d52e0198cd353ba6d46fc543bca5077bed907022b8ddefe9075427f74063d9fd5c05cfd92d24c84928d677af3f3af2772586707fc204",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -397,8 +397,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/mic/versions/0.1.0/mic-0.1.0.zip",
-        "sha256": "4813182fb33eb3d3aad60ed864715092bb6f63a0023f5de0d4990b8557c2bc4d",
-        "signature": "6ec5222afcd0b3b007f76ef3277c1de7aa59ba56a51cea87757b656e742ee4b30273c1812cf7dfdb0446d8d50c9187cfcedca63ece73f2dcdddc62720e079803",
+        "sha256": "e03a33ee9b1dd2d0ca6baec63dbc7ef9562315914b3a2a40239ed9c99467064c",
+        "signature": "ba5bdc2cd5f998865ef1b2c206086a3cec3c23b37dba18151b3e1f1482390a313963a1766824d3517a4d57cfe92a8b04640280e9bf2031c6703d3ddf11f48b08",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -418,8 +418,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/mqtt/versions/0.1.0/mqtt-0.1.0.zip",
-        "sha256": "c536b1c1da5d0d6f40c9005d33c7959eb6de4bfeedb2507b8db2e5019f8ac680",
-        "signature": "7f51fb7cfa8b6d5f2864601e61e05aab73ed2fabf35ecb1b292e148655e411fda18aaf5b14e2f5a39d0b8b01c7b69135cce44f3f4e72959f32c9b48f85aeaa04",
+        "sha256": "92e0b3ec04e1c9a35a8682571bee3c1c983472c89995bb737535754b5871bb0d",
+        "signature": "1eed9409f88cd6b9c2b2ba263d75302cd826677522f2de4b02504d865b71b003260cd5b154ef6c08313b63b2b2b3091373805320a579fa782c2b5e64d1ee0d08",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -438,8 +438,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/network/versions/0.1.0/network-0.1.0.zip",
-        "sha256": "ce1a94ce8b8b49521a797ea823e0b8f2382c0363a9b0a5b971c2383529f766b5",
-        "signature": "617d77471de56bd935a573bfba0e15f8a4ba7b7781a1d5cce967be86d83c6f2a5d5b5c8556154e656d9411c4896c2614ecd8d7ae87df405729f51f9489e9a10e",
+        "sha256": "45f44fbedb13cdf0e95da5b70e62095b34ce7aca076b15bfcaa1d3f31d878a5d",
+        "signature": "d57c4b43de9235372aeb0e6ebf900ee0d6348aae9cedce31b91431e5e8fd80d42b1dfe828813a3b069f7e7ed6fc7484bc892210085d46553c6810910ea7d9d0c",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -457,8 +457,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/notes/versions/0.1.0/notes-0.1.0.zip",
-        "sha256": "edd059a821487a936d846e798c97ea952768cf1e43896e24c390444bdbe4980d",
-        "signature": "6efd10e1aaf8fd530f55d897b8a646da2771928863a8a483cfb5ed7a9745ea37548feb053158cf9ac4dcd6ed7c6b363c7424719412c2c5cbcc8f140931d65a00",
+        "sha256": "7d1c79a82cdf78d89c5da910f79ae046ceb35fbb7a4c37c6e22ac4aaf03d32f4",
+        "signature": "d6a4c1ea0178ee0db92cbb832f0ac953615fe6bbfbb569735acdbee1e091cab4b0a4f80f9ee18261a3a239d5e5517d1649172d55919db5aa445aa7856128680f",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -478,8 +478,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/notify/versions/0.1.0/notify-0.1.0.zip",
-        "sha256": "e06e0db626ee0e3b7a4e6fd8e15dbad1005ad0873fdef7d2e76d4ea4f08c270d",
-        "signature": "f011953bd6c6476843f84439d34ec9f9246bb5b6f2a26e4edf0bba5c32c8229a13d08b9731263d96ad9513944bd7772392aa1e318e313ab29b3c3a061fc32f00",
+        "sha256": "69bdddb310bcd60a73f89c690b95dc4f8fb321642b2080c6ce5ecc78f75a7237",
+        "signature": "87e4f63e897ca33a3c8814e3b9cd54f38ac7f10a64e79f7e43a28e5b6872947e355229658191864d10fd26bfd9514071677e2f71e56778b1dad86c68a8f6f10e",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*",
         "dependencies": {
@@ -502,8 +502,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/rss/versions/0.1.0/rss-0.1.0.zip",
-        "sha256": "e2c3af36eaf212f3bb51d177088fb680b53d2ce71b1d46db54f3ec5ae972cf6d",
-        "signature": "c98bfe3dc686eaceb40909a9593684c676bcc6c2575158050eafbbd62e7b61f5637d93b222e73a10e0c192370eb3917c109d75c1d8d83d0e46cc8ce11eefa50c",
+        "sha256": "7bc32c19afa4f1ff58214497769ab9f1748dec02032ed49268d8f13597df006b",
+        "signature": "7b5bba6892caeb3e38d39be63049fa8a121ce9f6ec12133d0fcea727ac38a22497e43c3da91af7f5e0846489d83136af9b7f4d7df2d6a684facfb75c17263c0e",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -523,8 +523,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/scheduler/versions/0.1.0/scheduler-0.1.0.zip",
-        "sha256": "275b0121effbf549784298fea5e56017d3159f99118d7a5241e5b5afd26bf695",
-        "signature": "81c8f3f255e01226fdf99808a6b870cddaaef0baf8af33fb9c069cb27d60f5f6fdcd44506249c054b118ab4466cadedb60a8f4abc2530a319dada0b978ac2802",
+        "sha256": "cd06409b4263b6285f9681c34b8d620d06c41ac67d64f6b89b6907dcc4277a9e",
+        "signature": "b2180e81984aaa535abd831a89b7701aa847ec3c5f7829b5741249dc25b163a475b5619cac0fc1dc00c3952f2aeb00f205c40da9ff432b3e35dcc12a30485e0a",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -543,8 +543,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/search/versions/0.1.0/search-0.1.0.zip",
-        "sha256": "1d267e2a264cd349af5b5a5ffe15830ce1d8c50f25eddc44f8b33ac4f61053ea",
-        "signature": "0b03b502fb1821e8a4c7be419768ea51dcfde5f773f8cdfe5947250653306fea73927595c1c8edbbdd2849b2fa376f05f9f7b671a573fd4063b584a2f921bd01",
+        "sha256": "fa93d052079e1369f31d742344fab55a148333e9d1883ef61509f1e2c0bf2992",
+        "signature": "094b9d516039ab961c1ba6318225ca4d57c60971d43311f24831b49b98cb67e6089b1c6d90581e4ad103548e429796d02819f06bfacfda0de6273521e85a390a",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -564,8 +564,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/secrets/versions/0.1.0/secrets-0.1.0.zip",
-        "sha256": "d6aec17decedc9a7be1832b8a5c6a1507970e7bb36840e9d86bfa83c0fd11a34",
-        "signature": "b741d2f86727f0ca2b52ad0910373b4507627ef2f06d0fdfc73e23d93a86ee0a7cdc5ac25a54ef39cca0d20f24962d8d17ad7158ee9b0199832eb51e007b120c",
+        "sha256": "9dfea65b304fd68790a6a92d530c55ed70bb8b4c51e68de9ffc0c8ecc554be9b",
+        "signature": "b921caaeab70871717c5ab6d2f3364ce914f08e6e0f9373e4f31701e82403122aa52d1c3f380d40d7043e1022da49474cd6693714d62efe715463e98753aee03",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -584,8 +584,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/sound/versions/0.1.0/sound-0.1.0.zip",
-        "sha256": "b67eadc0d9b86c94449f6e8f1655dc2787578df5d17f4b84fe243246ea4abc4c",
-        "signature": "7096ca2fce71bf1f0ad22878a3aebf1709dc27b1be890881c1076f2dec276289bf29195e2b056c43a1ba5055ca616707136c478bc23b3d7023fd9099e2260a0e",
+        "sha256": "0b3559d89ffb4d959c484a6baacaedf259d32836e177ca3e2c8e4b3179200f35",
+        "signature": "8797681aa83606ff9ff584ed8b8b61883402ea56205a106e95819ae242a857b0c72f1a7487ecbd27fd74fdfe78d7c7f2efd0a6e570b0b508468853198a9ed605",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -606,8 +606,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/speech/versions/0.1.0/speech-0.1.0.zip",
-        "sha256": "9f35489b7b28207e8bd0dfb20bf74023f38b5c4cf1452b8c4d640c57783da97f",
-        "signature": "e9daad60097abaa86cd4d664d61a9d70f2502a087e5f89bb03386b2c0bd103f1635c16815fa4a3e1ebdc187d0811b5dc915c532d62d224276036f0b765246c08",
+        "sha256": "e303f98d3f52e92bc182808f0cd724683de0bff517624e9d9d4af780b451dc15",
+        "signature": "d106f40665b700e8af77844157cf7c60d59b16de9cab2c05568d179c6338a148b0799b3bac6a75c51852d6558b4766083cdf7952405085b7d84cae15b712f50c",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -627,8 +627,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/stt/versions/0.1.0/stt-0.1.0.zip",
-        "sha256": "a0b519b20b9c8d832f42a07dd793f0f7f683abc64c4d46ef11adebdf79de8685",
-        "signature": "acf2c2db2ddd4825cf46e8e89b5f5b30c0ba8b9fac8c0b256a1a7a6eb404cdf451a7cbf50c7c263bbf1a2a4db9ddda14bfdd113de4559250b6c735406017620e",
+        "sha256": "428dbc783c3d412bfa96fcb0ba2a0ab52bb85b0ce3f05501340473989ae3d26b",
+        "signature": "302a92b04af835e675ca71fcc75d9c3261abf2752e4cbc0fd6d92b8d618dce23a5da593255da276d883597b01e0e63c46d587ed8b2b1014ea5d7773b9fe59c07",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -647,8 +647,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/sync/versions/0.1.0/sync-0.1.0.zip",
-        "sha256": "f98a4b67871313ea55dfb17565c65327079355cfc6e31cf5117d61e1c3efd8b9",
-        "signature": "8b26d4f6cd618c137499245e8a0672a7b321298424586aca01d2bac715bd4c3879b6d1e21b7b264623249b26b30039a38e83480be9b540a4f702a3893638aa09",
+        "sha256": "a8b486bbac841895a5c1c7a5f274dd4c9ceb7b6991a42abeb565a59e8ee5143c",
+        "signature": "8d40f36d5da5bf2d662fef4ce8ef7e3fb4c8065ee6c610e5a741b83b2e409831ac722119371ce7564c79bab5d6ecf94963dc74baedf0d506b2bb4624d5933006",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -667,8 +667,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/sync-client/versions/0.1.0/sync-client-0.1.0.zip",
-        "sha256": "4c7e3ba778b94f5adf5257df343486a104235f9ae74009a880677a5939c9ec8b",
-        "signature": "6f8304a47da28bee4e4e36bbd44dba9381d6567c368d327163567ba7a939b179ecd458ecd27c3de7eedad4898d77ee881e0e669f0c37a074fce1d64c73d6fe0f",
+        "sha256": "c006f3a7d767fa3eadf96a1b5a27396fbc3abb60da5ac3b1dbb3a9687326734c",
+        "signature": "2ccac6664001657f218894aa59a7a64c34ccfe153a90942c1ac078095721809a4bfb9f9f8bbbcc1a9613742d3780dbbae2dbeb540257aa0f70bacca961543d0f",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -690,8 +690,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/system/versions/0.1.0/system-0.1.0.zip",
-        "sha256": "543cfe4a1bc17d1f59c9eb6bbc5d20ccedc7f145a1aecd76f99d50c932c700f6",
-        "signature": "dd11665992b2eb4ba9cb490573706f1b0f75bc042cdd457ca6a76f6ec78e8ee0765e096d4c9c18b30ba940bc6363f06636d7b5d7199c237ee19f8f03acb4660b",
+        "sha256": "78c0d491e03ed95f1eaff6b6b74e1b278e9d871b12c9c8e208dd4571da4d2262",
+        "signature": "db9eb9e28da5c573830cda1087257ca8b6f4991c99a80f08fb6b4d87365f8923f4e5021662569366669b427b7d44334cfb136a85b7fc15f8cf3d0e7cc6bf200b",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -710,8 +710,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/tasks/versions/0.1.0/tasks-0.1.0.zip",
-        "sha256": "fa26b603c8b79096a4f2b147d9cfe71b852765e56308a063896da61cafed2ef1",
-        "signature": "153e9a1c30c5eb2ba0f2a50ef80a550c3bb46be87fb59ebd56c276c32f83637dc32ca62788a049cbed3ba2c0850db8e7041d7f2323d6e13f24f232abd1b85a07",
+        "sha256": "9de3e44b6a63f18caf9ffd93824a20ca62e6958d5de2e97caab76aa5dff11506",
+        "signature": "d2f4d0bf77e59b83e99cb0fec0def13f3c811b546d6a6af0b43a8e1aa5886ee1912104ecb5a6d24ec9dc25fe98c059d215e79495a60d4b11f17a049bd2bc2508",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -731,8 +731,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/telegram/versions/0.1.0/telegram-0.1.0.zip",
-        "sha256": "c724fdade26e073e567a55290e7a2c5fa57643f7c0f6800e747674d4736f43cf",
-        "signature": "108941d611c6efc972fb5b3065e4d65946018ad9ae04090ab30d85f11acdf09baddf394ef022c500db8713ecabfee91758e612c67e860e91d90159fc2cb5db0a",
+        "sha256": "dc28246fb5d0913de03d88d621abd3080a5ca4896115a80c1cdf199a6d7c6446",
+        "signature": "dc9552280a603df664ee3bb6fbe5afe1add5658f1f1ed9b9c6af9015dbdf3a883d03e19002f756d17d983500f68d9ee3614698842adbe3d131d41d3e760c4f0f",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -752,8 +752,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/tts/versions/0.1.0/tts-0.1.0.zip",
-        "sha256": "fdf49bed0e9b00488592affb7eebd7212880df6aee6382cdb923f0b7307c2c7a",
-        "signature": "a776ea512a56ea6007cfa259743f34dead39be9ed308a89c2573d528a5cdc185cb67d7ddd07c53481033a00055cc343654f8ff7f3e36b71dc8db62fe65c8680a",
+        "sha256": "7358c190638766bf964f6ea55a67791a692c4725f802f6b570d1045a2bc6867d",
+        "signature": "82cd015997340ef833d454e28bcef5947da124d9ca8b9ff76178cd3eeec41ffe820eb877cf4bbe49a1b4d6c5a9acd0068223f3148994b30ba4f1e77cfb4d530b",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -773,8 +773,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/uptime/versions/0.1.0/uptime-0.1.0.zip",
-        "sha256": "6e37d5b26021823f37422e674450ff0a5db748305385012ca6344b3f940d42f3",
-        "signature": "db89cbb02a3bb7f17e190a799e922b01fccaa630f01fce60eca5bbf692b4d9bd5fd53f68fc6f8d737ed187d9f144c079481d2f7c075b7c75e74085ef86d4f800",
+        "sha256": "8834c6c135c0749280db40aa47acdb6f480e7b313f528360bf2f7547765163e2",
+        "signature": "ebcc2a3faad2154196c3ccf2a25435bdcc509a9934d4351383af62f2e89201cb5657a49e9866676d017707aa2b17b1a16177a7c8a93feacc24119b3e31c87b00",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -794,8 +794,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/vector-db/versions/0.1.0/vector-db-0.1.0.zip",
-        "sha256": "dc51bc4eab1f6bd56eaa9945628b08891a001c9956006fd8f0b646984a05d315",
-        "signature": "911e5113ab2b58ab05b97932000f2d2f7536bb65a639e6018a86533bd37cd0590589da60a1c5d97dc359951c2b4bcbe0a59a1a3062696927a1a55264c48bd100",
+        "sha256": "a5f4e957d9c200351903ffbc99ba564cf1cad7b84ff24fab0b167f11f7d2fbde",
+        "signature": "4c32a31ab15ee4eb1d0603bd416e10ecc971464fcf71c4cc069764050956a6ffd5ce205f11a41db84e79dd5ac41059820df81f0c88f20e44d95dc7a2a2143f07",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
@@ -814,8 +814,8 @@
     "versions": {
       "0.1.0": {
         "archive_url": "dist/weather/versions/0.1.0/weather-0.1.0.zip",
-        "sha256": "a77780765d1bd2ec833189b993a72b222496fbd2f7f9c1e67f139121a0256d39",
-        "signature": "918b050903ad92895027ba9ec88e31d365e0715f5ace58527640e907812066f3cbb776da9fa6dbc3f1907ccc2236dbd535ab5e1acb4b6e46b9d9581f473f5a0a",
+        "sha256": "6eca00ad2027053f610b8c61144d1cf51f865ff1444022fc24c87800bb03be3e",
+        "signature": "683cbd4823052ef06297a1cf55f0fb72852a118630229d827bcda999461e8a41c72d3fc2bc6b515ac2fe46a20eb187a7669e2abfbef86a005914fe030ff8c801",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
       }
