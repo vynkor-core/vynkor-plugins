@@ -7,3 +7,4 @@ pub mod outbound;
 pub mod provider;
 pub mod request;
 pub mod sse;
+pub mod tool_names;
