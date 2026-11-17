@@ -96,6 +96,10 @@ impl Provider for OpenAiCompatProvider {
         Box::<OpenAiStream>::default()
     }
 
+    fn recover_error(&self, status: u16, body: &[u8]) -> Option<ChatResult> {
+        recover_tool_use_failed(status, body)
+    }
+
     fn parse_response(&self, body: &[u8]) -> Result<ChatResult, String> {
         /// Providers disagree on null vs omitted: mimo-v2.5 sends an explicit
         /// `"tool_calls": null` on plain-text replies — serde(default) alone
@@ -179,6 +183,43 @@ impl Provider for OpenAiCompatProvider {
             },
         })
     }
+}
+
+/// Groq checks tool calls server-side: a call to a tool missing from the
+/// request's `tools` comes back as a 400 `tool_use_failed` with the model's
+/// output in `failed_generation`. Handing that call to the caller lets it
+/// answer "no such tool" and carry on, as it does with every other provider.
+fn recover_tool_use_failed(status: u16, body: &[u8]) -> Option<ChatResult> {
+    if status != 400 {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let err = v.get("error")?;
+    if err.get("code").and_then(|c| c.as_str()) != Some("tool_use_failed") {
+        return None;
+    }
+    let generated: serde_json::Value =
+        serde_json::from_str(err.get("failed_generation")?.as_str()?).ok()?;
+    let first = match &generated {
+        serde_json::Value::Array(a) => a.first()?,
+        other => other,
+    };
+    let name = first.get("name")?.as_str()?.to_string();
+    let arguments_json = match first.get("arguments") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(a) => a.to_string(),
+        None => "{}".to_string(),
+    };
+    Some(ChatResult {
+        content: String::new(),
+        tool_calls: vec![ToolCall {
+            id: "call_recovered".to_string(),
+            name,
+            arguments_json,
+        }],
+        stop_reason: "tool_calls".to_string(),
+        usage: Usage::default(),
+    })
 }
 
 impl EmbeddingProvider for OpenAiCompatProvider {
@@ -455,6 +496,33 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "launch");
         assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn groq_tool_use_failed_becomes_the_generated_call() {
+        let body = serde_json::json!({"error": {
+            "message": "Tool call validation failed: attempted to call tool 'dev.geo' which was not in request.tools",
+            "type": "invalid_request_error",
+            "code": "tool_use_failed",
+            "failed_generation": "{\"name\": \"dev.geo\", \"arguments\": {\"city\": \"Tashkent\"}}"
+        }})
+        .to_string();
+        let r = OpenAiCompatProvider
+            .recover_error(400, body.as_bytes())
+            .expect("recovered");
+        assert_eq!(r.tool_calls.len(), 1);
+        assert_eq!(r.tool_calls[0].name, "dev.geo");
+        assert_eq!(r.tool_calls[0].arguments_json, r#"{"city":"Tashkent"}"#);
+        assert_eq!(r.stop_reason, "tool_calls");
+    }
+
+    #[test]
+    fn other_errors_stay_errors() {
+        let auth = br#"{"error":{"message":"Invalid API Key","code":"invalid_api_key"}}"#;
+        assert!(OpenAiCompatProvider.recover_error(401, auth).is_none());
+        let bad = br#"{"error":{"code":"tool_use_failed","failed_generation":"not json"}}"#;
+        assert!(OpenAiCompatProvider.recover_error(400, bad).is_none());
+        assert!(OpenAiCompatProvider.recover_error(400, b"<html>").is_none());
     }
 
     #[test]

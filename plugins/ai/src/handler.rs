@@ -161,6 +161,13 @@ pub async fn handle_chat_completion(
         .map_err(|e| format!("malformed network response: {e}"))?;
 
     if !(200..300).contains(&net_resp.status) {
+        if let Some(mut result) = provider.recover_error(net_resp.status, net_resp.body.as_bytes())
+        {
+            crate::tool_names::restore(&mut result.tool_calls, &params.tools);
+            record_chat_usage(db, meta, &params, &result);
+            return serde_json::to_vec(&result)
+                .map_err(|e| format!("failed to encode response: {e}"));
+        }
         return Err(format!(
             "provider returned HTTP {}: {}",
             net_resp.status, net_resp.body

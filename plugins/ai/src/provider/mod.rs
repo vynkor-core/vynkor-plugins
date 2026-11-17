@@ -114,6 +114,12 @@ pub trait Provider: Send + Sync {
     /// result. Called only on a 2xx status — non-2xx is handled by
     /// `crate::handler` before this is reached.
     fn parse_response(&self, body: &[u8]) -> Result<ChatResult, String>;
+
+    /// A non-2xx reply that still carries what the model generated, turned
+    /// into a result; None = a real error. Default: never.
+    fn recover_error(&self, _status: u16, _body: &[u8]) -> Option<ChatResult> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
