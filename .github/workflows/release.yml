@@ -1,158 +1,213 @@
-# INF-01: tag-driven plugin releases (package + sign + publish).
+# Plugin releases: build, sign, upload to the store (Cloudflare R2), and open
+# a PR that mirrors the published registry.json into the repo.
 #
-# Usage:
-#   git tag agent-v0.1.8 && git push origin agent-v0.1.8
+#   one plugin:   git tag agent-v0.1.1 && git push origin agent-v0.1.1
+#   many or all:  gh workflow run release.yml -f plugins="agent ai" -f publish=true
+#                 gh workflow run release.yml -f publish=true          # every plugin
+#   dry run:      gh workflow run release.yml                          # unsigned build only
 #
-# The tag MUST have the form <slug>-v<semver> where <slug> is a plugin
-# directory under plugins/ and its manifest version matches <semver>.
-# Display name / description / category / tags / status are taken from the
-# slug's registry.json entry; a plugin that has never been released falls
-# back to scripts/registry-meta.json (drop the slug from there once its first
-# release has written the real registry entry).
+# A tag MUST be <slug>-v<semver>, <slug> a directory under plugins/ whose
+# manifest version is <semver>. Display metadata comes from
+# scripts/registry-meta.json.
 #
-# Signing uses the Ed25519 seed from the SIGNING_KEY_HEX repository secret
-# (the same pinned maintainer key `vynm install` verifies against).
-# Protect the secret with a GitHub environment ("release") configured with
-# required reviewers before going live.
+# The live registry.json on R2 is the source of truth: a publish starts from
+# it (or from an empty registry with wipe=true, which also deletes every old
+# archive) and adds the new versions.
+#
+# Builds run on ubuntu-22.04: a binary needs a glibc at least as new as the
+# one it was built against, so an old one starts on more systems.
+#
+# Secrets (environment "release"): SIGNING_KEY_HEX (Ed25519 seed of the pinned
+# maintainer key), R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
+# R2_BUCKET.
 
 name: release
 
 on:
   push:
     tags: ['*-v*']
+  workflow_dispatch:
+    inputs:
+      plugins:
+        description: Plugins to release, space-separated; empty = all
+        type: string
+        default: ''
+      publish:
+        description: Sign and upload to the store (off = unsigned dry-run build)
+        type: boolean
+        default: false
+      wipe:
+        description: Start from an empty registry and delete every old archive (with publish)
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  pull-requests: write
 
+# every release rewrites the one registry: never two at once
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release
   cancel-in-progress: false
 
 env:
   PINNED_PUBKEY: 6ee352d706eaf5b5114a1252fb76bb8a2bfbf177b0e4c8e9c21f73b9019083ee
+  PUBLIC_BASE_URL: https://pub-6fd4e146631e43028372c95cbd2b9b42.r2.dev
 
 jobs:
-  package-and-release:
-    runs-on: ubuntu-latest
+  release:
+    runs-on: ubuntu-22.04
     environment: release
+    timeout-minutes: 240
     steps:
-      - name: Parse tag into slug/version
+      - name: What to release
+        env:
+          IN_PLUGINS: ${{ inputs.plugins }}
+          IN_PUBLISH: ${{ inputs.publish }}
+          IN_WIPE: ${{ inputs.wipe }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          if [[ ! "$tag" =~ ^([a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
-            echo "::error::tag '$tag' must match <slug>-v<semver> (e.g. agent-v0.1.8)"
-            exit 1
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ ! "$tag" =~ ^([a-z0-9-]+)-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              echo "::error::tag '$tag' must match <slug>-v<semver> (e.g. agent-v0.1.1)"
+              exit 1
+            fi
+            slugs="${BASH_REMATCH[1]}"; version="${BASH_REMATCH[2]}"
+            publish=true; wipe=false
+          else
+            slugs="$IN_PLUGINS"; version=""
+            publish="$IN_PUBLISH"; wipe="$IN_WIPE"
           fi
-          echo "SLUG=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
-          echo "VERSION=${BASH_REMATCH[2]}" >> "$GITHUB_ENV"
+          for s in $slugs; do
+            [[ "$s" =~ ^[a-z0-9-]+$ ]] || { echo "::error::bad plugin name '$s'"; exit 1; }
+          done
+          if [[ "$wipe" == true && "$publish" != true ]]; then
+            echo "::error::wipe needs publish"; exit 1
+          fi
+          {
+            echo "SLUGS=$slugs"
+            echo "VERSION=$version"
+            echo "PUBLISH=$publish"
+            echo "WIPE=$wipe"
+          } >> "$GITHUB_ENV"
+          echo "plugins: ${slugs:-all}; publish=$publish wipe=$wipe"
 
-      - name: Checkout full history
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
         with:
-          fetch-depth: 0
+          prefix-key: v1-release-2204
+          # see ci.yml: sherpa's prebuilt libs live outside the profile dirs
+          cache-directories: target/sherpa-onnx-prebuilt
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust build cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: plugins/${{ env.SLUG }}
-
-      - name: Install packaging deps
+      - name: Install build and packaging deps
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends zip protobuf-compiler jq
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler pkg-config libssl-dev cmake libopus-dev zip jq
           python3 -m pip install --quiet cryptography
+          if [[ "$PUBLISH" == true ]]; then
+            # 22.04's rclone predates the Cloudflare provider
+            curl -fsSLo /tmp/rclone.deb https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-amd64.deb
+            sudo dpkg -i /tmp/rclone.deb
+          fi
 
-      - name: Validate manifest against the tag
+      - name: Check the tag against the manifest
+        if: env.VERSION != ''
         run: |
-          manifest="plugins/$SLUG/plugin.json"
-          if [[ ! -f "$manifest" ]]; then
-            echo "::error::plugins/$SLUG/plugin.json not found — slug must be a plugin directory"
-            exit 1
-          fi
-          manifest_version="$(jq -r '.version' "$manifest")"
-          if [[ "$manifest_version" != "$VERSION" ]]; then
-            echo "::error::manifest version $manifest_version != tag version $VERSION — bump plugin.json first"
-            exit 1
-          fi
+          manifest="plugins/$SLUGS/plugin.json"
+          [[ -f "$manifest" ]] || { echo "::error::$manifest not found"; exit 1; }
+          v="$(jq -r .version "$manifest")"
+          [[ "$v" == "$VERSION" ]] || { echo "::error::manifest version $v != tag $VERSION — bump plugin.json first"; exit 1; }
 
-      - name: Resolve registry metadata for the slug
+      - name: Start from the live registry
         run: |
-          meta_query='.[$s] | [(.name // ""), (.description // ""), (.category // "utility"),
-                     ((.tags // []) | join(",")), (.status // "stable")] | join("\u001f")'
-          source=registry.json
-          if [[ "$(jq -r --arg s "$SLUG" 'has($s)' registry.json)" != "true" ]]; then
-            source=scripts/registry-meta.json
+          if [[ "$WIPE" == true ]]; then
+            printf '{\n  "meta": {"apiVersion": 2, "lastUpdated": "%s"},\n  "revoked": []\n}\n' "$(date -u +%F)" > registry.json
+            echo "starting from an empty registry"
+          elif [[ "$PUBLISH" == true ]]; then
+            curl -fsS -A vynkor-release/1.0 "$PUBLIC_BASE_URL/registry.json" -o registry.json
+            echo "live registry: $(jq 'del(.meta,.revoked) | length' registry.json) plugins"
           fi
-          # \x1f, not tab: tab is IFS whitespace, so an empty field would collapse
-          # and shift every later column.
-          IFS=$'\x1f' read -r NAME DESC CATEGORY TAGS STATUS < <(jq -r --arg s "$SLUG" "$meta_query" "$source")
-          if [[ -z "$NAME" || -z "$DESC" ]]; then
-            echo "::error::no metadata for slug '$SLUG' in registry.json or scripts/registry-meta.json — add it to registry-meta.json"
-            exit 1
-          fi
-          echo "metadata for $SLUG from $source"
-          {
-            echo "NAME=$NAME"
-            echo "DESC=$DESC"
-            echo "CATEGORY=$CATEGORY"
-            echo "TAGS=$TAGS"
-            echo "STATUS=$STATUS"
-          } >> "$GITHUB_ENV"
 
-      - name: Package and sign
+      - name: Package
         env:
-          VYNKOR_SIGNING_KEY_HEX: ${{ secrets.SIGNING_KEY_HEX }}
+          SIGNING_KEY_HEX: ${{ secrets.SIGNING_KEY_HEX }}
         run: |
-          scripts/package.sh "$SLUG" "$NAME" "$DESC" \
-            --category "$CATEGORY" --tags "$TAGS" --status "$STATUS"
+          if [[ "$PUBLISH" == true ]]; then
+            [[ -n "$SIGNING_KEY_HEX" ]] || { echo "::error::SIGNING_KEY_HEX is not set in the release environment"; exit 1; }
+            export VYNKOR_SIGNING_KEY_HEX="$SIGNING_KEY_HEX"
+          fi
+          # shellcheck disable=SC2086 # word-split the plugin list
+          scripts/release-all.sh $SLUGS
 
-      - name: Verify signature exists
-        # package.sh already self-verifies the signature and warns when the
-        # key differs from the pinned maintainer pubkey; here we only assert
-        # a signature actually got written (128 hex + newline).
+      - name: Check every new archive is signed
+        if: env.PUBLISH == 'true'
         run: |
-          sig_file="dist/$SLUG/versions/$VERSION/signature.sig"
-          if [[ ! -s "$sig_file" ]]; then
-            echo "::error::missing or empty $sig_file — SIGNING_KEY_HEX secret not set?"
-            exit 1
-          fi
-          if ! grep -qE '^[0-9a-f]{128}$' "$sig_file"; then
-            echo "::error::$sig_file is not a 128-hex ed25519 signature"
-            exit 1
-          fi
+          bad=0
+          for vd in dist/*/versions/*/; do
+            sig="$vd/signature.sig"
+            if ! grep -qE '^[0-9a-f]{128}$' "$sig" 2>/dev/null; then
+              echo "::error::$sig missing or not a 128-hex ed25519 signature"; bad=1
+            fi
+          done
+          exit $bad
 
-      - name: Commit dist/ + registry.json
+      - name: Upload to the store
+        if: env.PUBLISH == 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          branch="$(
-            git branch -r --contains "${GITHUB_SHA}" \
-              --format '%(refname:lstrip=3)' | grep -v '^HEAD$' | head -1
-          )"
-          if [[ -z "$branch" ]]; then
-            echo "::error::could not determine the source branch of the tag"
-            exit 1
-          fi
-          git config user.name "vynkor-release-bot"
-          git config user.email "release@vynkor.dev"
-          git add dist registry.json
-          if git diff --cached --quiet; then
-            echo "nothing to commit"
-          else
-            git commit -m "chore(release): ${SLUG}@${VERSION} [skip ci]"
-            git push origin "HEAD:$branch"
-          fi
+          args=()
+          [[ "$WIPE" == true ]] && args+=(--wipe)
+          scripts/publish-r2.sh "${args[@]}"
 
-      - name: Create GitHub release with artifacts
+      - name: Keep the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.run_id }}
+          path: |
+            registry.json
+            dist/
+          retention-days: 7
+
+      - name: PR the registry into the repo
+        if: env.PUBLISH == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          vd="dist/$SLUG/versions/$VERSION"
-          gh release create "$GITHUB_REF_NAME" \
-            --title "${SLUG} ${VERSION}" \
-            --generate-notes \
-            "$vd/$SLUG-$VERSION.zip" \
-            "$vd/$SLUG-$VERSION-src.zip" \
-            "$vd/checksum.sha256" \
-            "$vd/signature.sig"
+          cp registry.json /tmp/registry.json
+          git config user.name "vynkor-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git fetch -q origin develop
+          branch="release/registry-$GITHUB_RUN_ID"
+          git switch -q -c "$branch" origin/develop
+          cp /tmp/registry.json registry.json
+          if git diff --quiet -- registry.json; then
+            echo "registry.json unchanged"; exit 0
+          fi
+          git add registry.json
+          git commit -q -m "chore(release): registry after run $GITHUB_RUN_ID (${SLUGS:-all plugins})"
+          git push -q origin "$branch"
+          gh pr create --base develop --head "$branch" \
+            --title "chore(release): registry after ${SLUGS:-all plugins}" \
+            --body "Mirror of the registry.json this run published to the store (run $GITHUB_RUN_ID)." \
+            || echo "::warning::could not open the PR; the branch $branch has the registry"
+
+      - name: GitHub release for the tag
+        if: env.VERSION != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          vd="dist/$SLUGS/versions/$VERSION"
+          gh release create "$GITHUB_REF_NAME" --title "$SLUGS $VERSION" --generate-notes \
+            "$vd/$SLUGS-$VERSION.zip" "$vd/$SLUGS-$VERSION-src.zip" \
+            "$vd/checksum.sha256" "$vd/signature.sig"

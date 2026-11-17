@@ -1,6 +1,6 @@
 {
   "plugin_id": "weather",
-  "version": "0.1.2",
+  "version": "0.1.0",
   "permissions": [
     "PERMISSION_NETWORK"
   ],

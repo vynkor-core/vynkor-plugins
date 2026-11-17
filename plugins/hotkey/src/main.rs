@@ -28,7 +28,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "hotkey";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 5] =
     ["hotkey_bind", "hotkey_unbind", "hotkey_list", "hotkey_inject", "hotkey_status"];
 

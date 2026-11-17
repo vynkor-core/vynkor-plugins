@@ -19,7 +19,7 @@ use crate::providers::AppEntry;
 use crate::runner::{Launcher, RealLauncher};
 
 pub const PLUGIN_ID: &str = "launcher";
-pub const PLUGIN_VERSION: &str = "0.1.5";
+pub const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub const ACTIONS: &[&str] = &["launch", "launch_command", "launch_list", "launch_providers"];
 

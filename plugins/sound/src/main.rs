@@ -22,7 +22,7 @@ use handler::SharedState;
 use players::{Config as PlayerConfig, RealSpawner};
 
 const PLUGIN_ID: &str = "sound";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 struct App {
     cfg: PlayerConfig,

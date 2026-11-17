@@ -7,7 +7,7 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "library";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 6] = [
     "library_scan",
     "library_search",

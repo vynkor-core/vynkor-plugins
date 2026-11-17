@@ -29,7 +29,7 @@ use capture::{OutboundTx, SharedState, State};
 use recorders::{Config as RecorderConfig, RealSpawner, RecorderSpawner};
 
 const PLUGIN_ID: &str = "mic";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Comma-separated allowlist of `ipc_targets` for chunk streaming. The
 /// kernel gates peer-to-peer unicast per-target (T-04): a target not listed

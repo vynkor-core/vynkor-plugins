@@ -7,7 +7,7 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "github";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 4] = ["gh_list_issues", "gh_create_issue", "gh_list_prs", "gh_list_runs"];
 
 fn manifest() -> PluginManifest {

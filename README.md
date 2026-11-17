@@ -88,11 +88,16 @@ Permissions are not stored in the registry (execution metadata lives in each
 plugin's manifest). The `dist/` tree is hierarchical: `dist/<slug>/latest.json`
 (newest registered version), `dist/<slug>/assets/`, and
 `dist/<slug>/versions/<version>/` (binary + source zips, a `plugin.json` browse
-copy, `checksum.sha256`, `signature.sig`). A plugin only gets an entry once
-it's packaged and released. Releases are tag-driven
-(`.github/workflows/release.yml`): push `<slug>-v<semver>` matching the
-manifest version and CI packages, signs and commits the entry. For a
-plugin's **first** release the display metadata comes from
-[`scripts/registry-meta.json`](scripts/registry-meta.json) — remove the slug
-from there once released. `python3 scripts/check-registry.py` fails if a
-plugin is in neither file.
+copy, `checksum.sha256`, `signature.sig`). The store itself lives on
+Cloudflare R2; `dist/` is build output and is not committed, and the
+`registry.json` here mirrors the published one.
+
+Releases run in CI (`.github/workflows/release.yml`, built on ubuntu-22.04 so
+the binaries start on older glibc): push a `<slug>-v<semver>` tag matching the
+manifest version for one plugin, or `gh workflow run release.yml -f
+publish=true [-f plugins="a b"]` for many. The run signs with the pinned key,
+uploads to R2 and opens a PR with the new `registry.json`. Display metadata
+(name, description, category, tags, status) for every plugin is in
+[`scripts/registry-meta.json`](scripts/registry-meta.json);
+`python3 scripts/check-registry.py` fails if a plugin has none. Locally:
+`scripts/release-all.sh [slug…]` then `scripts/publish-r2.sh`.

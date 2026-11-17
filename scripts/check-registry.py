@@ -12,15 +12,15 @@ for slug, entry in data.items():
     assert 'versions' in entry, slug + ' missing versions'
     assert entry['versions'], slug + ' empty versions'
     assert entry.get('tags') != ['stable'], slug + ' tags look like a leaked status column'
-    assert slug not in meta, slug + ' is released — remove it from scripts/registry-meta.json'
+    assert slug in meta, slug + ' is released but has no display metadata in scripts/registry-meta.json'
     count += 1
 for slug, entry in meta.items():
     if slug.startswith('_'):
         continue
     for k in ('name', 'description', 'category', 'tags', 'status'):
         assert entry.get(k), slug + ' registry-meta.json missing ' + k
-# Every shipped plugin must be installable or queued for its first release.
+# Every shipped plugin has display metadata: release-all.sh and release.yml read it.
 for slug in sorted(os.listdir('plugins')):
     if os.path.isfile(os.path.join('plugins', slug, 'plugin.json')):
-        assert slug in data or slug in meta, 'plugins/%s is in neither registry.json nor scripts/registry-meta.json' % slug
-print('registry.json: %d plugins validated, %d pending first release' % (count, len([s for s in meta if not s.startswith('_')])))
+        assert slug in meta, 'plugins/%s has no entry in scripts/registry-meta.json' % slug
+print('registry.json: %d plugins released, %d with metadata' % (count, len([s for s in meta if not s.startswith('_')])))

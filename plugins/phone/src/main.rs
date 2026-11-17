@@ -23,7 +23,7 @@ use vynkor_sdk::proto::{ActionRequest, Envelope, PluginManifest};
 use vynkor_sdk::{ConcurrentHandler, VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "phone";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const ACTIONS: [&str; 6] = [
     "phone_status",
