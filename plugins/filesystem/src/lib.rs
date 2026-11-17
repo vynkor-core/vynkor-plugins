@@ -31,7 +31,15 @@ impl ConcurrentHandler for Handler {
                 "PERMISSION_FILES_READ".into(),
                 "PERMISSION_FILES_WRITE".into(),
             ],
-            actions: vec!["fs_list".into(), "fs_read".into(), "fs_write".into(), "fs_delete".into(), "fs_mkdir".into(), "fs_rename".into(), "fs_move".into()],
+            actions: vec![
+                "fs_list".into(),
+                "fs_read".into(),
+                "fs_write".into(),
+                "fs_delete".into(),
+                "fs_mkdir".into(),
+                "fs_rename".into(),
+                "fs_move".into(),
+            ],
             action_specs: vynkor_plugin_manifest::action_specs(),
             ..Default::default()
         }
@@ -61,12 +69,19 @@ mod manifest_specs_tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

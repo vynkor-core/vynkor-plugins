@@ -89,8 +89,17 @@ const REDACTED: &str = "[redacted]";
 const SENSITIVE_TOOL_WORDS: [&str; 4] = ["secret", "password", "token", "credential"];
 /// Substrings (lowercase) of JSON keys whose values are masked everywhere.
 const SENSITIVE_KEY_WORDS: [&str; 11] = [
-    "value", "password", "passwd", "token", "secret", "api_key", "apikey", "authorization", "auth",
-    "cookie", "private_key",
+    "value",
+    "password",
+    "passwd",
+    "token",
+    "secret",
+    "api_key",
+    "apikey",
+    "authorization",
+    "auth",
+    "cookie",
+    "private_key",
 ];
 
 /// Tool names may be target-prefixed (`dev-phone.fs_read`, `laptop.exec`):
@@ -168,7 +177,12 @@ pub fn redact_goal(doc: &mut crate::store::GoalDoc) {
         }
     }
     for step in &mut doc.steps {
-        let Some(tool) = step.detail.get("tool").and_then(Value::as_str).map(str::to_string) else {
+        let Some(tool) = step
+            .detail
+            .get("tool")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
             continue;
         };
         if let Some(params) = step.detail.get_mut("params") {
@@ -187,7 +201,11 @@ fn redact_observation(content: &str) -> Option<String> {
     let rest = content.strip_prefix("[TOOL RESULT name=")?;
     let (header, body) = rest.split_once('\n').unwrap_or((rest, ""));
     let (name, status) = header.strip_suffix(']')?.split_once(" status=")?;
-    let body = if status == "ok" { redact_result(name, body) } else { redact_error(name, body) };
+    let body = if status == "ok" {
+        redact_result(name, body)
+    } else {
+        redact_error(name, body)
+    };
     Some(format!("[TOOL RESULT name={name} status={status}]\n{body}"))
 }
 
@@ -210,7 +228,9 @@ fn redact_args(tool: &str, args: &Value) -> String {
     if is_sensitive_tool(tool) {
         let keys_only = match args {
             Value::Object(map) => Value::Object(
-                map.keys().map(|k| (k.clone(), Value::String(REDACTED.to_string()))).collect(),
+                map.keys()
+                    .map(|k| (k.clone(), Value::String(REDACTED.to_string())))
+                    .collect(),
             ),
             Value::Null => Value::Null,
             _ => Value::String(REDACTED.to_string()),
@@ -287,7 +307,13 @@ impl TraceRec {
             Ok(body) => (trace_text(&redact_result(tool, body)), None),
             Err(e) => (String::new(), Some(trace_text(&redact_error(tool, e)))),
         };
-        Self { tool: tool.to_string(), args: trace_text(&args_text), result, error, ms }
+        Self {
+            tool: tool.to_string(),
+            args: trace_text(&args_text),
+            result,
+            error,
+            ms,
+        }
     }
 }
 
@@ -395,8 +421,10 @@ fn clip(s: &str) -> String {
 
 /// Clip each text and drop the oldest pairs until the total fits the budget.
 pub fn fit_history(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
-    let mut pairs: Vec<(String, String)> =
-        pairs.into_iter().map(|(q, a)| (clip(&q), clip(&a))).collect();
+    let mut pairs: Vec<(String, String)> = pairs
+        .into_iter()
+        .map(|(q, a)| (clip(&q), clip(&a)))
+        .collect();
     let size = |p: &[(String, String)]| p.iter().map(|(q, a)| q.len() + a.len()).sum::<usize>();
     while !pairs.is_empty() && size(&pairs) > HISTORY_TOTAL_MAX_BYTES {
         pairs.remove(0);
@@ -413,7 +441,11 @@ pub async fn history(
     last: u32,
 ) -> Vec<(String, String)> {
     let v = match rpc
-        .call("chat_session_read", json!({"id": session_id, "last": last}), timeout_ms)
+        .call(
+            "chat_session_read",
+            json!({"id": session_id, "last": last}),
+            timeout_ms,
+        )
         .await
     {
         Ok(v) => v,
@@ -451,7 +483,10 @@ mod tests {
     fn redact_goal_strips_results_and_params_but_not_pending() {
         use crate::store::{StepRec, Turn};
         let mut doc = crate::store::tests::sample(crate::store::STATUS_COMPLETED);
-        let t = |role: &str, c: &str| Turn { role: role.into(), content: c.into() };
+        let t = |role: &str, c: &str| Turn {
+            role: role.into(),
+            content: c.into(),
+        };
         doc.transcript = vec![
             t("user", "read my token"),
             t("assistant", r#"{"tool": "secret_get", "params": {"name": "gh", "value": "S3CR3T"}}"#),
@@ -471,9 +506,14 @@ mod tests {
         for secret in ["S3CR3T", "private file body", "K-1", "\"P\""] {
             assert!(!all.contains(secret), "{secret} leaked: {all}");
         }
-        assert!(doc.transcript[2].content.starts_with("[TOOL RESULT name=secret_get status=ok]\n"));
+        assert!(doc.transcript[2]
+            .content
+            .starts_with("[TOOL RESULT name=secret_get status=ok]\n"));
         assert!(doc.transcript[3].content.ends_with("[omitted]"));
-        assert!(doc.transcript[4].content.contains("down"), "non-secret error text kept");
+        assert!(
+            doc.transcript[4].content.contains("down"),
+            "non-secret error text kept"
+        );
         assert_eq!(doc.transcript[0].content, "read my token");
         assert_eq!(doc.transcript[5].content, "Done.");
         assert_eq!(doc.steps[0].detail["params"]["title"], "hi");
@@ -484,7 +524,11 @@ mod tests {
     }
 
     fn o(device: &str, kind: &str, source: &str) -> Origin {
-        Origin { device: device.into(), kind: kind.into(), source: source.into() }
+        Origin {
+            device: device.into(),
+            kind: kind.into(),
+            source: source.into(),
+        }
     }
 
     #[test]
@@ -501,7 +545,10 @@ mod tests {
             &json!({"url": "u", "headers": [{"Authorization": "Bearer abc", "x": "y"}]}),
             r#"{"data": {"api_key": "k", "n": 1}, "cookie": "c"}"#,
         );
-        assert!(!a.contains("Bearer abc") && a.contains("\"x\":\"y\""), "{a}");
+        assert!(
+            !a.contains("Bearer abc") && a.contains("\"x\":\"y\""),
+            "{a}"
+        );
         assert!(!r.contains("\"k\""), "{r}");
         assert!(r.contains(r#""n":1"#) && !r.contains(r#""c""#), "{r}");
         // non-JSON result of a normal tool is untouched
@@ -512,22 +559,42 @@ mod tests {
     fn redaction_runs_before_truncation() {
         // The secret sits past the 200-char cut in a JSON value under a
         // sensitive key: masking first must still remove it entirely.
-        let long = format!(r#"{{"pad": "{}", "token": "SECRET-TAIL"}}"#, "p".repeat(300));
+        let long = format!(
+            r#"{{"pad": "{}", "token": "SECRET-TAIL"}}"#,
+            "p".repeat(300)
+        );
         let rec = TraceRec::new("http_get", &json!({}), Ok(&long), 1);
         assert!(!rec.result.contains("SECRET-TAIL"));
-        let rec = TraceRec::new("http_get", &json!({"token": "T0P"}), Err(r#"{"auth":"A1"}"#), 1);
+        let rec = TraceRec::new(
+            "http_get",
+            &json!({"token": "T0P"}),
+            Err(r#"{"auth":"A1"}"#),
+            1,
+        );
         assert!(!rec.args.contains("T0P"));
         assert!(!rec.error.unwrap().contains("A1"));
     }
 
     #[test]
     fn origin_normalizes_device_and_source() {
-        assert_eq!(origin("laptop.", None, None, "host"), o("laptop", "voice", "local"));
-        assert_eq!(origin("Laptop.desktop", None, None, "host"), o("laptop", "voice", "desktop"));
+        assert_eq!(
+            origin("laptop.", None, None, "host"),
+            o("laptop", "voice", "local")
+        );
+        assert_eq!(
+            origin("Laptop.desktop", None, None, "host"),
+            o("laptop", "voice", "desktop")
+        );
         assert_eq!(origin("", None, None, "HOST"), o("host", "voice", "local"));
-        assert_eq!(origin(".desktop", None, None, "host"), o("host", "voice", "desktop"));
+        assert_eq!(
+            origin(".desktop", None, None, "host"),
+            o("host", "voice", "desktop")
+        );
         let long = format!("dev.{}", "s".repeat(100));
-        assert_eq!(origin(&long, None, None, "host").source.chars().count(), SOURCE_MAX_CHARS);
+        assert_eq!(
+            origin(&long, None, None, "host").source.chars().count(),
+            SOURCE_MAX_CHARS
+        );
         let src = origin("dev.x", None, Some(&"é".repeat(100)), "host").source;
         assert_eq!(src.chars().count(), SOURCE_MAX_CHARS);
     }
@@ -558,7 +625,11 @@ mod tests {
     #[test]
     fn fs_and_exec_results_are_omitted_but_errors_kept() {
         for tool in ["fs_read", "fs_list", "exec_run", "shell_exec", "Shell"] {
-            assert_eq!(redact(tool, &json!({"path": "/x"}), "SECRET FILE BODY").1, "[omitted]", "{tool}");
+            assert_eq!(
+                redact(tool, &json!({"path": "/x"}), "SECRET FILE BODY").1,
+                "[omitted]",
+                "{tool}"
+            );
         }
         let rec = TraceRec::new("fs_read", &json!({"path": "/etc/x"}), Ok("body"), 1);
         assert_eq!(rec.result, "[omitted]");
@@ -567,19 +638,30 @@ mod tests {
 
     #[test]
     fn target_prefixed_tool_names_are_classified_by_base_name() {
-        assert_eq!(redact("dev-phone.fs_read", &json!({}), "BODY").1, "[omitted]");
+        assert_eq!(
+            redact("dev-phone.fs_read", &json!({}), "BODY").1,
+            "[omitted]"
+        );
         assert_eq!(redact("laptop.exec", &json!({}), "BODY").1, "[omitted]");
         let (a, r) = redact("dev-x.secret_get", &json!({"name": "db_pass"}), "hunter2");
         assert_eq!(r, "[redacted]");
         assert_eq!(a, r#"{"name":"[redacted]"}"#);
-        assert_eq!(redact("Dev-X.Secret_Get", &json!({}), "hunter2").1, "[redacted]");
+        assert_eq!(
+            redact("Dev-X.Secret_Get", &json!({}), "hunter2").1,
+            "[redacted]"
+        );
         // prefix text is not the tool: a plain tool on a device called "fs_box" is not omitted
         assert_eq!(redact("fs_box.ping", &json!({}), "pong").1, "pong");
     }
 
     #[test]
     fn omit_tool_errors_are_a_fixed_string() {
-        for tool in ["exec_run", "fs_read", "dev-phone.fs_read", "laptop.shell_exec"] {
+        for tool in [
+            "exec_run",
+            "fs_read",
+            "dev-phone.fs_read",
+            "laptop.shell_exec",
+        ] {
             for err in [
                 "command failed:\nDB_PASSWORD=hunter2",
                 r#"failed: {"password":"hunter2"}"#,
@@ -616,14 +698,21 @@ mod tests {
 
     #[test]
     fn missing_plugin_is_detected_and_warned_once() {
-        assert!(is_missing_plugin("chat_session_resolve failed: action not found"));
-        assert!(!is_missing_plugin("chat_session_resolve timed out after 2000 ms"));
+        assert!(is_missing_plugin(
+            "chat_session_resolve failed: action not found"
+        ));
+        assert!(!is_missing_plugin(
+            "chat_session_resolve timed out after 2000 ms"
+        ));
         let flag = AtomicBool::new(false);
         let missing = "chat_session_resolve failed: action not found";
         assert!(warn_chats("resolve", missing, &flag), "first warns");
         assert!(!warn_chats("read", missing, &flag), "second is silent");
         let other = "chat_session_resolve timed out after 2000 ms";
-        assert!(warn_chats("resolve", other, &flag), "other errors always warn");
+        assert!(
+            warn_chats("resolve", other, &flag),
+            "other errors always warn"
+        );
         assert!(warn_chats("resolve", other, &flag));
     }
 
@@ -634,8 +723,9 @@ mod tests {
         assert_eq!(fitted[0].0.chars().count(), HISTORY_TEXT_MAX_CHARS + 1);
         assert!(fitted[0].0.ends_with('…'));
         // 5 pairs of ~2000 bytes each exceed 8000: the oldest go first.
-        let pairs: Vec<(String, String)> =
-            (0..5).map(|i| (format!("{i}{}", "q".repeat(999)), "a".repeat(1000))).collect();
+        let pairs: Vec<(String, String)> = (0..5)
+            .map(|i| (format!("{i}{}", "q".repeat(999)), "a".repeat(1000)))
+            .collect();
         let fitted = fit_history(pairs);
         assert_eq!(fitted.len(), 4);
         assert!(fitted[0].0.starts_with('1'), "oldest dropped, newest kept");
@@ -644,17 +734,26 @@ mod tests {
 
     #[test]
     fn origin_from_relayed_device_caller() {
-        assert_eq!(origin("laptop.desktop", None, None, "host"), o("laptop", "voice", "desktop"));
+        assert_eq!(
+            origin("laptop.desktop", None, None, "host"),
+            o("laptop", "voice", "desktop")
+        );
     }
 
     #[test]
     fn origin_from_local_plugin_caller() {
-        assert_eq!(origin("telegram", Some("chat"), None, "host"), o("host", "chat", "telegram"));
+        assert_eq!(
+            origin("telegram", Some("chat"), None, "host"),
+            o("host", "chat", "telegram")
+        );
     }
 
     #[test]
     fn origin_from_empty_caller_uses_explicit_source() {
-        assert_eq!(origin("", None, Some("ctl"), "mbp"), o("mbp", "voice", "ctl"));
+        assert_eq!(
+            origin("", None, Some("ctl"), "mbp"),
+            o("mbp", "voice", "ctl")
+        );
         assert_eq!(origin("", None, None, "mbp"), o("mbp", "voice", "local"));
     }
 }

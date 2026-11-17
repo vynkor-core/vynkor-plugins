@@ -49,7 +49,12 @@ impl Brightness for SysfsBrightness {
         if max == 0 {
             return Err(SystemError::Backend("max_brightness is 0".into()));
         }
-        match tokio::fs::write(self.device_dir.join("brightness"), target_raw(max, percent).to_string()).await {
+        match tokio::fs::write(
+            self.device_dir.join("brightness"),
+            target_raw(max, percent).to_string(),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 // No write access to the sysfs node — delegate to
@@ -95,7 +100,11 @@ pub fn detect(runner: Arc<dyn CommandRunner>) -> Option<Arc<dyn Brightness>> {
 fn target_raw(max: u64, percent: u8) -> u64 {
     let raw = u128::from(max) * u128::from(percent) / 100;
     let raw = u64::try_from(raw).unwrap_or(u64::MAX);
-    if raw == 0 { 1 } else { raw }
+    if raw == 0 {
+        1
+    } else {
+        raw
+    }
 }
 
 fn calc_percent(cur: u64, max: u64) -> Option<u8> {
@@ -112,7 +121,8 @@ mod tests {
     use std::sync::Mutex;
 
     fn tmp_device(name: &str, max: u64, cur: u64) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("system-plugin-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("system-plugin-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         std::fs::write(dir.join("max_brightness"), format!("{max}\n")).expect("max");
@@ -127,11 +137,17 @@ mod tests {
 
     impl FakeRunner {
         fn ok() -> Self {
-            Self { fail_spawns: false, log: Mutex::new(Vec::new()) }
+            Self {
+                fail_spawns: false,
+                log: Mutex::new(Vec::new()),
+            }
         }
 
         fn failing() -> Self {
-            Self { fail_spawns: true, log: Mutex::new(Vec::new()) }
+            Self {
+                fail_spawns: true,
+                log: Mutex::new(Vec::new()),
+            }
         }
 
         fn ran(&self) -> Vec<String> {
@@ -149,13 +165,18 @@ mod tests {
             if self.fail_spawns {
                 return Err(RunnerError::NotFound(program.to_string()));
             }
-            Ok(RunOutcome { ok: true, stdout: String::new(), stderr: String::new() })
+            Ok(RunOutcome {
+                ok: true,
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
     }
 
     #[test]
     fn detect_finds_first_deterministic_device() {
-        let base = std::env::temp_dir().join(format!("system-plugin-detect-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("system-plugin-detect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(base.join("intel_backlight")).unwrap();
         std::fs::create_dir_all(base.join("acpi_video0")).unwrap();
@@ -195,7 +216,9 @@ mod tests {
     async fn permission_denied_falls_back_to_brightnessctl() {
         let dir = tmp_device("fallback", 1000, 500);
         // Make the node read-only so the direct write hits EACCES.
-        let mut perm = std::fs::metadata(dir.join("brightness")).unwrap().permissions();
+        let mut perm = std::fs::metadata(dir.join("brightness"))
+            .unwrap()
+            .permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o444);
         std::fs::set_permissions(dir.join("brightness"), perm).unwrap();
 
@@ -213,7 +236,9 @@ mod tests {
     #[tokio::test]
     async fn missing_brightnessctl_surfaces_backend_error() {
         let dir = tmp_device("nofallback", 1000, 500);
-        let mut perm = std::fs::metadata(dir.join("brightness")).unwrap().permissions();
+        let mut perm = std::fs::metadata(dir.join("brightness"))
+            .unwrap()
+            .permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o444);
         std::fs::set_permissions(dir.join("brightness"), perm).unwrap();
 

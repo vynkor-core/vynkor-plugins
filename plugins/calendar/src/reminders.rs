@@ -65,9 +65,9 @@ mod tests {
     #[test]
     fn skips_events_without_reminder_fired_or_future() {
         let events = [
-            event("1", 100, None, false),           // no reminder configured
-            event("2", 100, Some(50), true),        // already fired
-            event("3", 10_000, Some(500), false),   // remind_at 9_500 > now 1_000
+            event("1", 100, None, false),         // no reminder configured
+            event("2", 100, Some(50), true),      // already fired
+            event("3", 10_000, Some(500), false), // remind_at 9_500 > now 1_000
         ];
         assert!(due_events(&events, 1_000).is_empty());
     }

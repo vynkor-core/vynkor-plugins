@@ -65,8 +65,7 @@ pub struct ListParams {
 
 impl ListParams {
     pub fn parse(params_json: &[u8]) -> Result<Self, String> {
-        serde_json::from_slice(params_json)
-            .map_err(|e| format!("invalid request JSON: {e}"))
+        serde_json::from_slice(params_json).map_err(|e| format!("invalid request JSON: {e}"))
     }
 }
 
@@ -186,10 +185,7 @@ mod tests {
     #[test]
     fn rejects_empty_message() {
         let err = params(r#"{"message":""}"#).unwrap_err();
-        assert!(
-            err.contains("message is required"),
-            "error was: {err}"
-        );
+        assert!(err.contains("message is required"), "error was: {err}");
     }
 
     #[test]
@@ -350,7 +346,11 @@ pub struct PushParams {
 
 /// Parse the operator's host allowlist: trimmed, lowercased, non-empty.
 pub fn parse_push_servers(raw: &str) -> Vec<String> {
-    let source = if raw.trim().is_empty() { PUSH_DEFAULT_SERVERS } else { raw };
+    let source = if raw.trim().is_empty() {
+        PUSH_DEFAULT_SERVERS
+    } else {
+        raw
+    };
     let mut out = Vec::new();
     for part in source.split(',') {
         let host = part.trim().to_ascii_lowercase();
@@ -369,8 +369,9 @@ pub fn is_allowed_push_server(server: &str, allowed: &[String]) -> bool {
 
 fn validate_topic(topic: &str) -> Result<(), String> {
     let ok_len = !topic.is_empty() && topic.len() <= 64;
-    let ok_chars =
-        topic.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    let ok_chars = topic
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
     if ok_len && ok_chars {
         Ok(())
     } else {
@@ -403,7 +404,10 @@ pub fn parse_push_params(
     if p.message.len() > MAX_MESSAGE_BYTES {
         return Err(format!("params.message exceeds {MAX_MESSAGE_BYTES} bytes"));
     }
-    let server = p.server.clone().unwrap_or_else(|| allowed_servers[0].clone());
+    let server = p
+        .server
+        .clone()
+        .unwrap_or_else(|| allowed_servers[0].clone());
     if !is_allowed_push_server(&server, allowed_servers) {
         return Err(format!(
             "params.server '{server}' is not in the operator's {} allowlist",

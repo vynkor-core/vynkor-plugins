@@ -116,21 +116,22 @@ async fn handle_action_request(
                 error,
             },
         },
-        "tts_speak_stream" => match handler::handle_tts_speak_stream(client, &req.params_json).await
-        {
-            Ok(data_json) => ActionResponse {
-                action_id: req.action_id,
-                status: ActionStatus::ActionOk as i32,
-                data_json,
-                error: String::new(),
-            },
-            Err(error) => ActionResponse {
-                action_id: req.action_id,
-                status: ActionStatus::ActionError as i32,
-                data_json: Vec::new(),
-                error,
-            },
-        },
+        "tts_speak_stream" => {
+            match handler::handle_tts_speak_stream(client, &req.params_json).await {
+                Ok(data_json) => ActionResponse {
+                    action_id: req.action_id,
+                    status: ActionStatus::ActionOk as i32,
+                    data_json,
+                    error: String::new(),
+                },
+                Err(error) => ActionResponse {
+                    action_id: req.action_id,
+                    status: ActionStatus::ActionError as i32,
+                    data_json: Vec::new(),
+                    error,
+                },
+            }
+        }
         other => ActionResponse {
             action_id: req.action_id,
             status: ActionStatus::ActionNotFound as i32,
@@ -229,14 +230,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

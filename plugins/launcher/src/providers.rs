@@ -329,7 +329,10 @@ pub fn resolve_launch_command(
                 match method {
                     DesktopLauncher::GtkLaunch => {
                         if binary_in_path("gtk-launch") && !app.terminal {
-                            (("gtk-launch".to_string()), gtk_launch_argv(&app.id, extra_args))
+                            (
+                                ("gtk-launch".to_string()),
+                                gtk_launch_argv(&app.id, extra_args),
+                            )
                         } else {
                             fallback_exec(app, extra_args)?
                         }
@@ -355,7 +358,10 @@ pub fn resolve_launch_command(
                     DesktopLauncher::Exec => fallback_exec(app, extra_args)?,
                     DesktopLauncher::Auto => {
                         if binary_in_path("gtk-launch") && !app.terminal {
-                            (("gtk-launch".to_string()), gtk_launch_argv(&app.id, extra_args))
+                            (
+                                ("gtk-launch".to_string()),
+                                gtk_launch_argv(&app.id, extra_args),
+                            )
                         } else if binary_in_path("gio") && !app.terminal {
                             let mut a = vec!["launch".to_string(), app.path.display().to_string()];
                             a.extend_from_slice(extra_args);

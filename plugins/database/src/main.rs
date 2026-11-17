@@ -21,8 +21,12 @@ use vynkor_sdk::concurrent::serve_concurrent;
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 fn load_config() -> DbConfig {
+    // the kernel grants every plugin its own dir as VYN_DATA_DIR
     let data_dir = std::env::var("DATABASE_PLUGIN_DATA_DIR")
-        .unwrap_or_else(|_| panic!("DATABASE_PLUGIN_DATA_DIR must be set (see config.example.yaml's data_dir)"));
+        .or_else(|_| std::env::var("VYN_DATA_DIR"))
+        .unwrap_or_else(|_| {
+            panic!("DATABASE_PLUGIN_DATA_DIR (or the kernel's VYN_DATA_DIR) must be set")
+        });
     let pool_size = std::env::var("DATABASE_PLUGIN_POOL_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -54,7 +58,11 @@ async fn main() -> Result<(), VynkorError> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4 * 1024 * 1024);
 
-    let handler = Arc::new(Handler::new(load_config(), max_value_bytes, max_response_bytes));
+    let handler = Arc::new(Handler::new(
+        load_config(),
+        max_value_bytes,
+        max_response_bytes,
+    ));
 
     let client = VynkorClient::connect_from_env().await?;
     let token = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
@@ -210,7 +218,8 @@ mod tests {
                     h.handle(&caller_id, "db_set", &params).await.unwrap();
                 }
                 for i in 0..20 {
-                    let params = serde_json::to_vec(&serde_json::json!({"key": format!("k{i}")})).unwrap();
+                    let params =
+                        serde_json::to_vec(&serde_json::json!({"key": format!("k{i}")})).unwrap();
                     let out = h.handle(&caller_id, "db_get", &params).await.unwrap();
                     let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
                     assert_eq!(v["value"], caller_n, "cross-talk detected for {caller_id}");

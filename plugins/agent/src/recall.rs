@@ -27,14 +27,21 @@ pub async fn embed_goal(rpc: &Rpc, text: &str, timeout_ms: u32) -> Option<QueryV
     if text.trim().is_empty() {
         return None;
     }
-    let v = match rpc.call("vec_embed", json!({"texts": [text]}), timeout_ms).await {
+    let v = match rpc
+        .call("vec_embed", json!({"texts": [text]}), timeout_ms)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[agent] recall: embedding unavailable, using text queries: {e}");
             return None;
         }
     };
-    let model = v.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+    let model = v
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
     if model.is_empty() || model == "fake" {
         return None;
     }
@@ -67,11 +74,23 @@ pub async fn vec_query(
     top_k: u32,
     timeout_ms: u32,
 ) -> Result<Value, String> {
-    match rpc.call("vec_query", query_params(collection, q, text, top_k), timeout_ms).await {
+    match rpc
+        .call(
+            "vec_query",
+            query_params(collection, q, text, top_k),
+            timeout_ms,
+        )
+        .await
+    {
         Ok(v) => Ok(v),
         Err(e) if q.is_some() => {
             eprintln!("[agent] vec_query({collection}) with vector failed, retrying as text: {e}");
-            rpc.call("vec_query", query_params(collection, None, text, top_k), timeout_ms).await
+            rpc.call(
+                "vec_query",
+                query_params(collection, None, text, top_k),
+                timeout_ms,
+            )
+            .await
         }
         Err(e) => Err(e),
     }
@@ -121,10 +140,17 @@ pub async fn past_sessions(
         params["exclude_session_id"] = json!(id);
     }
     let budget = std::time::Duration::from_millis(cfg.recall_budget_ms);
-    let call = rpc.call("chat_recall", params, (cfg.recall_budget_ms + 50).min(u32::MAX as u64) as u32);
+    let call = rpc.call(
+        "chat_recall",
+        params,
+        (cfg.recall_budget_ms + 50).min(u32::MAX as u64) as u32,
+    );
     let hits = match tokio::time::timeout(budget, call).await {
         Err(_) => {
-            eprintln!("[agent] recall: skipped: over {} ms budget", cfg.recall_budget_ms);
+            eprintln!(
+                "[agent] recall: skipped: over {} ms budget",
+                cfg.recall_budget_ms
+            );
             return Vec::new();
         }
         Ok(Err(e)) => {
@@ -141,8 +167,16 @@ pub async fn past_sessions(
                 .filter_map(|h| {
                     Some(PastSession {
                         session_id: h.get("session_id")?.as_str()?.to_string(),
-                        title: h.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
-                        summary: h.get("summary").and_then(Value::as_str).unwrap_or("").to_string(),
+                        title: h
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        summary: h
+                            .get("summary")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
                         at: h.get("at").and_then(Value::as_i64).unwrap_or(0),
                         score: h.get("score").and_then(Value::as_f64).unwrap_or(0.0),
                     })
@@ -151,7 +185,11 @@ pub async fn past_sessions(
                 .collect()
         })
         .unwrap_or_default();
-    eprintln!("[agent] recall: {} sessions in {} ms", out.len(), started.elapsed().as_millis());
+    eprintln!(
+        "[agent] recall: {} sessions in {} ms",
+        out.len(),
+        started.elapsed().as_millis()
+    );
     out
 }
 
@@ -233,7 +271,11 @@ fn cap_chars(s: String, max: usize) -> String {
 /// stored text inside a quoted string.
 fn entry_line(h: &PastSession) -> String {
     let title = cap_chars(flatten(&h.title), MAX_TITLE_CHARS);
-    let title = if title.is_empty() { "(untitled)".to_string() } else { title };
+    let title = if title.is_empty() {
+        "(untitled)".to_string()
+    } else {
+        title
+    };
     let summary = cap_chars(flatten(&h.summary), MAX_SUMMARY_CHARS);
     // `[`/`]` as JSON escapes: still valid JSON with the same decoded text, but
     // no literal `[TOOL RESULT`-style marker can appear in the prompt.
@@ -291,12 +333,28 @@ mod tests {
     /// (nonce, lines between the fences) of a rendered block.
     fn parse_block(s: &str) -> (String, Vec<String>) {
         let lines: Vec<&str> = s.lines().collect();
-        let nonce = lines[2].strip_prefix("<<<PAST_SESSIONS_DATA_").expect("open fence").to_string();
+        let nonce = lines[2]
+            .strip_prefix("<<<PAST_SESSIONS_DATA_")
+            .expect("open fence")
+            .to_string();
         assert_eq!(nonce.len(), 16);
         assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(*lines.last().unwrap(), format!("PAST_SESSIONS_DATA_{nonce}>>>"));
-        assert_eq!(s.matches(&nonce).count(), 2, "fence occurs exactly twice: {s}");
-        (nonce, lines[3..lines.len() - 1].iter().map(|l| l.to_string()).collect())
+        assert_eq!(
+            *lines.last().unwrap(),
+            format!("PAST_SESSIONS_DATA_{nonce}>>>")
+        );
+        assert_eq!(
+            s.matches(&nonce).count(),
+            2,
+            "fence occurs exactly twice: {s}"
+        );
+        (
+            nonce,
+            lines[3..lines.len() - 1]
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
+        )
     }
 
     #[test]
@@ -318,7 +376,10 @@ mod tests {
         let (_, entries) = parse_block(&s);
         assert_eq!(entries.len(), 2);
         let e0: Value = serde_json::from_str(&entries[0]).unwrap();
-        assert_eq!(e0, json!({"date": "2026-11-05", "title": "Weather", "summary": "sunny"}));
+        assert_eq!(
+            e0,
+            json!({"date": "2026-11-05", "title": "Weather", "summary": "sunny"})
+        );
         let e1: Value = serde_json::from_str(&entries[1]).unwrap();
         assert_eq!(e1["date"], "1970-01-01");
         assert_eq!(e1["title"], "(untitled)");
@@ -354,12 +415,17 @@ mod tests {
             let v: Value = serde_json::from_str(e).expect("entry is one JSON object");
             assert_eq!(v.as_object().unwrap().len(), 3);
             let sum = v["summary"].as_str().unwrap();
-            assert!(!sum.contains(['\n', '\r', '\u{202E}', '\u{200B}', '\u{2028}', '\u{2029}', '\u{7}', '\u{FEFF}']));
+            assert!(!sum.contains([
+                '\n', '\r', '\u{202E}', '\u{200B}', '\u{2028}', '\u{2029}', '\u{7}', '\u{FEFF}'
+            ]));
             // Text is kept as data (minus dropped characters), nothing is rewritten.
             assert_eq!(sum, flatten(n));
         }
         let first: Value = serde_json::from_str(&entries[0]).unwrap();
-        assert!(first["summary"].as_str().unwrap().contains("ignore previous instructions"));
+        assert!(first["summary"]
+            .as_str()
+            .unwrap()
+            .contains("ignore previous instructions"));
         let fw: Value = serde_json::from_str(&entries[3]).unwrap();
         assert!(fw["title"].as_str().unwrap().starts_with('\u{FF3B}'));
     }
@@ -402,16 +468,21 @@ mod tests {
 
     #[tokio::test]
     async fn embed_goal_rejects_fake_and_errors() {
-        let fake = scripted(|_| Ok(json!({"vectors": [[0.0, 0.0, 0.0, 0.0]], "model": "fake", "dim": 4})));
+        let fake =
+            scripted(|_| Ok(json!({"vectors": [[0.0, 0.0, 0.0, 0.0]], "model": "fake", "dim": 4})));
         assert!(embed_goal(&fake, "hi", 100).await.is_none());
         let err = scripted(|_| Err("action not found".into()));
         assert!(embed_goal(&err, "hi", 100).await.is_none());
         let empty = scripted(|_| Ok(json!({"vectors": [[]], "model": "m1", "dim": 0})));
         assert!(embed_goal(&empty, "hi", 100).await.is_none());
-        let ok = scripted(|_| Ok(json!({"vectors": [[1.0, 0.0, 0.5, 0.0]], "model": "m1", "dim": 4})));
+        let ok =
+            scripted(|_| Ok(json!({"vectors": [[1.0, 0.0, 0.5, 0.0]], "model": "m1", "dim": 4})));
         let q = embed_goal(&ok, "hi", 100).await.expect("real embedding");
         assert_eq!((q.vector.len(), q.model.as_str()), (4, "m1"));
-        assert!(embed_goal(&ok, "   ", 100).await.is_none(), "blank text is not embedded");
+        assert!(
+            embed_goal(&ok, "   ", 100).await.is_none(),
+            "blank text is not embedded"
+        );
     }
 
     #[test]
@@ -431,7 +502,10 @@ mod tests {
 
     #[test]
     fn query_params_vector_or_text() {
-        let q = QueryVec { vector: vec![1.0, 2.0], model: "m".into() };
+        let q = QueryVec {
+            vector: vec![1.0, 2.0],
+            model: "m".into(),
+        };
         let v = query_params("c", Some(&q), "hello", 5);
         assert!(v.get("vector").is_some() && v.get("text").is_none());
         let t = query_params("c", None, "hello", 5);

@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tasks_plugin::{handle_action, Config, Rpc, RpcCall};
 use serde_json::Value;
+use tasks_plugin::{handle_action, Config, Rpc, RpcCall};
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{
     envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish, PluginManifest,
@@ -25,8 +25,15 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "tasks";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 7] =
-    ["task_create", "task_get", "task_list", "task_update", "task_done", "task_delete", "tasks_status"];
+const ACTIONS: [&str; 7] = [
+    "task_create",
+    "task_get",
+    "task_list",
+    "task_update",
+    "task_done",
+    "task_delete",
+    "tasks_status",
+];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -41,7 +48,9 @@ fn manifest() -> PluginManifest {
 }
 
 static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-fn start_instant() -> std::time::Instant { *START.get_or_init(std::time::Instant::now) }
+fn start_instant() -> std::time::Instant {
+    *START.get_or_init(std::time::Instant::now)
+}
 fn status_payload() -> Vec<u8> {
     let uptime_ms = start_instant().elapsed().as_millis() as u64;
     serde_json::to_vec(&serde_json::json!({
@@ -50,7 +59,8 @@ fn status_payload() -> Vec<u8> {
         "engine_ready": true,
         "last_error": null,
         "counters": {}
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 fn unix_millis() -> u64 {
@@ -230,8 +240,6 @@ async fn main() -> Result<(), VynkorError> {
     serve(client, config).await
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,38 +255,107 @@ mod tests {
     type Published = Arc<Mutex<Vec<(String, Value)>>>;
 
     #[derive(Default)]
-    struct FakeDb { kv: BTreeMap<String, Value> }
+    struct FakeDb {
+        kv: BTreeMap<String, Value>,
+    }
     impl FakeDb {
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
-            fn key(p: &Value) -> String { p.get("key").and_then(Value::as_str).unwrap_or_default().to_string() }
+            fn key(p: &Value) -> String {
+                p.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            }
             match action {
-                "db_incr" => { let k = key(&params); let delta = params.get("delta").and_then(Value::as_i64).unwrap_or(1); let cur = self.kv.get(&k).and_then(Value::as_i64).unwrap_or(0); let next = cur+delta; self.kv.insert(k, serde_json::json!(next)); Ok(serde_json::json!({"ok": true, "value": next})) }
-                "db_set" => { let k = key(&params); self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null)); Ok(serde_json::json!({"ok": true})) }
-                "db_get" => { let k = key(&params); match self.kv.get(&k) { Some(v) => Ok(serde_json::json!({"found": true, "value": v})), None => Ok(serde_json::json!({"found": false, "value": null})) } }
-                "db_keys" => { let prefix = params.get("prefix").and_then(Value::as_str).unwrap_or(""); let keys: Vec<&String> = self.kv.keys().filter(|k| k.starts_with(prefix)).collect(); Ok(serde_json::json!({"keys": keys})) }
-                "db_batch_get" => { let mut values = serde_json::Map::new(); if let Some(keys) = params.get("keys").and_then(Value::as_array) { for k in keys { if let Some(k)=k.as_str() { values.insert(k.to_string(), self.kv.get(k).cloned().unwrap_or(Value::Null)); } } } Ok(serde_json::json!({"values": values})) }
-                "db_delete" => { let k = key(&params); Ok(serde_json::json!({"deleted": self.kv.remove(&k).is_some()})) }
+                "db_incr" => {
+                    let k = key(&params);
+                    let delta = params.get("delta").and_then(Value::as_i64).unwrap_or(1);
+                    let cur = self.kv.get(&k).and_then(Value::as_i64).unwrap_or(0);
+                    let next = cur + delta;
+                    self.kv.insert(k, serde_json::json!(next));
+                    Ok(serde_json::json!({"ok": true, "value": next}))
+                }
+                "db_set" => {
+                    let k = key(&params);
+                    self.kv
+                        .insert(k, params.get("value").cloned().unwrap_or(Value::Null));
+                    Ok(serde_json::json!({"ok": true}))
+                }
+                "db_get" => {
+                    let k = key(&params);
+                    match self.kv.get(&k) {
+                        Some(v) => Ok(serde_json::json!({"found": true, "value": v})),
+                        None => Ok(serde_json::json!({"found": false, "value": null})),
+                    }
+                }
+                "db_keys" => {
+                    let prefix = params.get("prefix").and_then(Value::as_str).unwrap_or("");
+                    let keys: Vec<&String> =
+                        self.kv.keys().filter(|k| k.starts_with(prefix)).collect();
+                    Ok(serde_json::json!({"keys": keys}))
+                }
+                "db_batch_get" => {
+                    let mut values = serde_json::Map::new();
+                    if let Some(keys) = params.get("keys").and_then(Value::as_array) {
+                        for k in keys {
+                            if let Some(k) = k.as_str() {
+                                values.insert(
+                                    k.to_string(),
+                                    self.kv.get(k).cloned().unwrap_or(Value::Null),
+                                );
+                            }
+                        }
+                    }
+                    Ok(serde_json::json!({"values": values}))
+                }
+                "db_delete" => {
+                    let k = key(&params);
+                    Ok(serde_json::json!({"deleted": self.kv.remove(&k).is_some()}))
+                }
                 other => Err(format!("fake db unknown {other}")),
             }
         }
     }
 
-    enum Cmd { Call { action: String, params: Value, reply: oneshot::Sender<Result<Value,String>> } }
-    struct Shim { tx: mpsc::Sender<Cmd>, published: Published }
+    enum Cmd {
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
+    }
+    struct Shim {
+        tx: mpsc::Sender<Cmd>,
+        published: Published,
+    }
     impl Shim {
-        async fn call(&self, action: &str, params: Value) -> Result<Value,String> {
-            let (tx,rx)=oneshot::channel();
-            self.tx.send(Cmd::Call { action: action.into(), params, reply: tx }).await.expect("shim died");
-            tokio::time::timeout(Duration::from_secs(5), rx).await.expect("timeout").expect("dropped")
+        async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
+            let (tx, rx) = oneshot::channel();
+            self.tx
+                .send(Cmd::Call {
+                    action: action.into(),
+                    params,
+                    reply: tx,
+                })
+                .await
+                .expect("shim died");
+            tokio::time::timeout(Duration::from_secs(5), rx)
+                .await
+                .expect("timeout")
+                .expect("dropped")
         }
-        async fn published(&self) -> Vec<(String, Value)> { self.published.lock().await.clone() }
+        async fn published(&self) -> Vec<(String, Value)> {
+            self.published.lock().await.clone()
+        }
     }
 
     async fn start_plugin(config: Config) -> Shim {
         let (ps, ks) = UnixStream::pair().unwrap();
         let pc = VynkorClient::from_stream(ps, None);
         let kc = VynkorClient::from_stream(ks, None);
-        tokio::spawn(async move { let _ = serve(pc, config).await; });
+        tokio::spawn(async move {
+            let _ = serve(pc, config).await;
+        });
         let (tx, rx) = mpsc::channel(16);
         let published = Arc::new(Mutex::new(Vec::new()));
         tokio::spawn(run_shim(kc, rx, published.clone()));
@@ -287,12 +364,29 @@ mod tests {
 
     async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>, published: Published) {
         let mut db = FakeDb::default();
-        let mut pending: StdHashMap<String, oneshot::Sender<Result<Value,String>>> = StdHashMap::new();
+        let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> =
+            StdHashMap::new();
         let mut seq: u64 = 0;
         loop {
-            let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv()).await.expect("timeout").expect("closed");
+            let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
+                .await
+                .expect("timeout")
+                .expect("closed");
             if let Some(envelope::Payload::PluginRegister(_)) = env.payload {
-                let _ = kernel.send("tasks", Envelope { payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck { accepted:true, ..Default::default() })), ..Default::default() }).await;
+                let _ = kernel
+                    .send(
+                        "tasks",
+                        Envelope {
+                            payload: Some(envelope::Payload::PluginRegisterAck(
+                                PluginRegisterAck {
+                                    accepted: true,
+                                    ..Default::default()
+                                },
+                            )),
+                            ..Default::default()
+                        },
+                    )
+                    .await;
                 break;
             }
         }
@@ -328,7 +422,13 @@ mod tests {
     async fn wait_for_published(shim: &Shim, op: &str, id: &str) -> bool {
         for _ in 0..40 {
             let pubs = shim.published().await;
-            if pubs.iter().any(|(t,p)| t=="changed" && p.get("op").and_then(Value::as_str)==Some(op) && p.get("id").and_then(Value::as_str)==Some(id)) { return true; }
+            if pubs.iter().any(|(t, p)| {
+                t == "changed"
+                    && p.get("op").and_then(Value::as_str) == Some(op)
+                    && p.get("id").and_then(Value::as_str) == Some(id)
+            }) {
+                return true;
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         false
@@ -337,10 +437,19 @@ mod tests {
     #[tokio::test]
     async fn create_then_get() {
         let shim = start_plugin(Config::default()).await;
-        let created = shim.call("task_create", serde_json::json!({"title": "Buy milk", "list": "shopping"})).await.unwrap();
+        let created = shim
+            .call(
+                "task_create",
+                serde_json::json!({"title": "Buy milk", "list": "shopping"}),
+            )
+            .await
+            .unwrap();
         assert_eq!(created["id"], "1");
         assert_eq!(created["task"]["title"], "Buy milk");
-        let got = shim.call("task_get", serde_json::json!({"id":"1"})).await.unwrap();
+        let got = shim
+            .call("task_get", serde_json::json!({"id":"1"}))
+            .await
+            .unwrap();
         assert_eq!(got["found"], true);
         assert!(wait_for_published(&shim, "created", "1").await);
     }
@@ -348,27 +457,60 @@ mod tests {
     #[tokio::test]
     async fn list_filters() {
         let shim = start_plugin(Config::default()).await;
-        shim.call("task_create", serde_json::json!({"title":"A","list":"work"})).await.unwrap();
-        shim.call("task_create", serde_json::json!({"title":"B","list":"home"})).await.unwrap();
-        shim.call("task_create", serde_json::json!({"title":"C","list":"work"})).await.unwrap();
+        shim.call(
+            "task_create",
+            serde_json::json!({"title":"A","list":"work"}),
+        )
+        .await
+        .unwrap();
+        shim.call(
+            "task_create",
+            serde_json::json!({"title":"B","list":"home"}),
+        )
+        .await
+        .unwrap();
+        shim.call(
+            "task_create",
+            serde_json::json!({"title":"C","list":"work"}),
+        )
+        .await
+        .unwrap();
         let all = shim.call("task_list", serde_json::json!({})).await.unwrap();
         assert_eq!(all["total"], 3);
-        let work = shim.call("task_list", serde_json::json!({"list":"work"})).await.unwrap();
+        let work = shim
+            .call("task_list", serde_json::json!({"list":"work"}))
+            .await
+            .unwrap();
         assert_eq!(work["total"], 2);
-        let q = shim.call("task_list", serde_json::json!({"query":"A"})).await.unwrap();
+        let q = shim
+            .call("task_list", serde_json::json!({"query":"A"}))
+            .await
+            .unwrap();
         assert_eq!(q["total"], 1);
     }
 
     #[tokio::test]
     async fn done_flow() {
         let shim = start_plugin(Config::default()).await;
-        let c = shim.call("task_create", serde_json::json!({"title":"Do"} )).await.unwrap();
+        let c = shim
+            .call("task_create", serde_json::json!({"title":"Do"} ))
+            .await
+            .unwrap();
         let id = c["id"].as_str().unwrap();
-        let d = shim.call("task_done", serde_json::json!({"id": id})).await.unwrap();
+        let d = shim
+            .call("task_done", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(d["done"], true);
-        let pending = shim.call("task_list", serde_json::json!({"status":"pending"})).await.unwrap();
+        let pending = shim
+            .call("task_list", serde_json::json!({"status":"pending"}))
+            .await
+            .unwrap();
         assert_eq!(pending["total"], 0);
-        let done = shim.call("task_list", serde_json::json!({"status":"done"})).await.unwrap();
+        let done = shim
+            .call("task_list", serde_json::json!({"status":"done"}))
+            .await
+            .unwrap();
         assert_eq!(done["total"], 1);
         assert!(wait_for_published(&shim, "completed", "1").await);
     }
@@ -376,13 +518,25 @@ mod tests {
     #[tokio::test]
     async fn update_and_delete() {
         let shim = start_plugin(Config::default()).await;
-        let c = shim.call("task_create", serde_json::json!({"title":"Old"})).await.unwrap();
+        let c = shim
+            .call("task_create", serde_json::json!({"title":"Old"}))
+            .await
+            .unwrap();
         let id = c["id"].as_str().unwrap();
-        let u = shim.call("task_update", serde_json::json!({"id": id, "title":"New"})).await.unwrap();
+        let u = shim
+            .call("task_update", serde_json::json!({"id": id, "title":"New"}))
+            .await
+            .unwrap();
         assert_eq!(u["task"]["title"], "New");
-        let del = shim.call("task_delete", serde_json::json!({"id": id})).await.unwrap();
+        let del = shim
+            .call("task_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(del["deleted"], true);
-        let del2 = shim.call("task_delete", serde_json::json!({"id": id})).await.unwrap();
+        let del2 = shim
+            .call("task_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(del2["deleted"], false);
         assert!(wait_for_published(&shim, "deleted", "1").await);
     }
@@ -390,9 +544,15 @@ mod tests {
     #[tokio::test]
     async fn validation() {
         let shim = start_plugin(Config::default()).await;
-        let e = shim.call("task_create", serde_json::json!({})).await.unwrap_err();
+        let e = shim
+            .call("task_create", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(e.contains("title"));
-        let e = shim.call("task_list", serde_json::json!({"limit":0})).await.unwrap_err();
+        let e = shim
+            .call("task_list", serde_json::json!({"limit":0}))
+            .await
+            .unwrap_err();
         assert!(e.contains("limit"));
     }
 }
@@ -410,12 +570,19 @@ mod manifest_specs_tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

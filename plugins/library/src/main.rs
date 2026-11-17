@@ -1,9 +1,11 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use library_plugin::{handle_action, Config, Rpc, RpcCall};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, Pong, PluginManifest};
+use vynkor_sdk::proto::{
+    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, PluginManifest, Pong,
+};
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "library";
@@ -19,10 +21,7 @@ const ACTIONS: [&str; 6] = [
 
 fn manifest() -> PluginManifest {
     PluginManifest {
-        permissions: vec![
-            "PERMISSION_STORAGE".into(),
-            "PERMISSION_FILES_READ".into(),
-        ],
+        permissions: vec!["PERMISSION_STORAGE".into(), "PERMISSION_FILES_READ".into()],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
@@ -36,7 +35,12 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn action_response(action_id: String, status: ActionStatus, data_json: Vec<u8>, error: String) -> Envelope {
+fn action_response(
+    action_id: String,
+    status: ActionStatus,
+    data_json: Vec<u8>,
+    error: String,
+) -> Envelope {
     Envelope {
         payload: Some(envelope::Payload::ActionResponse(ActionResponse {
             action_id,
@@ -65,7 +69,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     let (out_tx, mut out_rx) = mpsc::channel::<Envelope>(64);
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
     let rpc = Rpc::new(rpc_tx);
-    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> = HashMap::new();
+    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> =
+        HashMap::new();
     let mut seq: u64 = 0;
     loop {
         tokio::select! {
@@ -160,7 +165,10 @@ mod tests {
     use std::collections::{BTreeMap, HashMap as StdHashMap};
     use std::time::Duration;
     use tokio::net::UnixStream;
-    use vynkor_sdk::proto::{ActionResponse as ProtoActionResponse, EventPublishAck, EventPublishStatus, PluginRegisterAck};
+    use vynkor_sdk::proto::{
+        ActionResponse as ProtoActionResponse, EventPublishAck, EventPublishStatus,
+        PluginRegisterAck,
+    };
 
     #[derive(Default)]
     struct FakeDb {
@@ -169,7 +177,10 @@ mod tests {
     impl FakeDb {
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
             fn key(p: &Value) -> String {
-                p.get("key").and_then(Value::as_str).unwrap_or_default().to_string()
+                p.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
             }
             match action {
                 "db_incr" => {
@@ -182,7 +193,8 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
-                    self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
+                    self.kv
+                        .insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
                 "db_get" => {
@@ -194,7 +206,8 @@ mod tests {
                 }
                 "db_keys" => {
                     let prefix = params.get("prefix").and_then(Value::as_str).unwrap_or("");
-                    let keys: Vec<&String> = self.kv.keys().filter(|k| k.starts_with(prefix)).collect();
+                    let keys: Vec<&String> =
+                        self.kv.keys().filter(|k| k.starts_with(prefix)).collect();
                     Ok(serde_json::json!({"keys": keys}))
                 }
                 "db_batch_get" => {
@@ -202,7 +215,10 @@ mod tests {
                     if let Some(keys) = params.get("keys").and_then(Value::as_array) {
                         for k in keys {
                             if let Some(k) = k.as_str() {
-                                values.insert(k.to_string(), self.kv.get(k).cloned().unwrap_or(Value::Null));
+                                values.insert(
+                                    k.to_string(),
+                                    self.kv.get(k).cloned().unwrap_or(Value::Null),
+                                );
                             }
                         }
                     }
@@ -218,7 +234,11 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
     }
     struct Shim {
         tx: mpsc::Sender<Cmd>,
@@ -253,7 +273,8 @@ mod tests {
     }
     async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>) {
         let mut db = FakeDb::default();
-        let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> = StdHashMap::new();
+        let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> =
+            StdHashMap::new();
         let mut seq: u64 = 0;
         loop {
             let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
@@ -265,10 +286,12 @@ mod tests {
                     .send(
                         "library",
                         Envelope {
-                            payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
-                                accepted: true,
-                                ..Default::default()
-                            })),
+                            payload: Some(envelope::Payload::PluginRegisterAck(
+                                PluginRegisterAck {
+                                    accepted: true,
+                                    ..Default::default()
+                                },
+                            )),
                             ..Default::default()
                         },
                     )
@@ -345,17 +368,27 @@ mod tests {
             }
         }
     }
-    fn test_cfg() -> Config { Config { db_timeout_ms: 5000 } }
+    fn test_cfg() -> Config {
+        Config {
+            db_timeout_ms: 5000,
+        }
+    }
     #[tokio::test]
     async fn scan_empty_roots_error() {
         let shim = start_plugin(test_cfg()).await;
-        let err = shim.call("library_scan", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("library_scan", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("ERR_LIBRARY_NO_ROOTS"), "{err}");
     }
     #[tokio::test]
     async fn stats_empty() {
         let shim = start_plugin(test_cfg()).await;
-        let res = shim.call("library_stats", serde_json::json!({})).await.unwrap();
+        let res = shim
+            .call("library_stats", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(res["total"], 0);
     }
     #[tokio::test]
@@ -363,9 +396,15 @@ mod tests {
         // Directly insert via db and search via plugin
         let shim = start_plugin(test_cfg()).await;
         // Insert a fake entry via underlying db not exposed, so test search on empty
-        let res = shim.call("library_search", serde_json::json!({"query": "nothing"})).await.unwrap();
+        let res = shim
+            .call("library_search", serde_json::json!({"query": "nothing"}))
+            .await
+            .unwrap();
         assert_eq!(res["total"], 0);
-        let notfound = shim.call("library_get", serde_json::json!({"id": "missing"})).await.unwrap();
+        let notfound = shim
+            .call("library_get", serde_json::json!({"id": "missing"}))
+            .await
+            .unwrap();
         assert_eq!(notfound["found"], false);
     }
 }
@@ -392,14 +431,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

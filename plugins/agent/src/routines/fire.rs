@@ -16,7 +16,12 @@ const FALLBACK_REPLY: &str = "Готово.";
 /// `Ok(true)`: the routine completed the goal. `Ok(false)`: run the normal
 /// path. After a failed dispatch `doc.transcript` holds the goal turn and
 /// the error observation, which the engine carries into the LLM loop.
-pub async fn try_fire(db: &Db, rpc: &Rpc, catalog: &Catalog, doc: &mut GoalDoc) -> Result<bool, String> {
+pub async fn try_fire(
+    db: &Db,
+    rpc: &Rpc,
+    catalog: &Catalog,
+    doc: &mut GoalDoc,
+) -> Result<bool, String> {
     let timeout = db.timeout_ms();
     let now = now_ms();
     let normalized = normalize(&doc.goal);
@@ -26,7 +31,10 @@ pub async fn try_fire(db: &Db, rpc: &Rpc, catalog: &Catalog, doc: &mut GoalDoc) 
         if book.correction_target(now).is_some() {
             update_logged(rpc, timeout, |book| match book.correction_target(now) {
                 Some(i) => {
-                    eprintln!("[agent] routines: correction disables {}", book.routines[i].id);
+                    eprintln!(
+                        "[agent] routines: correction disables {}",
+                        book.routines[i].id
+                    );
                     book.disable(i, "user_correction", now);
                     book.last_fire = None;
                     true
@@ -47,20 +55,37 @@ pub async fn try_fire(db: &Db, rpc: &Rpc, catalog: &Catalog, doc: &mut GoalDoc) 
         .get(&routine.tool)
         .filter(|s| eligible(s, &allow) && spec_hash(s) == routine.spec_hash);
     let Some(spec) = spec else {
-        eprintln!("[agent] routines: {} no longer matches its tool; disabled", routine.id);
-        update_logged(rpc, timeout, |book| disable_by_id(book, &routine.id, "tool_changed", now)).await;
+        eprintln!(
+            "[agent] routines: {} no longer matches its tool; disabled",
+            routine.id
+        );
+        update_logged(rpc, timeout, |book| {
+            disable_by_id(book, &routine.id, "tool_changed", now)
+        })
+        .await;
         return Ok(false);
     };
     if engine::check_quota(doc, spec).is_err() {
         return Ok(false);
     }
 
-    doc.transcript = vec![Turn { role: "user".into(), content: doc.goal.clone() }];
-    doc.tool_counts.entry(routine.tool.clone()).and_modify(|c| *c += 1).or_insert(1);
+    doc.transcript = vec![Turn {
+        role: "user".into(),
+        content: doc.goal.clone(),
+    }];
+    doc.tool_counts
+        .entry(routine.tool.clone())
+        .and_modify(|c| *c += 1)
+        .or_insert(1);
     doc.tool_last_ms.insert(routine.tool.clone(), now);
-    let ok =
-        engine::dispatch_and_observe(rpc, doc, spec.timeout_ms, &routine.tool, routine.params.clone())
-            .await?;
+    let ok = engine::dispatch_and_observe(
+        rpc,
+        doc,
+        spec.timeout_ms,
+        &routine.tool,
+        routine.params.clone(),
+    )
+    .await?;
     if let Some(detail) = doc.steps.last_mut().and_then(|s| s.detail.as_object_mut()) {
         detail.insert("routine".into(), json!(routine.id));
     }
@@ -88,7 +113,10 @@ pub async fn try_fire(db: &Db, rpc: &Rpc, catalog: &Catalog, doc: &mut GoalDoc) 
         let r = &mut book.routines[j];
         r.hits += 1;
         r.updated_at_ms = now;
-        book.last_fire = Some(LastFire { routine_id: routine.id.clone(), at_ms: now });
+        book.last_fire = Some(LastFire {
+            routine_id: routine.id.clone(),
+            at_ms: now,
+        });
         (true, reply)
     })
     .await
@@ -104,7 +132,10 @@ pub async fn try_fire(db: &Db, rpc: &Rpc, catalog: &Catalog, doc: &mut GoalDoc) 
         reply = FALLBACK_REPLY.to_string();
     }
 
-    doc.transcript.push(Turn { role: "assistant".into(), content: reply.clone() });
+    doc.transcript.push(Turn {
+        role: "assistant".into(),
+        content: reply.clone(),
+    });
     doc.status = STATUS_COMPLETED.to_string();
     doc.final_answer = reply;
     engine::next_step(doc, "final", json!({"fast_path": "routine"}));

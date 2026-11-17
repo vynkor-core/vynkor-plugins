@@ -1,6 +1,6 @@
+use crate::Rpc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::Rpc;
 
 pub const KEY_PREFIX: &str = "library:";
 pub const META_LAST_SCAN: &str = "library:meta:last_scan_ms";
@@ -33,7 +33,9 @@ impl Db {
 
     pub async fn put_entry(&self, entry: &Entry) -> Result<(), String> {
         let key = format!("{}{}", KEY_PREFIX, entry.id);
-        let v = self.call("db_set", serde_json::json!({"key": key, "value": entry})).await?;
+        let v = self
+            .call("db_set", serde_json::json!({"key": key, "value": entry}))
+            .await?;
         if v.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(format!("db_set bad payload: {v}"));
         }
@@ -42,13 +44,17 @@ impl Db {
 
     pub async fn get_entry(&self, id: &str) -> Result<Option<Entry>, String> {
         let v = self
-            .call("db_get", serde_json::json!({"key": format!("{}{}", KEY_PREFIX, id)}))
+            .call(
+                "db_get",
+                serde_json::json!({"key": format!("{}{}", KEY_PREFIX, id)}),
+            )
             .await?;
         if v.get("found").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
         }
         let val = v.get("value").cloned().unwrap_or(Value::Null);
-        let e: Entry = serde_json::from_value(val).map_err(|e| format!("corrupt entry {id}: {e}"))?;
+        let e: Entry =
+            serde_json::from_value(val).map_err(|e| format!("corrupt entry {id}: {e}"))?;
         Ok(Some(e))
     }
 
@@ -93,7 +99,10 @@ impl Db {
 
     pub async fn delete_entry(&self, id: &str) -> Result<bool, String> {
         let v = self
-            .call("db_delete", serde_json::json!({"key": format!("{}{}", KEY_PREFIX, id)}))
+            .call(
+                "db_delete",
+                serde_json::json!({"key": format!("{}{}", KEY_PREFIX, id)}),
+            )
             .await?;
         v.get("deleted")
             .and_then(Value::as_bool)

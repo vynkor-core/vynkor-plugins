@@ -47,12 +47,14 @@ impl Volume for WpctlVolume {
 
     async fn set(&self, percent: u8) -> Result<VolumeStatus, SystemError> {
         let frac = format!("{:.2}", f64::from(percent) / 100.0);
-        self.run(&["set-volume", "@DEFAULT_AUDIO_SINK@", &frac]).await?;
+        self.run(&["set-volume", "@DEFAULT_AUDIO_SINK@", &frac])
+            .await?;
         self.get().await
     }
 
     async fn mute(&self, mode: MuteMode) -> Result<VolumeStatus, SystemError> {
-        self.run(&["set-mute", "@DEFAULT_AUDIO_SINK@", mode.as_tool_arg()]).await?;
+        self.run(&["set-mute", "@DEFAULT_AUDIO_SINK@", mode.as_tool_arg()])
+            .await?;
         self.get().await
     }
 }
@@ -100,12 +102,14 @@ impl Volume for PactlVolume {
 
     async fn set(&self, percent: u8) -> Result<VolumeStatus, SystemError> {
         let arg = format!("{percent}%");
-        self.run(&["set-sink-volume", "@DEFAULT_SINK@", &arg]).await?;
+        self.run(&["set-sink-volume", "@DEFAULT_SINK@", &arg])
+            .await?;
         self.get().await
     }
 
     async fn mute(&self, mode: MuteMode) -> Result<VolumeStatus, SystemError> {
-        self.run(&["set-sink-mute", "@DEFAULT_SINK@", mode.as_tool_arg()]).await?;
+        self.run(&["set-sink-mute", "@DEFAULT_SINK@", mode.as_tool_arg()])
+            .await?;
         self.get().await
     }
 }
@@ -122,7 +126,10 @@ pub fn parse_wpctl(stdout: &str) -> Option<VolumeStatus> {
     if !(0.0..=1.0).contains(&frac) {
         return None;
     }
-    Some(VolumeStatus { percent: (frac * 100.0).round() as u32, muted })
+    Some(VolumeStatus {
+        percent: (frac * 100.0).round() as u32,
+        muted,
+    })
 }
 
 /// Parse the first `/ NN%` field from `pactl get-sink-volume` output:
@@ -150,14 +157,38 @@ mod tests {
 
     #[test]
     fn wpctl_parses_plain_fraction() {
-        assert_eq!(parse_wpctl("Volume: 0.65\n"), Some(VolumeStatus { percent: 65, muted: false }));
-        assert_eq!(parse_wpctl("Volume: 1.00"), Some(VolumeStatus { percent: 100, muted: false }));
-        assert_eq!(parse_wpctl("Volume: 0.0"), Some(VolumeStatus { percent: 0, muted: false }));
+        assert_eq!(
+            parse_wpctl("Volume: 0.65\n"),
+            Some(VolumeStatus {
+                percent: 65,
+                muted: false
+            })
+        );
+        assert_eq!(
+            parse_wpctl("Volume: 1.00"),
+            Some(VolumeStatus {
+                percent: 100,
+                muted: false
+            })
+        );
+        assert_eq!(
+            parse_wpctl("Volume: 0.0"),
+            Some(VolumeStatus {
+                percent: 0,
+                muted: false
+            })
+        );
     }
 
     #[test]
     fn wpctl_parses_muted_suffix() {
-        assert_eq!(parse_wpctl("Volume: 0.42 [MUTED]\n"), Some(VolumeStatus { percent: 42, muted: true }));
+        assert_eq!(
+            parse_wpctl("Volume: 0.42 [MUTED]\n"),
+            Some(VolumeStatus {
+                percent: 42,
+                muted: true
+            })
+        );
     }
 
     #[test]
@@ -175,7 +206,8 @@ mod tests {
 
     #[test]
     fn pactl_parses_first_channel_percentage() {
-        let out = "Volume: front-left: 45875 /  70% / -4.50 dB,   front-right: 45875 /  70% / -4.50 dB\n";
+        let out =
+            "Volume: front-left: 45875 /  70% / -4.50 dB,   front-right: 45875 /  70% / -4.50 dB\n";
         assert_eq!(parse_pactl_volume(out), Some(70));
     }
 

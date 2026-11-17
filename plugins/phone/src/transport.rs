@@ -39,7 +39,12 @@ pub struct Spawned {
 
 #[async_trait]
 pub trait Transport: Send + Sync {
-    async fn run(&self, cmd: &RemoteCmd, stdin: Option<&[u8]>, timeout: Duration) -> Result<Output, PhoneError>;
+    async fn run(
+        &self,
+        cmd: &RemoteCmd,
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, PhoneError>;
     async fn spawn(&self, cmd: &RemoteCmd) -> Result<Spawned, PhoneError>;
     /// Short label for status output: `ssh:mi6` or `local`.
     fn describe(&self) -> String;
@@ -74,7 +79,11 @@ impl LocalTransport {
             program: cmd.program.clone(),
             args: cmd.args.clone(),
             env: cmd.env.clone(),
-            cwd: if cmd.in_home { std::env::var_os("HOME").map(PathBuf::from) } else { None },
+            cwd: if cmd.in_home {
+                std::env::var_os("HOME").map(PathBuf::from)
+            } else {
+                None
+            },
         }
     }
 }
@@ -94,7 +103,10 @@ pub struct SshTransport {
 /// The exact `ssh` argv for one remote command. Key auth only (`BatchMode`),
 /// no host-key policy override, optional ControlMaster multiplexing.
 pub fn ssh_args(host: &str, mux: bool, control_dir: &Path, remote_shell: &str) -> Vec<String> {
-    let mut a: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"].iter().map(|s| s.to_string()).collect();
+    let mut a: Vec<String> = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     if mux {
         a.extend([
             "-o".to_string(),
@@ -113,7 +125,11 @@ pub fn ssh_args(host: &str, mux: bool, control_dir: &Path, remote_shell: &str) -
 
 impl SshTransport {
     pub fn new(host: &str, mux: bool, control_dir: &Path) -> Self {
-        Self { host: host.to_string(), mux, control_dir: control_dir.to_path_buf() }
+        Self {
+            host: host.to_string(),
+            mux,
+            control_dir: control_dir.to_path_buf(),
+        }
     }
 
     pub fn exec(&self, cmd: &RemoteCmd) -> Result<Exec, PhoneError> {
@@ -129,7 +145,9 @@ impl SshTransport {
 
 fn command(e: &Exec) -> Command {
     let mut c = Command::new(&e.program);
-    c.args(&e.args).envs(e.env.iter().map(|(k, v)| (k, v))).kill_on_drop(true);
+    c.args(&e.args)
+        .envs(e.env.iter().map(|(k, v)| (k, v)))
+        .kill_on_drop(true);
     if let Some(d) = &e.cwd {
         c.current_dir(d);
     }
@@ -146,9 +164,13 @@ fn spawn_err(program: &str, e: std::io::Error) -> PhoneError {
 
 async fn run_exec(e: &Exec, stdin: Option<&[u8]>, timeout: Duration) -> Result<Output, PhoneError> {
     let mut c = command(e);
-    c.stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    c.stdin(if stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|err| spawn_err(&e.program, err))?;
     if let (Some(data), Some(mut pipe)) = (stdin, child.stdin.take()) {
         let data = data.to_vec();
@@ -163,8 +185,14 @@ async fn run_exec(e: &Exec, stdin: Option<&[u8]>, timeout: Duration) -> Result<O
             stdout: o.stdout,
             stderr: String::from_utf8_lossy(&o.stderr).into_owned(),
         }),
-        Ok(Err(err)) => Err(PhoneError::Backend(format!("wait '{}' failed: {err}", e.program))),
-        Err(_) => Err(PhoneError::Unreachable(format!("timed out after {}s", timeout.as_secs()))),
+        Ok(Err(err)) => Err(PhoneError::Backend(format!(
+            "wait '{}' failed: {err}",
+            e.program
+        ))),
+        Err(_) => Err(PhoneError::Unreachable(format!(
+            "timed out after {}s",
+            timeout.as_secs()
+        ))),
     }
 }
 
@@ -191,10 +219,18 @@ impl Control for ChildControl {
 
 async fn spawn_exec(e: &Exec) -> Result<Spawned, PhoneError> {
     let mut c = command(e);
-    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    c.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = c.spawn().map_err(|err| spawn_err(&e.program, err))?;
-    let stdout = child.stdout.take().ok_or_else(|| PhoneError::Backend("child stdout missing".into()))?;
-    let mut stderr = child.stderr.take().ok_or_else(|| PhoneError::Backend("child stderr missing".into()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| PhoneError::Backend("child stdout missing".into()))?;
+    let mut stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| PhoneError::Backend("child stderr missing".into()))?;
     let buf = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&buf);
     tokio::spawn(async move {
@@ -213,12 +249,20 @@ async fn spawn_exec(e: &Exec) -> Result<Spawned, PhoneError> {
             }
         }
     });
-    Ok(Spawned { stdout: Box::new(stdout), control: Box::new(ChildControl { child, stderr: buf }) })
+    Ok(Spawned {
+        stdout: Box::new(stdout),
+        control: Box::new(ChildControl { child, stderr: buf }),
+    })
 }
 
 #[async_trait]
 impl Transport for LocalTransport {
-    async fn run(&self, cmd: &RemoteCmd, stdin: Option<&[u8]>, timeout: Duration) -> Result<Output, PhoneError> {
+    async fn run(
+        &self,
+        cmd: &RemoteCmd,
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, PhoneError> {
         run_exec(&Self::exec(cmd), stdin, timeout).await
     }
     async fn spawn(&self, cmd: &RemoteCmd) -> Result<Spawned, PhoneError> {
@@ -231,7 +275,12 @@ impl Transport for LocalTransport {
 
 #[async_trait]
 impl Transport for SshTransport {
-    async fn run(&self, cmd: &RemoteCmd, stdin: Option<&[u8]>, timeout: Duration) -> Result<Output, PhoneError> {
+    async fn run(
+        &self,
+        cmd: &RemoteCmd,
+        stdin: Option<&[u8]>,
+        timeout: Duration,
+    ) -> Result<Output, PhoneError> {
         run_exec(&self.exec(cmd)?, stdin, timeout).await
     }
     async fn spawn(&self, cmd: &RemoteCmd) -> Result<Spawned, PhoneError> {
@@ -281,7 +330,11 @@ pub mod fake {
             self.runs.lock().unwrap().push_back(r);
         }
         pub fn ok(stdout: Vec<u8>) -> Result<Output, PhoneError> {
-            Ok(Output { code: 0, stdout, stderr: String::new() })
+            Ok(Output {
+                code: 0,
+                stdout,
+                stderr: String::new(),
+            })
         }
         /// Bytes the next `spawn` emits on stdout; `hold_open` keeps the pipe
         /// open (a live stream) until `kill`.
@@ -323,7 +376,12 @@ pub mod fake {
 
     #[async_trait]
     impl Transport for FakeTransport {
-        async fn run(&self, cmd: &RemoteCmd, stdin: Option<&[u8]>, _t: Duration) -> Result<Output, PhoneError> {
+        async fn run(
+            &self,
+            cmd: &RemoteCmd,
+            stdin: Option<&[u8]>,
+            _t: Duration,
+        ) -> Result<Output, PhoneError> {
             self.calls.lock().unwrap().push(cmd.clone());
             self.stdins.lock().unwrap().push(stdin.map(|s| s.to_vec()));
             let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
@@ -332,11 +390,11 @@ pub mod fake {
                 tokio::time::sleep(self.delay).await;
             }
             self.active.fetch_sub(1, Ordering::SeqCst);
-            self.runs
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Err(PhoneError::Backend("FakeTransport: no scripted run result".into())))
+            self.runs.lock().unwrap().pop_front().unwrap_or_else(|| {
+                Err(PhoneError::Backend(
+                    "FakeTransport: no scripted run result".into(),
+                ))
+            })
         }
 
         async fn spawn(&self, cmd: &RemoteCmd) -> Result<Spawned, PhoneError> {
@@ -356,7 +414,10 @@ pub mod fake {
             });
             Ok(Spawned {
                 stdout: Box::new(r),
-                control: Box::new(FakeControl { killed: Arc::clone(&self.killed), notify }),
+                control: Box::new(FakeControl {
+                    killed: Arc::clone(&self.killed),
+                    notify,
+                }),
             })
         }
 
@@ -388,9 +449,14 @@ mod tests {
     #[test]
     fn ssh_exec_quotes_the_remote_command() {
         let t = SshTransport::new("mi6", false, Path::new("/d"));
-        let e = t.exec(&RemoteCmd::new("python3", vec!["a b; rm -rf /".into()]).in_home()).unwrap();
+        let e = t
+            .exec(&RemoteCmd::new("python3", vec!["a b; rm -rf /".into()]).in_home())
+            .unwrap();
         assert_eq!(e.program, "ssh");
-        assert_eq!(e.args.last().unwrap(), "cd \"$HOME\" && 'python3' 'a b; rm -rf /'");
+        assert_eq!(
+            e.args.last().unwrap(),
+            "cd \"$HOME\" && 'python3' 'a b; rm -rf /'"
+        );
     }
 
     #[test]
@@ -405,16 +471,34 @@ mod tests {
     async fn local_run_captures_binary_stdout_stdin_and_exit_code() {
         let t = LocalTransport::new();
         let o = t
-            .run(&RemoteCmd::new("printf", vec!["%s".into(), "hi".into()]), None, Duration::from_secs(5))
+            .run(
+                &RemoteCmd::new("printf", vec!["%s".into(), "hi".into()]),
+                None,
+                Duration::from_secs(5),
+            )
             .await
             .unwrap();
         assert_eq!((o.code, o.stdout.as_slice()), (0, &b"hi"[..]));
 
         let payload: Vec<u8> = (0u8..=255).collect();
-        let o = t.run(&RemoteCmd::new("cat", vec![]), Some(&payload), Duration::from_secs(5)).await.unwrap();
+        let o = t
+            .run(
+                &RemoteCmd::new("cat", vec![]),
+                Some(&payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
         assert_eq!(o.stdout, payload, "binary stdin/stdout must round-trip");
 
-        let o = t.run(&RemoteCmd::new("sh", vec!["-c".into(), "echo err >&2; exit 7".into()]), None, Duration::from_secs(5)).await.unwrap();
+        let o = t
+            .run(
+                &RemoteCmd::new("sh", vec!["-c".into(), "echo err >&2; exit 7".into()]),
+                None,
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
         assert_eq!(o.code, 7);
         assert_eq!(o.stderr.trim(), "err");
     }
@@ -422,21 +506,43 @@ mod tests {
     #[tokio::test]
     async fn local_run_times_out_and_missing_binary_is_reported() {
         let t = LocalTransport::new();
-        let e = t.run(&RemoteCmd::new("sleep", vec!["5".into()]), None, Duration::from_millis(100)).await.unwrap_err();
+        let e = t
+            .run(
+                &RemoteCmd::new("sleep", vec!["5".into()]),
+                None,
+                Duration::from_millis(100),
+            )
+            .await
+            .unwrap_err();
         assert!(matches!(e, PhoneError::Unreachable(_)), "{e}");
-        let e = t.run(&RemoteCmd::new("definitely-not-a-binary-xyz", vec![]), None, Duration::from_secs(1)).await.unwrap_err();
-        assert!(matches!(e, PhoneError::Backend(_)) && e.to_string().contains("not found"), "{e}");
+        let e = t
+            .run(
+                &RemoteCmd::new("definitely-not-a-binary-xyz", vec![]),
+                None,
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e, PhoneError::Backend(_)) && e.to_string().contains("not found"),
+            "{e}"
+        );
     }
 
     #[tokio::test]
     async fn local_spawn_streams_stdout_and_kill_is_idempotent() {
         let t = LocalTransport::new();
         let mut s = t
-            .spawn(&RemoteCmd::new("sh", vec!["-c".into(), "printf abc; echo oops >&2; sleep 30".into()]))
+            .spawn(&RemoteCmd::new(
+                "sh",
+                vec!["-c".into(), "printf abc; echo oops >&2; sleep 30".into()],
+            ))
             .await
             .unwrap();
         let mut buf = [0u8; 3];
-        tokio::io::AsyncReadExt::read_exact(&mut s.stdout, &mut buf).await.unwrap();
+        tokio::io::AsyncReadExt::read_exact(&mut s.stdout, &mut buf)
+            .await
+            .unwrap();
         assert_eq!(&buf, b"abc");
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(s.control.stderr_tail().contains("oops"));

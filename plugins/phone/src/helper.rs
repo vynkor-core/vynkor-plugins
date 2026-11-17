@@ -55,7 +55,9 @@ pub struct SetupResult {
 /// `python3 <helper> <args…>` with the camera environment, run from HOME.
 pub fn helper_cmd(cfg: &Config, mut args: Vec<String>) -> RemoteCmd {
     args.insert(0, remote_path(cfg));
-    RemoteCmd::new("python3", args).envs(camera_env(cfg.remote_uid)).in_home()
+    RemoteCmd::new("python3", args)
+        .envs(camera_env(cfg.remote_uid))
+        .in_home()
 }
 
 pub fn parse_state(listing: &str) -> HelperState {
@@ -81,7 +83,12 @@ pub async fn check(t: &dyn Transport, cfg: &Config) -> Result<HelperState, Phone
     // `ls` of a missing dir prints nothing and exits nonzero; that is "missing", not an error.
     let cmd = RemoteCmd::new(
         "sh",
-        vec!["-c".into(), "ls -1 \"$1\" 2>/dev/null; true".into(), "sh".into(), cfg.remote_dir.clone()],
+        vec![
+            "-c".into(),
+            "ls -1 \"$1\" 2>/dev/null; true".into(),
+            "sh".into(),
+            cfg.remote_dir.clone(),
+        ],
     )
     .in_home();
     let o = t.run(&cmd, None, Duration::from_secs(5)).await?;
@@ -106,10 +113,18 @@ pub async fn setup(t: &dyn Transport, cfg: &Config) -> Result<SetupResult, Phone
     let script = "mkdir -p \"$1\" && cat > \"$1/.$2.tmp\" && mv \"$1/.$2.tmp\" \"$1/$2\"";
     let cmd = RemoteCmd::new(
         "sh",
-        vec!["-c".into(), script.into(), "sh".into(), cfg.remote_dir.clone(), name],
+        vec![
+            "-c".into(),
+            script.into(),
+            "sh".into(),
+            cfg.remote_dir.clone(),
+            name,
+        ],
     )
     .in_home();
-    let o = t.run(&cmd, Some(SCRIPT.as_bytes()), Duration::from_secs(15)).await?;
+    let o = t
+        .run(&cmd, Some(SCRIPT.as_bytes()), Duration::from_secs(15))
+        .await?;
     if o.code != 0 {
         return Err(crate::error::classify(o.code, &o.stderr));
     }
@@ -136,13 +151,22 @@ mod tests {
         assert_eq!(s.len(), 8);
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
         assert_eq!(file_name(), format!("hybcam-{s}.py"));
-        assert_eq!(remote_path(&cfg()), format!(".local/share/vyn-phone/hybcam-{s}.py"));
+        assert_eq!(
+            remote_path(&cfg()),
+            format!(".local/share/vyn-phone/hybcam-{s}.py")
+        );
     }
 
     #[test]
     fn parse_state_distinguishes_ok_stale_missing() {
-        assert_eq!(parse_state(&format!("x\n{}\n", file_name())), HelperState::Ok);
-        assert_eq!(parse_state("hybcam-00000000.py\nother\n"), HelperState::Stale);
+        assert_eq!(
+            parse_state(&format!("x\n{}\n", file_name())),
+            HelperState::Ok
+        );
+        assert_eq!(
+            parse_state("hybcam-00000000.py\nother\n"),
+            HelperState::Stale
+        );
         assert_eq!(parse_state(""), HelperState::Missing);
         assert_eq!(parse_state("readme\n"), HelperState::Missing);
     }
@@ -154,7 +178,10 @@ mod tests {
         assert_eq!(c.args[0], remote_path(&cfg()));
         assert_eq!(&c.args[1..], ["--cam", "back"]);
         assert!(c.in_home);
-        assert!(c.env.iter().any(|(k, v)| k == "XDG_RUNTIME_DIR" && v == "/run/user/32011"));
+        assert!(c
+            .env
+            .iter()
+            .any(|(k, v)| k == "XDG_RUNTIME_DIR" && v == "/run/user/32011"));
         assert!(c.env.iter().any(|(k, _)| k == "MIR_SOCKET"));
     }
 
@@ -164,7 +191,11 @@ mod tests {
         t.push_run(FakeTransport::ok(format!("{}\n", file_name()).into_bytes()));
         let r = setup(&t, &cfg()).await.unwrap();
         assert!(r.installed && !r.changed);
-        assert_eq!(t.calls.lock().unwrap().len(), 1, "no deploy when already current");
+        assert_eq!(
+            t.calls.lock().unwrap().len(),
+            1,
+            "no deploy when already current"
+        );
     }
 
     #[tokio::test]
@@ -184,12 +215,26 @@ mod tests {
     async fn setup_surfaces_a_failed_deploy_and_unreachable() {
         let t = FakeTransport::new();
         t.push_run(FakeTransport::ok(Vec::new()));
-        t.push_run(Ok(Output { code: 1, stdout: vec![], stderr: "read-only file system".into() }));
-        assert!(matches!(setup(&t, &cfg()).await, Err(PhoneError::Backend(_))));
+        t.push_run(Ok(Output {
+            code: 1,
+            stdout: vec![],
+            stderr: "read-only file system".into(),
+        }));
+        assert!(matches!(
+            setup(&t, &cfg()).await,
+            Err(PhoneError::Backend(_))
+        ));
 
         let t = FakeTransport::new();
-        t.push_run(Ok(Output { code: 255, stdout: vec![], stderr: "no route".into() }));
-        assert!(matches!(setup(&t, &cfg()).await, Err(PhoneError::Unreachable(_))));
+        t.push_run(Ok(Output {
+            code: 255,
+            stdout: vec![],
+            stderr: "no route".into(),
+        }));
+        assert!(matches!(
+            setup(&t, &cfg()).await,
+            Err(PhoneError::Unreachable(_))
+        ));
     }
 
     #[test]
@@ -198,7 +243,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("h.py");
         std::fs::write(&p, SCRIPT).unwrap();
-        match std::process::Command::new("python3").args(["-m", "py_compile"]).arg(&p).output() {
+        match std::process::Command::new("python3")
+            .args(["-m", "py_compile"])
+            .arg(&p)
+            .output()
+        {
             Ok(o) => assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr)),
             Err(_) => eprintln!("python3 not found; skipping"),
         }

@@ -55,7 +55,12 @@ impl BindingStore {
     }
 
     pub fn get(&self, id: &str) -> Option<Binding> {
-        self.inner.lock().expect("binding store poisoned").iter().find(|b| b.id == id).cloned()
+        self.inner
+            .lock()
+            .expect("binding store poisoned")
+            .iter()
+            .find(|b| b.id == id)
+            .cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -144,7 +149,9 @@ pub fn normalize_trigger(raw: &str) -> Result<String, String> {
             continue;
         }
         if key.replace(normalize_key(part)?).is_some() {
-            return Err(format!("trigger '{raw}' has more than one non-modifier key"));
+            return Err(format!(
+                "trigger '{raw}' has more than one non-modifier key"
+            ));
         }
     }
 
@@ -215,7 +222,10 @@ fn normalize_key(raw: &str) -> Result<String, String> {
     }
     if n.len() >= 2
         && n.starts_with('f')
-        && n[1..].parse::<u8>().map(|n| (1..=35).contains(&n)).unwrap_or(false)
+        && n[1..]
+            .parse::<u8>()
+            .map(|n| (1..=35).contains(&n))
+            .unwrap_or(false)
     {
         return Ok(n.to_ascii_uppercase());
     }
@@ -271,8 +281,7 @@ mod tests {
 
     #[test]
     fn env_bindings_parse_into_a_store_shaped_list() {
-        let parsed =
-            parse_env_bindings("ptt=Ctrl+Shift+Space; mute=Super+M ;").expect("parse ok");
+        let parsed = parse_env_bindings("ptt=Ctrl+Shift+Space; mute=Super+M ;").expect("parse ok");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].id, "ptt");
         assert_eq!(parsed[0].trigger, "CTRL+SHIFT+space");
@@ -290,10 +299,16 @@ mod tests {
 
     #[test]
     fn triggers_normalize_to_portal_form() {
-        assert_eq!(normalize_trigger("Ctrl+Shift+Space").unwrap(), "CTRL+SHIFT+space");
+        assert_eq!(
+            normalize_trigger("Ctrl+Shift+Space").unwrap(),
+            "CTRL+SHIFT+space"
+        );
         assert_eq!(normalize_trigger("super + f9").unwrap(), "LOGO+F9");
         assert_eq!(normalize_trigger("Meta+A").unwrap(), "LOGO+a");
-        assert_eq!(normalize_trigger("Alt+VolumeUp").unwrap(), "ALT+XF86AudioRaiseVolume");
+        assert_eq!(
+            normalize_trigger("Alt+VolumeUp").unwrap(),
+            "ALT+XF86AudioRaiseVolume"
+        );
         assert_eq!(normalize_trigger("Ctrl+?").unwrap(), "CTRL+question");
         // Duplicate modifiers collapse instead of erroring.
         assert_eq!(normalize_trigger("Ctrl+Control+a").unwrap(), "CTRL+a");
@@ -301,9 +316,18 @@ mod tests {
 
     #[test]
     fn triggers_reject_unusable_combos() {
-        assert!(normalize_trigger("Space").is_err(), "bare letter fires everywhere");
-        assert!(normalize_trigger("Ctrl").is_err(), "modifier alone binds nothing");
-        assert!(normalize_trigger("Ctrl+a+b").is_err(), "two keys is not a chord");
+        assert!(
+            normalize_trigger("Space").is_err(),
+            "bare letter fires everywhere"
+        );
+        assert!(
+            normalize_trigger("Ctrl").is_err(),
+            "modifier alone binds nothing"
+        );
+        assert!(
+            normalize_trigger("Ctrl+a+b").is_err(),
+            "two keys is not a chord"
+        );
         assert!(normalize_trigger("Ctrl+F36").is_err(), "out-of-range F-key");
         assert!(normalize_trigger("Ctrl+NumpadUnknown").is_err());
     }

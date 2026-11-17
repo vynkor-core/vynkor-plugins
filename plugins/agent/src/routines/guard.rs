@@ -19,7 +19,9 @@ pub enum Polarity {
 const SWITCH_KEYS: &[&str] = &["value", "state", "on", "enabled", "enable", "power"];
 /// Param keys that name the operation of a multi-command tool.
 const COMMAND_KEYS: &[&str] = &["command", "action", "op", "method"];
-const READ_VERBS: &[&str] = &["get", "read", "status", "state", "list", "query", "info", "ping"];
+const READ_VERBS: &[&str] = &[
+    "get", "read", "status", "state", "list", "query", "info", "ping",
+];
 
 /// Word stems; off is checked first because "выключи" contains "вкл".
 const OFF_STEMS: &[&str] = &["выкл", "откл", "погас", "погаш", "потуш", "выруб"];
@@ -28,9 +30,35 @@ const ON_STEMS: &[&str] = &["вкл", "зажг", "зажег", "зажиг", "�
 /// Words that make a phrase lean on earlier conversation or bend its
 /// meaning ("выключи всё кроме светодиода").
 const CONTEXT_WORDS: &[&str] = &[
-    "его", "ее", "их", "это", "этот", "эту", "эти", "тот", "ту", "те", "там", "тоже", "снова",
-    "опять", "еще", "обратно", "кроме", "не", "но", "только", "то", "же", "самое", "it", "that",
-    "again", "too", "not", "same",
+    "его",
+    "ее",
+    "их",
+    "это",
+    "этот",
+    "эту",
+    "эти",
+    "тот",
+    "ту",
+    "те",
+    "там",
+    "тоже",
+    "снова",
+    "опять",
+    "еще",
+    "обратно",
+    "кроме",
+    "не",
+    "но",
+    "только",
+    "то",
+    "же",
+    "самое",
+    "it",
+    "that",
+    "again",
+    "too",
+    "not",
+    "same",
 ];
 
 /// A call that reads state: its answer depends on the result, so no reply
@@ -38,7 +66,9 @@ const CONTEXT_WORDS: &[&str] = &[
 pub fn is_read_call(tool: &str, params: &Value) -> bool {
     let reads = |s: &str| {
         let s = s.to_ascii_lowercase();
-        READ_VERBS.iter().any(|v| s == *v || s.starts_with(&format!("{v}_")))
+        READ_VERBS
+            .iter()
+            .any(|v| s == *v || s.starts_with(&format!("{v}_")))
     };
     // `phone.get_battery`: the part after the plugin prefix names the operation
     reads(tool.rsplit('.').next().unwrap_or(tool))
@@ -91,8 +121,11 @@ pub fn text_polarity(text: &str) -> Option<Polarity> {
 /// qwen drifts into Chinese ("яркость关") — any letter outside Latin and
 /// Cyrillic rejects the word.
 fn mixed_script(w: &str) -> bool {
-    let foreign = w.chars().any(|c| c.is_alphabetic() && !c.is_ascii_alphabetic() && !matches!(c, 'а'..='я' | 'ё'));
-    foreign || w.chars().any(|c| c.is_ascii_alphabetic()) && w.chars().any(|c| matches!(c, 'а'..='я'))
+    let foreign = w
+        .chars()
+        .any(|c| c.is_alphabetic() && !c.is_ascii_alphabetic() && !matches!(c, 'а'..='я' | 'ё'));
+    foreign
+        || w.chars().any(|c| c.is_ascii_alphabetic()) && w.chars().any(|c| matches!(c, 'а'..='я'))
 }
 
 /// A trigger phrase: at least two words, standalone, and for a switch call
@@ -100,7 +133,11 @@ fn mixed_script(w: &str) -> bool {
 /// whether a phrase stands without earlier conversation.
 pub fn phrase_ok(phrase: &str, call: Option<Polarity>) -> bool {
     let words: Vec<&str> = phrase.split(' ').filter(|w| !w.is_empty()).collect();
-    if words.len() < 2 || words.iter().any(|w| CONTEXT_WORDS.contains(w) || mixed_script(w)) {
+    if words.len() < 2
+        || words
+            .iter()
+            .any(|w| CONTEXT_WORDS.contains(w) || mixed_script(w))
+    {
         return false;
     }
     call.is_none_or(|p| text_polarity(phrase) == Some(p))
@@ -118,7 +155,9 @@ fn stem(w: &str) -> &str {
 fn same_word(a: &str, b: &str) -> bool {
     let (a, b) = (stem(a), stem(b));
     let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
-    !short.is_empty() && long.starts_with(short) && long.chars().count() - short.chars().count() <= 2
+    !short.is_empty()
+        && long.starts_with(short)
+        && long.chars().count() - short.chars().count() <= 2
 }
 
 /// The words of a phrase that name what it acts on (not the switch verb).
@@ -143,8 +182,19 @@ pub fn anchored(paraphrase: &str, seen: &[String]) -> bool {
 }
 
 /// Stems of words that report a failure ("Такой команды нет").
-const FAILURE_STEMS: &[&str] =
-    &["не", "нет", "ошиб", "невозм", "нельз", "отказ", "error", "fail", "cannot", "not", "no"];
+const FAILURE_STEMS: &[&str] = &[
+    "не",
+    "нет",
+    "ошиб",
+    "невозм",
+    "нельз",
+    "отказ",
+    "error",
+    "fail",
+    "cannot",
+    "not",
+    "no",
+];
 
 /// A reply is said only after the call succeeded, so it must never report a
 /// failure; for a switch call it must also name the new state, because the
@@ -155,9 +205,20 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
     let text = normalize(reply);
     let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
     let failure = words.iter().any(|w| {
-        mixed_script(w) || FAILURE_STEMS.iter().any(|s| if s.len() <= 3 { w == s } else { w.starts_with(s) })
+        mixed_script(w)
+            || FAILURE_STEMS.iter().any(|s| {
+                if s.len() <= 3 {
+                    w == s
+                } else {
+                    w.starts_with(s)
+                }
+            })
     });
-    let named = |t: &String| objects(t).into_iter().any(|o| words.iter().any(|w| same_word(w, o)));
+    let named = |t: &String| {
+        objects(t)
+            .into_iter()
+            .any(|o| words.iter().any(|w| same_word(w, o)))
+    };
     let on_topic = words.len() <= 2 || seen.iter().any(named);
     // The user's words it uses must come from one phrase: across a misheard
     // "включи диот светозерк" and "включи светодиод" the model wrote
@@ -165,13 +226,24 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
     let used: Vec<&str> = words
         .iter()
         .copied()
-        .filter(|w| seen.iter().flat_map(|t| objects(t)).any(|o| same_word(w, o)))
+        .filter(|w| {
+            seen.iter()
+                .flat_map(|t| objects(t))
+                .any(|o| same_word(w, o))
+        })
         .collect();
     let one_phrase = used.is_empty()
-        || seen.iter().any(|t| used.iter().all(|w| objects(t).iter().any(|o| same_word(w, o))));
+        || seen.iter().any(|t| {
+            used.iter()
+                .all(|w| objects(t).iter().any(|o| same_word(w, o)))
+        });
     // With several phrases, only words the user said more than once: a
     // misheard "светозерк" said once gave "Диод светозерк включен".
-    let in_texts = |w: &str| seen.iter().filter(|t| objects(t).iter().any(|o| same_word(w, o))).count();
+    let in_texts = |w: &str| {
+        seen.iter()
+            .filter(|t| objects(t).iter().any(|o| same_word(w, o)))
+            .count()
+    };
     // Phrases that share no object ("включи диот светозерк", "включи
     // светодиод") leave no telling which one was misheard: then none.
     let repeated = seen.len() < 2 || used.iter().all(|w| in_texts(w) >= 2);
@@ -200,10 +272,37 @@ pub fn reply_ok(reply: &str, call: Option<Polarity>, seen: &[String]) -> bool {
 
 /// Words a confirmation may carry besides the state and the user's own.
 const ACK_WORDS: &[&str] = &[
-    "готово", "сделано", "есть", "ок", "окей", "хорошо", "конечно", "теперь", "уже", "всё", "все", "итак",
-    "да", "нормально", "done", "ok",
+    "готово",
+    "сделано",
+    "есть",
+    "ок",
+    "окей",
+    "хорошо",
+    "конечно",
+    "теперь",
+    "уже",
+    "всё",
+    "все",
+    "итак",
+    "да",
+    "нормально",
+    "done",
+    "ok",
 ];
-const PREPOSITIONS: &[&str] = &["в", "во", "на", "у", "под", "над", "возле", "около", "из", "от", "при", "для"];
+const PREPOSITIONS: &[&str] = &[
+    "в",
+    "во",
+    "на",
+    "у",
+    "под",
+    "над",
+    "возле",
+    "около",
+    "из",
+    "от",
+    "при",
+    "для",
+];
 /// A spoken confirmation; longer replies were where the details got invented.
 const MAX_REPLY_WORDS: usize = 4;
 
@@ -234,7 +333,10 @@ mod tests {
 
     #[test]
     fn call_polarity_reads_nested_switch_values() {
-        assert_eq!(call_polarity(&json!({"params": {"name": "led_d1", "value": 0}})), Some(Off));
+        assert_eq!(
+            call_polarity(&json!({"params": {"name": "led_d1", "value": 0}})),
+            Some(Off)
+        );
         assert_eq!(call_polarity(&json!({"on": true})), Some(On));
         assert_eq!(call_polarity(&json!({"state": "OFF"})), Some(Off));
         assert_eq!(call_polarity(&json!({"level": 40})), None);
@@ -284,22 +386,42 @@ mod tests {
         .into_iter()
         .filter(|r| reply_ok(r, Some(Off), &["выключи светодиод".to_string()]))
         .collect();
-        assert_eq!(replies, vec!["Выключил", "Конечно, выкл светодиод"], "\"заранее\" is no confirmation");
+        assert_eq!(
+            replies,
+            vec!["Выключил", "Конечно, выкл светодиод"],
+            "\"заранее\" is no confirmation"
+        );
     }
 
     /// The second live run, after the polarity filter.
     #[test]
     fn paraphrases_must_keep_the_users_objects() {
         let seen = vec!["выключи светодиод".to_string()];
-        let kept: Vec<&str> =
-            ["выключи светодиод", "выключи свет", "выключи лампу", "погась свет", "светодиод погаси", "отключи светодиода"]
-                .into_iter()
-                .filter(|p| anchored(p, &seen))
-                .collect();
-        assert_eq!(kept, vec!["выключи светодиод", "светодиод погаси", "отключи светодиода"]);
+        let kept: Vec<&str> = [
+            "выключи светодиод",
+            "выключи свет",
+            "выключи лампу",
+            "погась свет",
+            "светодиод погаси",
+            "отключи светодиода",
+        ]
+        .into_iter()
+        .filter(|p| anchored(p, &seen))
+        .collect();
+        assert_eq!(
+            kept,
+            vec![
+                "выключи светодиод",
+                "светодиод погаси",
+                "отключи светодиода"
+            ]
+        );
         assert!(!phrase_ok("выключи то же самое", Some(Off)));
         assert!(anchored("включи лампу", &["зажги лампа".to_string()]));
-        assert!(!anchored("включи лампу на кухне", &["включи лампу".to_string()]));
+        assert!(!anchored(
+            "включи лампу на кухне",
+            &["включи лампу".to_string()]
+        ));
     }
 
     #[test]
@@ -314,22 +436,45 @@ mod tests {
         assert!(!reply_ok("Команда на лампочку", Some(Off), &[]));
         let seen = ["выключи светодиод".to_string()];
         assert!(reply_ok("Светодиод выключен", Some(Off), &seen));
-        assert!(!reply_ok("Да, свет выключен, совсем тихо.", Some(Off), &seen));
+        assert!(!reply_ok(
+            "Да, свет выключен, совсем тихо.",
+            Some(Off),
+            &seen
+        ));
         assert!(!reply_ok("Светодiод выключен", Some(Off), &seen), "Latin i");
         assert!(!reply_ok("Светодиод вturned OFF.", Some(Off), &seen));
         assert!(!phrase_ok("выключи 光照灯关", Some(Off)));
         assert!(!reply_ok("Светодиод 关 выключен", Some(Off), &seen));
         assert!(reply_ok("Выключил.", Some(Off), &[]));
-        let misheard = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string()];
-        assert!(!reply_ok("Включил светодиод светозерк.", Some(On), &misheard), "words of two phrases");
-        assert!(!reply_ok("Включил светодиод.", Some(On), &misheard), "the phrases disagree on the object");
+        let misheard = vec![
+            "включи диот светозерк".to_string(),
+            "включи светодиод".to_string(),
+        ];
+        assert!(
+            !reply_ok("Включил светодиод светозерк.", Some(On), &misheard),
+            "words of two phrases"
+        );
+        assert!(
+            !reply_ok("Включил светодиод.", Some(On), &misheard),
+            "the phrases disagree on the object"
+        );
         assert!(reply_ok("Включил.", Some(On), &misheard));
         // the fourth live run: two-word replies naming another device
-        for r in ["Светозерк включён.", "Светильник включился.", "Лампа включена.", "Светильник зажёгся.", "Итак, светозерк включён."] {
+        for r in [
+            "Светозерк включён.",
+            "Светильник включился.",
+            "Лампа включена.",
+            "Светильник зажёгся.",
+            "Итак, светозерк включён.",
+        ] {
             assert!(!reply_ok(r, Some(On), &misheard), "{r}");
         }
         // the third live run, once the mixing rule was in
-        let live = vec!["включи диот светозерк".to_string(), "включи светодиод".to_string(), "светодиод включить".to_string()];
+        let live = vec![
+            "включи диот светозерк".to_string(),
+            "включи светодиод".to_string(),
+            "светодиод включить".to_string(),
+        ];
         let kept: Vec<&str> = [
             "Светодиод в доме включен.",
             "Диод светозерк включен.",
@@ -344,10 +489,16 @@ mod tests {
         .collect();
         assert_eq!(kept, vec!["Светодиод включен."]);
         let kitchen = vec!["включи свет на кухне".to_string()];
-        assert!(reply_ok("Свет на кухне включен.", Some(On), &kitchen), "a place the user named");
+        assert!(
+            reply_ok("Свет на кухне включен.", Some(On), &kitchen),
+            "a place the user named"
+        );
         assert!(reply_ok("Готово.", None, &[]));
         assert!(!reply_ok("Ошибка устройства", None, &[]));
-        assert!(reply_ok("Нормально, яркость 40", None, &["яркость 40".to_string()]), "\"нормально\" is not \"не\"");
+        assert!(
+            reply_ok("Нормально, яркость 40", None, &["яркость 40".to_string()]),
+            "\"нормально\" is not \"не\""
+        );
         for p in [Some(On), Some(Off), None] {
             assert!(stock_replies(p).iter().all(|r| reply_ok(r, p, &[])));
         }

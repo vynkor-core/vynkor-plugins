@@ -12,7 +12,10 @@ pub const BOOK_KEY: &str = "routines";
 /// Never fails: a missing, unreadable or corrupt doc reads as an empty
 /// book (logged), because a routine problem must never stop a goal.
 pub async fn load(rpc: &Rpc, timeout_ms: u32) -> Book {
-    let v = match rpc.call("db_get", json!({"key": BOOK_KEY}), timeout_ms).await {
+    let v = match rpc
+        .call("db_get", json!({"key": BOOK_KEY}), timeout_ms)
+        .await
+    {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[agent] routines: load failed: {e}");
@@ -32,7 +35,13 @@ pub async fn load(rpc: &Rpc, timeout_ms: u32) -> Book {
 }
 
 pub async fn save(rpc: &Rpc, timeout_ms: u32, book: &Book) -> Result<(), String> {
-    let v = rpc.call("db_set", json!({"key": BOOK_KEY, "value": book}), timeout_ms).await?;
+    let v = rpc
+        .call(
+            "db_set",
+            json!({"key": BOOK_KEY, "value": book}),
+            timeout_ms,
+        )
+        .await?;
     if v.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(format!("database.db_set returned unexpected payload: {v}"));
     }

@@ -258,7 +258,10 @@ pub fn synthesize(params: &SynthesizeParams) -> Result<AudioResult, String> {
             let bytes = crate::provider::mp3::encode_pcm(&pcm, sample_rate, channels as u8)?;
             (bytes, "mp3".to_string())
         }
-        other => unreachable!("sherpa only produces wav|pcm|mp3 (requested {})", other.as_str()),
+        other => unreachable!(
+            "sherpa only produces wav|pcm|mp3 (requested {})",
+            other.as_str()
+        ),
     };
 
     Ok(AudioResult {

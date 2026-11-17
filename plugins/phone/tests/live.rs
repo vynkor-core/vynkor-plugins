@@ -37,16 +37,24 @@ async fn live_status_setup_photos_and_stream() {
         println!("photo {cam}: {v}");
         let bytes = std::fs::read(v["path"].as_str().unwrap()).unwrap();
         assert!(is_jpeg(&bytes), "{cam} photo is not a JPEG");
-        assert!(bytes.len() > 5_000, "{cam} photo suspiciously small: {}", bytes.len());
+        assert!(
+            bytes.len() > 5_000,
+            "{cam} photo suspiciously small: {}",
+            bytes.len()
+        );
     }
 
-    let sp = StreamParams::parse(&json!({"width": 640, "height": 480, "fps": 15, "flash": false})).unwrap();
+    let sp = StreamParams::parse(&json!({"width": 640, "height": 480, "fps": 15, "flash": false}))
+        .unwrap();
     let started = reg.start(t.as_ref(), &cfg, &sp).await.unwrap();
     println!("stream: {started}");
     tokio::time::sleep(Duration::from_secs(4)).await;
     let st = reg.status().await;
     println!("stream status: {st}");
-    assert!(st["frames"].as_u64().unwrap_or(0) >= 10, "too few frames: {st}");
+    assert!(
+        st["frames"].as_u64().unwrap_or(0) >= 10,
+        "too few frames: {st}"
+    );
     let stopped = reg.stop(None).await.unwrap();
     println!("stopped: {stopped}");
     assert_eq!(stopped["stopped"], json!(true));

@@ -39,7 +39,12 @@ impl Rpc {
     ) -> Result<Value, String> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(RpcCall { action: action.to_string(), params_json, timeout_ms, reply })
+            .send(RpcCall {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                reply,
+            })
             .await
             .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
@@ -50,9 +55,14 @@ impl Rpc {
         }
     }
 
-    pub async fn call_action(&self, action: &str, params: Value, timeout_ms: u32) -> Result<Value, String> {
-        let params_json =
-            serde_json::to_vec(&params).map_err(|e| format!("failed to encode {action} params: {e}"))?;
+    pub async fn call_action(
+        &self,
+        action: &str,
+        params: Value,
+        timeout_ms: u32,
+    ) -> Result<Value, String> {
+        let params_json = serde_json::to_vec(&params)
+            .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         self.call(action, params_json, timeout_ms).await
     }
 }

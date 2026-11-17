@@ -50,14 +50,10 @@ fn build_multipart(
     }
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!(
-            "Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n"
-        )
-        .as_bytes(),
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{file_name}\"\r\n")
+            .as_bytes(),
     );
-    body.extend_from_slice(
-        format!("Content-Type: {file_content_type}\r\n\r\n").as_bytes(),
-    );
+    body.extend_from_slice(format!("Content-Type: {file_content_type}\r\n\r\n").as_bytes());
     body.extend_from_slice(file_bytes);
     body.extend_from_slice(b"\r\n");
     body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
@@ -220,7 +216,10 @@ mod tests {
             "multipart must carry the file part with a wav filename"
         );
         assert!(body_str.contains("Content-Type: audio/wav"));
-        assert!(body_str.contains(&format!("--{boundary}--")), "closing boundary missing");
+        assert!(
+            body_str.contains(&format!("--{boundary}--")),
+            "closing boundary missing"
+        );
     }
 
     #[test]

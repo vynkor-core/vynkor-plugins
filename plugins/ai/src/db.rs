@@ -108,7 +108,10 @@ fn migrate_usage(conn: &Connection) -> rusqlite::Result<()> {
 
 /// `SELECT <column>, COUNT, SUM(in), SUM(out) ... GROUP BY <column>`.
 /// `column` is always one of this file's literals, never caller input.
-fn usage_grouped_by(conn: &Connection, column: &str) -> rusqlite::Result<Vec<(String, UsageBucket)>> {
+fn usage_grouped_by(
+    conn: &Connection,
+    column: &str,
+) -> rusqlite::Result<Vec<(String, UsageBucket)>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {column}, COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0)
          FROM usage GROUP BY {column} ORDER BY 2 DESC"
@@ -566,7 +569,10 @@ mod tests {
         assert_eq!(code.output_tokens, 8);
 
         let bucket = |v: &[(String, UsageBucket)], k: &str| {
-            v.iter().find(|(id, _)| id == k).map(|(_, b)| b.clone()).unwrap()
+            v.iter()
+                .find(|(id, _)| id == k)
+                .map(|(_, b)| b.clone())
+                .unwrap()
         };
         assert_eq!(bucket(&s.by_purpose, "memory_extract").input_tokens, 2);
         assert_eq!(bucket(&s.by_purpose, "").requests, 1);
@@ -589,9 +595,11 @@ mod tests {
         // idempotent: a second open must not try to re-add the columns
         migrate_usage(&conn).unwrap();
         let (purpose, latency): (String, i64) = conn
-            .query_row("SELECT purpose, latency_ms FROM usage WHERE id='old'", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT purpose, latency_ms FROM usage WHERE id='old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!((purpose.as_str(), latency), ("", 0));
     }

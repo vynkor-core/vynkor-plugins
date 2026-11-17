@@ -12,7 +12,9 @@ use crate::provider::{
     anthropic::AnthropicProvider, openai_compat::OpenAiCompatProvider, ChatResult,
     EmbeddingProvider, Provider, StreamDelta,
 };
-use crate::request::{self, ChatCompletionParams, EmbeddingParams, Provider as RequestProvider, UsageTags};
+use crate::request::{
+    self, ChatCompletionParams, EmbeddingParams, Provider as RequestProvider, UsageTags,
+};
 use crate::sse::SseDecoder;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -93,7 +95,13 @@ impl CallMeta {
         }
     }
 
-    fn usage_row(&self, agent_id: &Option<String>, model_id: &str, input: u64, output: u64) -> UsageRow {
+    fn usage_row(
+        &self,
+        agent_id: &Option<String>,
+        model_id: &str,
+        input: u64,
+        output: u64,
+    ) -> UsageRow {
         UsageRow {
             agent_id: agent_id.clone().unwrap_or_default(),
             model_id: model_id.to_string(),
@@ -107,7 +115,12 @@ impl CallMeta {
     }
 }
 
-fn record_chat_usage(db: &AiDb, meta: &CallMeta, params: &ChatCompletionParams, result: &ChatResult) {
+fn record_chat_usage(
+    db: &AiDb,
+    meta: &CallMeta,
+    params: &ChatCompletionParams,
+    result: &ChatResult,
+) {
     if let Err(e) = db.record_usage(&meta.usage_row(
         &params.agent_id,
         &params.model,

@@ -45,14 +45,18 @@ fn spec_from_action_spec(s: &Value) -> Option<ToolSpec> {
     let name = s.get("name").and_then(Value::as_str)?;
     let parameters = match s.get("params_schema") {
         // The kernel carries params_schema as a JSON-encoded string.
-        Some(Value::String(raw)) => {
-            serde_json::from_str::<Value>(raw).ok().filter(Value::is_object).unwrap_or(Value::Null)
-        }
+        Some(Value::String(raw)) => serde_json::from_str::<Value>(raw)
+            .ok()
+            .filter(Value::is_object)
+            .unwrap_or(Value::Null),
         Some(p @ Value::Object(_)) => p.clone(),
         _ => Value::Null,
     };
-    let mut description =
-        s.get("description").and_then(Value::as_str).unwrap_or_default().to_string();
+    let mut description = s
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     if description.is_empty() {
         description = description_from_parameters(&parameters);
     }
@@ -64,7 +68,11 @@ fn spec_from_action_spec(s: &Value) -> Option<ToolSpec> {
             .get("requires_confirmation")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        risk: s.get("risk").and_then(Value::as_str).unwrap_or_default().to_string(),
+        risk: s
+            .get("risk")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         timeout_ms: TOOL_TIMEOUT_DEFAULT_MS,
         cooldown_ms: 0,
         max_per_goal: 16,
@@ -84,14 +92,19 @@ async fn plugin_manifest(rpc: &Rpc, slug: &str) -> Result<Value, String> {
 /// Enumerate every registered plugin and collect its `action_specs` into
 /// tool specs keyed by action name.
 pub async fn discover(rpc: &Rpc) -> Result<BTreeMap<String, ToolSpec>, String> {
-    let list = rpc.call_command("list_plugins", json!({}), DISCOVERY_TIMEOUT_MS).await?;
+    let list = rpc
+        .call_command("list_plugins", json!({}), DISCOVERY_TIMEOUT_MS)
+        .await?;
     let entries = list
         .as_array()
         .ok_or_else(|| format!("list_plugins returned unexpected payload: {list}"))?;
 
     let mut out = BTreeMap::new();
     for entry in entries {
-        let slug = entry.get("plugin_id").and_then(Value::as_str).unwrap_or_default();
+        let slug = entry
+            .get("plugin_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if slug.is_empty() || slug == "agent" {
             continue;
         }
@@ -155,7 +168,10 @@ mod tests {
             "params_schema": "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to synthesize and play through tts + sound.\"}}}"
         });
         let t = spec_from_action_spec(&s).unwrap();
-        assert_eq!(t.description, "Text to synthesize and play through tts + sound.");
+        assert_eq!(
+            t.description,
+            "Text to synthesize and play through tts + sound."
+        );
     }
 
     #[test]

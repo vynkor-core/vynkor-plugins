@@ -76,8 +76,12 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
+        // the kernel grants every plugin its own dir as VYN_DATA_DIR
         let data_dir = std::env::var("VECTOR_DB_DATA_DIR")
-            .unwrap_or_else(|_| panic!("VECTOR_DB_DATA_DIR must be set (see config.example.yaml)"));
+            .or_else(|_| std::env::var("VYN_DATA_DIR"))
+            .unwrap_or_else(|_| {
+                panic!("VECTOR_DB_DATA_DIR (or the kernel's VYN_DATA_DIR) must be set")
+            });
         let pool_size = std::env::var("VECTOR_DB_POOL_SIZE")
             .ok()
             .and_then(|s| s.parse().ok())

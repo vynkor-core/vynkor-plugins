@@ -38,8 +38,16 @@ pub enum Intent {
 /// emptying — MPRIS alone reports a muted browser tab as `Playing`.
 fn heard(cands: &[Candidate]) -> Vec<&Candidate> {
     let playing: Vec<&Candidate> = cands.iter().filter(|c| c.playing()).collect();
-    let audible: Vec<&Candidate> = playing.iter().copied().filter(|c| c.audible == Some(true)).collect();
-    if audible.is_empty() { playing } else { audible }
+    let audible: Vec<&Candidate> = playing
+        .iter()
+        .copied()
+        .filter(|c| c.audible == Some(true))
+        .collect();
+    if audible.is_empty() {
+        playing
+    } else {
+        audible
+    }
 }
 
 /// True when [`choose`] would need stream info to break a tie — lets the
@@ -58,7 +66,11 @@ pub fn choose(cands: &[Candidate], intent: Intent) -> Result<Vec<String>, String
     if intent == Intent::AllPlaying {
         // Pause/stop every *playing* player, audible or not: a muted tab
         // still counts as music the user asked to stop.
-        return Ok(cands.iter().filter(|c| c.playing()).map(|c| c.name.clone()).collect());
+        return Ok(cands
+            .iter()
+            .filter(|c| c.playing())
+            .map(|c| c.name.clone())
+            .collect());
     }
     match heard.as_slice() {
         [one] => return Ok(vec![one.name.clone()]),
@@ -74,7 +86,11 @@ pub fn choose(cands: &[Candidate], intent: Intent) -> Result<Vec<String>, String
     // Nothing plays: the player most recently active is what "resume" /
     // "next track" refers to.
     let mut paused: Vec<&Candidate> = cands.iter().filter(|c| c.status == "Paused").collect();
-    paused.sort_by(|a, b| b.last_change.cmp(&a.last_change).then_with(|| a.name.cmp(&b.name)));
+    paused.sort_by(|a, b| {
+        b.last_change
+            .cmp(&a.last_change)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     if let Some(first) = paused.first() {
         return Ok(vec![first.name.clone()]);
     }
@@ -108,8 +124,12 @@ pub fn match_requested(requested: &str, available: &[String]) -> Result<String, 
         .collect();
     match hits.as_slice() {
         [one] => Ok((*one).clone()),
-        [] => Err(format!("ERR_MEDIA_PLAYER_NOT_FOUND: '{r}' not available (have: {available:?})")),
-        many => Err(format!("ERR_MEDIA_AMBIGUOUS: '{r}' matches several players: {many:?}")),
+        [] => Err(format!(
+            "ERR_MEDIA_PLAYER_NOT_FOUND: '{r}' not available (have: {available:?})"
+        )),
+        many => Err(format!(
+            "ERR_MEDIA_AMBIGUOUS: '{r}' matches several players: {many:?}"
+        )),
     }
 }
 
@@ -119,12 +139,19 @@ mod tests {
     use std::time::Duration;
 
     fn c(name: &str, status: &str) -> Candidate {
-        Candidate { name: name.into(), status: status.into(), audible: None, last_change: None }
+        Candidate {
+            name: name.into(),
+            status: status.into(),
+            audible: None,
+            last_change: None,
+        }
     }
 
     #[test]
     fn empty_is_no_players() {
-        assert!(choose(&[], Intent::One).unwrap_err().starts_with("ERR_MEDIA_NO_PLAYERS"));
+        assert!(choose(&[], Intent::One)
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_NO_PLAYERS"));
     }
 
     #[test]
@@ -157,7 +184,9 @@ mod tests {
         a.audible = Some(false);
         let mut b = c("b", "Playing");
         b.audible = Some(false);
-        assert!(choose(&[a, b], Intent::One).unwrap_err().starts_with("ERR_MEDIA_AMBIGUOUS"));
+        assert!(choose(&[a, b], Intent::One)
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_AMBIGUOUS"));
     }
 
     #[test]
@@ -165,7 +194,10 @@ mod tests {
         let mut ff = c("firefox", "Playing");
         ff.audible = Some(false);
         let cands = [ff, c("mpd", "Paused"), c("spotify", "Playing")];
-        assert_eq!(choose(&cands, Intent::AllPlaying).unwrap(), vec!["firefox", "spotify"]);
+        assert_eq!(
+            choose(&cands, Intent::AllPlaying).unwrap(),
+            vec!["firefox", "spotify"]
+        );
     }
 
     #[test]
@@ -186,19 +218,28 @@ mod tests {
 
     #[test]
     fn paused_without_history_falls_back_to_name() {
-        let cands = [c("zzz", "Paused"), c("aaa", "Paused"), c("stopped", "Stopped")];
+        let cands = [
+            c("zzz", "Paused"),
+            c("aaa", "Paused"),
+            c("stopped", "Stopped"),
+        ];
         assert_eq!(choose(&cands, Intent::One).unwrap(), vec!["aaa"]);
     }
 
     #[test]
     fn lone_stopped_player_is_used() {
-        assert_eq!(choose(&[c("mpd", "Stopped")], Intent::One).unwrap(), vec!["mpd"]);
+        assert_eq!(
+            choose(&[c("mpd", "Stopped")], Intent::One).unwrap(),
+            vec!["mpd"]
+        );
     }
 
     #[test]
     fn several_stopped_players_are_ambiguous() {
         let cands = [c("a", "Stopped"), c("b", "Stopped")];
-        assert!(choose(&cands, Intent::One).unwrap_err().starts_with("ERR_MEDIA_AMBIGUOUS"));
+        assert!(choose(&cands, Intent::One)
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_AMBIGUOUS"));
     }
 
     #[test]
@@ -220,8 +261,14 @@ mod tests {
 
     #[test]
     fn requested_exact_and_short_names() {
-        assert_eq!(match_requested("org.mpris.MediaPlayer2.mpd", &avail()).unwrap(), "org.mpris.MediaPlayer2.mpd");
-        assert_eq!(match_requested("Spotify", &avail()).unwrap(), "org.mpris.MediaPlayer2.spotify");
+        assert_eq!(
+            match_requested("org.mpris.MediaPlayer2.mpd", &avail()).unwrap(),
+            "org.mpris.MediaPlayer2.mpd"
+        );
+        assert_eq!(
+            match_requested("Spotify", &avail()).unwrap(),
+            "org.mpris.MediaPlayer2.spotify"
+        );
         assert_eq!(
             match_requested("firefox", &avail()).unwrap(),
             "org.mpris.MediaPlayer2.firefox.instance_1_424"
@@ -232,11 +279,15 @@ mod tests {
     fn requested_multiple_instances_is_ambiguous() {
         let mut a = avail();
         a.push("org.mpris.MediaPlayer2.firefox.instance_1_999".into());
-        assert!(match_requested("firefox", &a).unwrap_err().starts_with("ERR_MEDIA_AMBIGUOUS"));
+        assert!(match_requested("firefox", &a)
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_AMBIGUOUS"));
     }
 
     #[test]
     fn requested_unknown_is_not_found() {
-        assert!(match_requested("vlc", &avail()).unwrap_err().starts_with("ERR_MEDIA_PLAYER_NOT_FOUND"));
+        assert!(match_requested("vlc", &avail())
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_PLAYER_NOT_FOUND"));
     }
 }

@@ -47,7 +47,12 @@ pub fn photo_args(p: &PhotoParams) -> Vec<String> {
     a
 }
 
-pub async fn take(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry, p: &PhotoParams) -> Result<Value, PhoneError> {
+pub async fn take(
+    t: &dyn Transport,
+    cfg: &Config,
+    reg: &StreamRegistry,
+    p: &PhotoParams,
+) -> Result<Value, PhoneError> {
     cfg.ensure_dir()?;
 
     if let Some((cam, latest)) = reg.active_camera().await {
@@ -58,9 +63,9 @@ pub async fn take(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry, p: &Pho
                 cam.as_str()
             )));
         }
-        let bytes = tokio::fs::read(&latest)
-            .await
-            .map_err(|_| PhoneError::Busy("stream is running but has produced no frame yet; retry".into()))?;
+        let bytes = tokio::fs::read(&latest).await.map_err(|_| {
+            PhoneError::Busy("stream is running but has produced no frame yet; retry".into())
+        })?;
         let path = write_atomic(&cfg.dir, &format!("photo-{}.jpg", unix_millis()), &bytes).await?;
         return Ok(json!({
             "path": path, "width": p.width, "height": p.height, "format": "jpg",
@@ -70,7 +75,9 @@ pub async fn take(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry, p: &Pho
 
     // One camera client at a time: a second concurrent photo waits here.
     let _cam = reg.camera_guard().await;
-    let out = t.run(&helper_cmd(cfg, photo_args(p)), None, PHOTO_TIMEOUT).await?;
+    let out = t
+        .run(&helper_cmd(cfg, photo_args(p)), None, PHOTO_TIMEOUT)
+        .await?;
     if out.code != 0 {
         return Err(classify(out.code, &out.stderr));
     }
@@ -79,7 +86,9 @@ pub async fn take(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry, p: &Pho
         .await?
         .ok_or_else(|| PhoneError::Camera("helper exited without a frame".into()))?;
     if !is_jpeg(&frame) {
-        return Err(PhoneError::Camera("helper returned bytes that are not a JPEG".into()));
+        return Err(PhoneError::Camera(
+            "helper returned bytes that are not a JPEG".into(),
+        ));
     }
     let path = write_atomic(&cfg.dir, &format!("photo-{}.jpg", unix_millis()), &frame).await?;
     Ok(json!({
@@ -131,7 +140,10 @@ mod tests {
         );
         let f = PhotoParams::parse(&json!({"camera":"front","flash":true,"af":"auto"})).unwrap();
         let s = photo_args(&f).join(" ");
-        assert!(s.contains("--cam front") && s.contains("--af auto") && s.ends_with("--flash 3"), "{s}");
+        assert!(
+            s.contains("--cam front") && s.contains("--af auto") && s.ends_with("--flash 3"),
+            "{s}"
+        );
     }
 
     #[tokio::test]
@@ -146,7 +158,11 @@ mod tests {
         assert_eq!(v["source"], json!("camera"));
         assert_eq!(v["format"], json!("jpg"));
         assert_eq!(v["bytes"], json!(7));
-        assert!(std::path::Path::new(path).file_name().unwrap().to_string_lossy().starts_with("photo-"));
+        assert!(std::path::Path::new(path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("photo-"));
     }
 
     #[tokio::test]
@@ -164,9 +180,15 @@ mod tests {
             let t = FakeTransport::new();
             t.push_run(FakeTransport::ok(bytes.clone()));
             let reg = StreamRegistry::new();
-            let e = take(&t, &cfg(dir.path()), &reg, &params()).await.unwrap_err();
+            let e = take(&t, &cfg(dir.path()), &reg, &params())
+                .await
+                .unwrap_err();
             assert!(matches!(e, PhoneError::Camera(_)), "{bytes:?} -> {e}");
-            assert!(files(dir.path()).is_empty(), "{bytes:?} left files: {:?}", files(dir.path()));
+            assert!(
+                files(dir.path()).is_empty(),
+                "{bytes:?} left files: {:?}",
+                files(dir.path())
+            );
         }
     }
 
@@ -200,7 +222,11 @@ mod tests {
         let (a, b) = tokio::join!(take(&t, &c, &reg, &p), take(&t, &c, &reg, &p));
         a.unwrap();
         b.unwrap();
-        assert_eq!(t.max_active.load(Ordering::SeqCst), 1, "the helper must never run twice at once");
+        assert_eq!(
+            t.max_active.load(Ordering::SeqCst),
+            1,
+            "the helper must never run twice at once"
+        );
     }
 
     #[tokio::test]
@@ -222,7 +248,10 @@ mod tests {
         assert_eq!(std::fs::read(v["path"].as_str().unwrap()).unwrap(), jpeg());
 
         let front = PhotoParams::parse(&json!({"camera":"front"})).unwrap();
-        assert!(matches!(take(&t, &c, &reg, &front).await, Err(PhoneError::Busy(_))));
+        assert!(matches!(
+            take(&t, &c, &reg, &front).await,
+            Err(PhoneError::Busy(_))
+        ));
         reg.stop(None).await.unwrap();
     }
 }

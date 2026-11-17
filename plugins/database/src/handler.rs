@@ -56,7 +56,9 @@ impl Handler {
         params_json: &[u8],
     ) -> Result<(Vec<u8>, Option<ChangeEvent>), String> {
         if caller_plugin_id.is_empty() {
-            return Err("missing caller_plugin_id (rejected before touching any database)".to_string());
+            return Err(
+                "missing caller_plugin_id (rejected before touching any database)".to_string(),
+            );
         }
         let req = parse_request(action, params_json)?;
         let pool = self.pools.pool_for(caller_plugin_id).await?;
@@ -85,7 +87,9 @@ impl Handler {
                 (value, event)
             }
             DbRequest::BatchGet { keys } => (self.handle_batch_get(&pool, &keys).await?, None),
-            DbRequest::Query { sql, params } => (self.handle_query(&pool, &sql, &params).await?, None),
+            DbRequest::Query { sql, params } => {
+                (self.handle_query(&pool, &sql, &params).await?, None)
+            }
             DbRequest::Incr { key, delta } => (
                 self.handle_incr(&pool, &key, delta).await?,
                 Some(ChangeEvent {
@@ -141,7 +145,8 @@ impl Handler {
         value: &Value,
         ttl_ms: Option<i64>,
     ) -> Result<Value, String> {
-        let raw = serde_json::to_string(value).map_err(|e| format!("failed to encode value: {e}"))?;
+        let raw =
+            serde_json::to_string(value).map_err(|e| format!("failed to encode value: {e}"))?;
         if raw.len() > self.max_value_bytes {
             return Err(format!(
                 "value exceeds max_value_bytes ({} > {})",
@@ -172,7 +177,10 @@ impl Handler {
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
-        Ok((result.rows_affected() > 0, json!({"deleted": result.rows_affected() > 0})))
+        Ok((
+            result.rows_affected() > 0,
+            json!({"deleted": result.rows_affected() > 0}),
+        ))
     }
 
     async fn handle_batch_get(&self, pool: &SqlitePool, keys: &[String]) -> Result<Value, String> {
@@ -197,9 +205,8 @@ impl Handler {
                 None => Value::Null,
             };
             // Account for the value plus its key and JSON punctuation.
-            running_bytes += serde_json::to_vec(&value).map_err(|e| e.to_string())?.len()
-                + key.len()
-                + 4;
+            running_bytes +=
+                serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() + key.len() + 4;
             if running_bytes > self.max_response_bytes {
                 return Err(format!(
                     "batch_get result exceeds max_response_bytes (> {})",
@@ -211,7 +218,12 @@ impl Handler {
         Ok(json!({"values": Value::Object(values)}))
     }
 
-    async fn handle_query(&self, pool: &SqlitePool, sql: &str, params: &[Value]) -> Result<Value, String> {
+    async fn handle_query(
+        &self,
+        pool: &SqlitePool,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<Value, String> {
         if db::rejects_attach(sql) {
             return Err("ATTACH is not permitted in db_query statements".to_string());
         }
@@ -246,10 +258,8 @@ impl Handler {
                     // Account for the row plus its `,` separator against the
                     // cap before pushing, so we never hold more than one
                     // oversized row's worth past the limit.
-                    running_bytes += serde_json::to_vec(&value)
-                        .map_err(|e| e.to_string())?
-                        .len()
-                        + 1;
+                    running_bytes +=
+                        serde_json::to_vec(&value).map_err(|e| e.to_string())?.len() + 1;
                     if running_bytes > self.max_response_bytes {
                         return Err(format!(
                             "query result exceeds max_response_bytes (> {})",
@@ -318,15 +328,21 @@ impl Handler {
             .replace('%', "\\%")
             .replace('_', "\\_");
         let pattern = format!("{escaped}%");
-        let rows: Vec<(String,)> = sqlx::query_as("select key from kv where key like ?1 escape '\\' order by key")
-            .bind(pattern)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("select key from kv where key like ?1 escape '\\' order by key")
+                .bind(pattern)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| e.to_string())?;
         Ok(json!({"keys": rows.into_iter().map(|(k,)| k).collect::<Vec<String>>()}))
     }
 
-    async fn handle_append(&self, pool: &SqlitePool, key: &str, value: &Value) -> Result<Value, String> {
+    async fn handle_append(
+        &self,
+        pool: &SqlitePool,
+        key: &str,
+        value: &Value,
+    ) -> Result<Value, String> {
         let now_ms = db::now_ms();
         let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
         let row: Option<(String,)> = sqlx::query_as(
@@ -341,7 +357,8 @@ impl Handler {
         let (raw, length) = match row {
             None => {
                 let arr = json!([value]);
-                let raw = serde_json::to_string(&arr).map_err(|e| format!("failed to encode value: {e}"))?;
+                let raw = serde_json::to_string(&arr)
+                    .map_err(|e| format!("failed to encode value: {e}"))?;
                 (raw, 1usize)
             }
             Some((stored,)) => {
@@ -405,21 +422,23 @@ impl Handler {
 
         let value_json =
             serde_json::to_string(value).map_err(|e| format!("failed to encode value: {e}"))?;
-        sqlx::query("update kv set value = json_set(value, ?2, json(?3)), updated_at = ?4 where key = ?1")
-            .bind(key)
-            .bind(path)
-            .bind(&value_json)
-            .bind(now_ms)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.to_ascii_lowercase().contains("json path") {
-                    format!("invalid JSON path {path:?}: {msg}")
-                } else {
-                    msg
-                }
-            })?;
+        sqlx::query(
+            "update kv set value = json_set(value, ?2, json(?3)), updated_at = ?4 where key = ?1",
+        )
+        .bind(key)
+        .bind(path)
+        .bind(&value_json)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.to_ascii_lowercase().contains("json path") {
+                format!("invalid JSON path {path:?}: {msg}")
+            } else {
+                msg
+            }
+        })?;
 
         let (new_raw,): (String,) = sqlx::query_as("select value from kv where key = ?1")
             .bind(key)
@@ -460,7 +479,10 @@ fn row_to_json(row: &sqlx::sqlite::SqliteRow) -> Result<Value, String> {
                 "REAL" => json!(row.try_get::<f64, _>(i).map_err(|e| e.to_string())?),
                 "BLOB" => {
                     let bytes = row.try_get::<Vec<u8>, _>(i).map_err(|e| e.to_string())?;
-                    json!(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes))
+                    json!(base64::Engine::encode(
+                        &base64::engine::general_purpose::STANDARD,
+                        bytes
+                    ))
                 }
                 other => return Err(format!("unsupported SQLite column type: {other}")),
             }
@@ -494,7 +516,11 @@ mod tests {
         let h = handler(dir.path());
 
         let set_out = h
-            .handle("caller_a", "db_set", br#"{"key": "foo", "value": {"n": 1}}"#)
+            .handle(
+                "caller_a",
+                "db_set",
+                br#"{"key": "foo", "value": {"n": 1}}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -502,7 +528,10 @@ mod tests {
             serde_json::json!({"ok": true})
         );
 
-        let get_out = h.handle("caller_a", "db_get", br#"{"key": "foo"}"#).await.unwrap();
+        let get_out = h
+            .handle("caller_a", "db_get", br#"{"key": "foo"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&get_out).unwrap(),
             serde_json::json!({"found": true, "value": {"n": 1}})
@@ -513,7 +542,10 @@ mod tests {
     async fn get_missing_key_returns_found_false() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        let out = h.handle("caller_a", "db_get", br#"{"key": "nope"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_get", br#"{"key": "nope"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"found": false, "value": null})
@@ -528,13 +560,19 @@ mod tests {
             .await
             .unwrap();
 
-        let out1 = h.handle("caller_a", "db_delete", br#"{"key": "foo"}"#).await.unwrap();
+        let out1 = h
+            .handle("caller_a", "db_delete", br#"{"key": "foo"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out1).unwrap(),
             serde_json::json!({"deleted": true})
         );
 
-        let out2 = h.handle("caller_a", "db_delete", br#"{"key": "foo"}"#).await.unwrap();
+        let out2 = h
+            .handle("caller_a", "db_delete", br#"{"key": "foo"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out2).unwrap(),
             serde_json::json!({"deleted": false})
@@ -545,7 +583,9 @@ mod tests {
     async fn batch_get_returns_map_with_nulls_for_missing() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "a", "value": 1}"#).await.unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "a", "value": 1}"#)
+            .await
+            .unwrap();
 
         let out = h
             .handle("caller_a", "db_batch_get", br#"{"keys": ["a", "b"]}"#)
@@ -604,8 +644,14 @@ mod tests {
             .await
             .unwrap();
 
-        let a = h.handle("caller_a", "db_get", br#"{"key": "k"}"#).await.unwrap();
-        let b = h.handle("caller_b", "db_get", br#"{"key": "k"}"#).await.unwrap();
+        let a = h
+            .handle("caller_a", "db_get", br#"{"key": "k"}"#)
+            .await
+            .unwrap();
+        let b = h
+            .handle("caller_b", "db_get", br#"{"key": "k"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&a).unwrap()["value"],
             "from_a"
@@ -621,7 +667,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
         let big_value = serde_json::json!("x".repeat(2000));
-        let params = serde_json::to_vec(&serde_json::json!({"key": "foo", "value": big_value})).unwrap();
+        let params =
+            serde_json::to_vec(&serde_json::json!({"key": "foo", "value": big_value})).unwrap();
         let err = h.handle("caller_a", "db_set", &params).await.unwrap_err();
         assert!(err.contains("max_value_bytes"), "error was: {err}");
     }
@@ -630,7 +677,10 @@ mod tests {
     async fn rejects_missing_caller_id() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        let err = h.handle("", "db_get", br#"{"key": "foo"}"#).await.unwrap_err();
+        let err = h
+            .handle("", "db_get", br#"{"key": "foo"}"#)
+            .await
+            .unwrap_err();
         assert!(err.contains("caller_plugin_id"), "error was: {err}");
     }
 
@@ -638,7 +688,10 @@ mod tests {
     async fn rejects_unknown_action() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        let err = h.handle("caller_a", "db_frobnicate", b"{}").await.unwrap_err();
+        let err = h
+            .handle("caller_a", "db_frobnicate", b"{}")
+            .await
+            .unwrap_err();
         assert!(err.contains("db_frobnicate"), "error was: {err}");
     }
 
@@ -671,7 +724,10 @@ mod tests {
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
-        assert_eq!(v["rows"][0]["key"], "rk", "RETURNING rows were dropped: {v}");
+        assert_eq!(
+            v["rows"][0]["key"], "rk",
+            "RETURNING rows were dropped: {v}"
+        );
         assert_eq!(v["rows"][0]["updated_at"], 0);
     }
 
@@ -693,7 +749,10 @@ mod tests {
             keys.push(key);
         }
         let params = serde_json::to_vec(&serde_json::json!({"keys": keys})).unwrap();
-        let err = h.handle("caller_a", "db_batch_get", &params).await.unwrap_err();
+        let err = h
+            .handle("caller_a", "db_batch_get", &params)
+            .await
+            .unwrap_err();
         assert!(err.contains("max_response_bytes"), "error was: {err}");
     }
 
@@ -712,7 +771,11 @@ mod tests {
             h.handle("caller_a", "db_set", &params).await.unwrap();
         }
         let err = h
-            .handle("caller_a", "db_query", br#"{"sql": "select key, value from kv"}"#)
+            .handle(
+                "caller_a",
+                "db_query",
+                br#"{"sql": "select key, value from kv"}"#,
+            )
             .await
             .unwrap_err();
         assert!(err.contains("max_response_bytes"), "error was: {err}");
@@ -746,7 +809,10 @@ mod tests {
                 break;
             }
         }
-        assert!(hit_full, "expected a disk-full rejection under the 64 KiB quota");
+        assert!(
+            hit_full,
+            "expected a disk-full rejection under the 64 KiB quota"
+        );
     }
 
     // Characterization test backing the transactions section of USAGE.md: a
@@ -770,11 +836,21 @@ mod tests {
             .unwrap();
         // The block committed both rows.
         let count = h
-            .handle("caller_a", "db_query", br#"{"sql": "select count(*) as n from kv"}"#)
+            .handle(
+                "caller_a",
+                "db_query",
+                br#"{"sql": "select count(*) as n from kv"}"#,
+            )
             .await
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&count).unwrap();
-        assert_eq!(v["rows"][0]["n"], 2, "multi-statement block did not commit both rows: {}, out was {}", v, String::from_utf8_lossy(&out));
+        assert_eq!(
+            v["rows"][0]["n"],
+            2,
+            "multi-statement block did not commit both rows: {}, out was {}",
+            v,
+            String::from_utf8_lossy(&out)
+        );
     }
 
     async fn set_raw(pool: &SqlitePool, key: &str, value: &Value) {
@@ -793,7 +869,10 @@ mod tests {
     async fn incr_starts_missing_key_at_delta() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        let out = h.handle("caller_a", "db_incr", br#"{"key": "views"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_incr", br#"{"key": "views"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "value": 1})
@@ -804,8 +883,13 @@ mod tests {
     async fn incr_accumulates_on_existing_counter() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_incr", br#"{"key": "n", "delta": 10}"#).await.unwrap();
-        let out = h.handle("caller_a", "db_incr", br#"{"key": "n"}"#).await.unwrap();
+        h.handle("caller_a", "db_incr", br#"{"key": "n", "delta": 10}"#)
+            .await
+            .unwrap();
+        let out = h
+            .handle("caller_a", "db_incr", br#"{"key": "n"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "value": 11})
@@ -816,8 +900,13 @@ mod tests {
     async fn incr_supports_negative_delta() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "n", "value": 5}"#).await.unwrap();
-        let out = h.handle("caller_a", "db_incr", br#"{"key": "n", "delta": -8}"#).await.unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "n", "value": 5}"#)
+            .await
+            .unwrap();
+        let out = h
+            .handle("caller_a", "db_incr", br#"{"key": "n", "delta": -8}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "value": -3})
@@ -828,11 +917,15 @@ mod tests {
     async fn incr_rejects_non_integer_value() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "s", "value": "text"}"#).await.unwrap();
-        let err = h.handle("caller_a", "db_incr", br#"{"key": "s"}"#).await.unwrap_err();
+        h.handle("caller_a", "db_set", br#"{"key": "s", "value": "text"}"#)
+            .await
+            .unwrap();
+        let err = h
+            .handle("caller_a", "db_incr", br#"{"key": "s"}"#)
+            .await
+            .unwrap_err();
         assert_eq!(
-            err,
-            "key 's' is not a counter: stored value is not an integer",
+            err, "key 's' is not a counter: stored value is not an integer",
             "error was: {err}"
         );
     }
@@ -847,7 +940,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let out = h.handle("caller_a", "db_incr", br#"{"key": "n"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_incr", br#"{"key": "n"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "value": 1})
@@ -860,9 +956,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
         for k in ["b", "a", "c"] {
-            h.handle("caller_a", "db_set", &format!(r#"{{"key": "{k}", "value": 1}}"#).into_bytes())
-                .await
-                .unwrap();
+            h.handle(
+                "caller_a",
+                "db_set",
+                &format!(r#"{{"key": "{k}", "value": 1}}"#).into_bytes(),
+            )
+            .await
+            .unwrap();
         }
         let out = h.handle("caller_a", "db_keys", b"{}").await.unwrap();
         assert_eq!(
@@ -876,11 +976,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
         for k in ["user:1", "user:2", "meta:1"] {
-            h.handle("caller_a", "db_set", &format!(r#"{{"key": "{k}", "value": 1}}"#).into_bytes())
-                .await
-                .unwrap();
+            h.handle(
+                "caller_a",
+                "db_set",
+                &format!(r#"{{"key": "{k}", "value": 1}}"#).into_bytes(),
+            )
+            .await
+            .unwrap();
         }
-        let out = h.handle("caller_a", "db_keys", br#"{"prefix": "user:"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_keys", br#"{"prefix": "user:"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"keys": ["user:1", "user:2"]})
@@ -898,19 +1005,28 @@ mod tests {
             h.handle("caller_a", "db_set", &params).await.unwrap();
         }
         // Prefix "a%" must match only the literal "a%x" key, not "ax".
-        let out = h.handle("caller_a", "db_keys", br#"{"prefix": "a%"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_keys", br#"{"prefix": "a%"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"keys": ["a%x"]})
         );
         // Prefix "a_" must match only the literal "a_x" key.
-        let out = h.handle("caller_a", "db_keys", br#"{"prefix": "a_"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_keys", br#"{"prefix": "a_"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"keys": ["a_x"]})
         );
         // Prefix "a\" (a literal backslash) must match only "a\x".
-        let out = h.handle("caller_a", "db_keys", br#"{"prefix": "a\\"}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_keys", br#"{"prefix": "a\\"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"keys": [r#"a\\x"#]})
@@ -921,8 +1037,13 @@ mod tests {
     async fn keys_returns_empty_list_when_nothing_matches() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "a", "value": 1}"#).await.unwrap();
-        let out = h.handle("caller_a", "db_keys", br#"{"prefix": "zzz"}"#).await.unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "a", "value": 1}"#)
+            .await
+            .unwrap();
+        let out = h
+            .handle("caller_a", "db_keys", br#"{"prefix": "zzz"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"keys": []})
@@ -934,12 +1055,18 @@ mod tests {
     async fn append_creates_array_on_missing_key() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        let out = h.handle("caller_a", "db_append", br#"{"key": "log", "value": 1}"#).await.unwrap();
+        let out = h
+            .handle("caller_a", "db_append", br#"{"key": "log", "value": 1}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "length": 1})
         );
-        let get = h.handle("caller_a", "db_get", br#"{"key": "log"}"#).await.unwrap();
+        let get = h
+            .handle("caller_a", "db_get", br#"{"key": "log"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&get).unwrap()["value"],
             serde_json::json!([1])
@@ -950,16 +1077,25 @@ mod tests {
     async fn append_extends_existing_array() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "log", "value": [1, 2]}"#).await.unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "log", "value": [1, 2]}"#)
+            .await
+            .unwrap();
         let out = h
-            .handle("caller_a", "db_append", br#"{"key": "log", "value": {"n": 3}}"#)
+            .handle(
+                "caller_a",
+                "db_append",
+                br#"{"key": "log", "value": {"n": 3}}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&out).unwrap(),
             serde_json::json!({"ok": true, "length": 3})
         );
-        let get = h.handle("caller_a", "db_get", br#"{"key": "log"}"#).await.unwrap();
+        let get = h
+            .handle("caller_a", "db_get", br#"{"key": "log"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&get).unwrap()["value"],
             serde_json::json!([1, 2, {"n": 3}])
@@ -970,9 +1106,17 @@ mod tests {
     async fn append_rejects_non_array_value() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "s", "value": 5}"#).await.unwrap();
-        let err = h.handle("caller_a", "db_append", br#"{"key": "s", "value": 1}"#).await.unwrap_err();
-        assert_eq!(err, "key 's' is not an array: cannot append", "error was: {err}");
+        h.handle("caller_a", "db_set", br#"{"key": "s", "value": 5}"#)
+            .await
+            .unwrap();
+        let err = h
+            .handle("caller_a", "db_append", br#"{"key": "s", "value": 1}"#)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err, "key 's' is not an array: cannot append",
+            "error was: {err}"
+        );
     }
 
     #[tokio::test]
@@ -980,12 +1124,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
         let big = serde_json::json!("x".repeat(900));
-        let params =
-            serde_json::to_vec(&serde_json::json!({"key": "log", "value": big})).unwrap();
+        let params = serde_json::to_vec(&serde_json::json!({"key": "log", "value": big})).unwrap();
         h.handle("caller_a", "db_append", &params).await.unwrap();
         // Second append of another ~900-byte string: the serialized array
         // now exceeds the 1024-byte max_value_bytes test cap.
-        let err = h.handle("caller_a", "db_append", &params).await.unwrap_err();
+        let err = h
+            .handle("caller_a", "db_append", &params)
+            .await
+            .unwrap_err();
         assert!(err.contains("max_value_bytes"), "error was: {err}");
     }
 
@@ -994,11 +1140,18 @@ mod tests {
     async fn ttl_expired_key_reads_as_missing_after_direct_expiry_write() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "t", "value": 1, "ttl_ms": 60000}"#)
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "t", "value": 1, "ttl_ms": 60000}"#,
+        )
+        .await
+        .unwrap();
+        // Get works while unexpired.
+        let get = h
+            .handle("caller_a", "db_get", br#"{"key": "t"}"#)
             .await
             .unwrap();
-        // Get works while unexpired.
-        let get = h.handle("caller_a", "db_get", br#"{"key": "t"}"#).await.unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&get).unwrap(),
             serde_json::json!({"found": true, "value": 1})
@@ -1011,7 +1164,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        let get = h.handle("caller_a", "db_get", br#"{"key": "t"}"#).await.unwrap();
+        let get = h
+            .handle("caller_a", "db_get", br#"{"key": "t"}"#)
+            .await
+            .unwrap();
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&get).unwrap(),
             serde_json::json!({"found": false, "value": null})
@@ -1028,10 +1184,16 @@ mod tests {
     async fn ttl_batch_get_mixes_expired_and_live_keys() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "dead", "value": 1, "ttl_ms": 60000}"#)
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "dead", "value": 1, "ttl_ms": 60000}"#,
+        )
+        .await
+        .unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "alive", "value": 2}"#)
             .await
             .unwrap();
-        h.handle("caller_a", "db_set", br#"{"key": "alive", "value": 2}"#).await.unwrap();
         let pool = h.pools.pool_for("caller_a").await.unwrap();
         sqlx::query("update kv set expires_at = ?1 where key = 'dead'")
             .bind(db::now_ms() - 1)
@@ -1040,7 +1202,11 @@ mod tests {
             .unwrap();
 
         let out = h
-            .handle("caller_a", "db_batch_get", br#"{"keys": ["dead", "alive"]}"#)
+            .handle(
+                "caller_a",
+                "db_batch_get",
+                br#"{"keys": ["dead", "alive"]}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1053,25 +1219,39 @@ mod tests {
     async fn ttl_zero_and_negative_mean_no_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "z", "value": 1, "ttl_ms": 0}"#)
-            .await
-            .unwrap();
-        h.handle("caller_a", "db_set", br#"{"key": "n", "value": 1, "ttl_ms": -5}"#)
-            .await
-            .unwrap();
-        let pool = h.pools.pool_for("caller_a").await.unwrap();
-        let rows: Vec<(String, Option<i64>)> = sqlx::query_as(
-            "select key, expires_at from kv where key in ('z', 'n') order by key",
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "z", "value": 1, "ttl_ms": 0}"#,
         )
-        .fetch_all(&pool)
         .await
         .unwrap();
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "n", "value": 1, "ttl_ms": -5}"#,
+        )
+        .await
+        .unwrap();
+        let pool = h.pools.pool_for("caller_a").await.unwrap();
+        let rows: Vec<(String, Option<i64>)> =
+            sqlx::query_as("select key, expires_at from kv where key in ('z', 'n') order by key")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
         assert_eq!(rows.len(), 2);
         for (_, expires_at) in rows {
             assert_eq!(expires_at, None, "ttl_ms <= 0 must not set expires_at");
         }
         for k in ["z", "n"] {
-            let get = h.handle("caller_a", "db_get", &format!(r#"{{"key": "{k}"}}"#).into_bytes()).await.unwrap();
+            let get = h
+                .handle(
+                    "caller_a",
+                    "db_get",
+                    &format!(r#"{{"key": "{k}"}}"#).into_bytes(),
+                )
+                .await
+                .unwrap();
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&get).unwrap(),
                 serde_json::json!({"found": true, "value": 1})
@@ -1083,11 +1263,17 @@ mod tests {
     async fn ttl_set_overwrites_previous_expiry() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "t", "value": 1, "ttl_ms": 60000}"#)
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "t", "value": 1, "ttl_ms": 60000}"#,
+        )
+        .await
+        .unwrap();
+        // Re-set without ttl_ms: expiry must be cleared, not kept.
+        h.handle("caller_a", "db_set", br#"{"key": "t", "value": 2}"#)
             .await
             .unwrap();
-        // Re-set without ttl_ms: expiry must be cleared, not kept.
-        h.handle("caller_a", "db_set", br#"{"key": "t", "value": 2}"#).await.unwrap();
         let pool = h.pools.pool_for("caller_a").await.unwrap();
         let row: (Option<i64>,) = sqlx::query_as("select expires_at from kv where key = 't'")
             .fetch_one(&pool)
@@ -1101,11 +1287,19 @@ mod tests {
     async fn patch_updates_nested_path_and_returns_new_value() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "doc", "value": {"a": {"b": 1, "c": 2}}}"#)
-            .await
-            .unwrap();
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "doc", "value": {"a": {"b": 1, "c": 2}}}"#,
+        )
+        .await
+        .unwrap();
         let out = h
-            .handle("caller_a", "db_patch", br#"{"key": "doc", "path": "$.a.b", "value": 42}"#)
+            .handle(
+                "caller_a",
+                "db_patch",
+                br#"{"key": "doc", "path": "$.a.b", "value": 42}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1118,11 +1312,19 @@ mod tests {
     async fn patch_can_target_array_index() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "doc", "value": [1, 2, 3]}"#)
-            .await
-            .unwrap();
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "doc", "value": [1, 2, 3]}"#,
+        )
+        .await
+        .unwrap();
         let out = h
-            .handle("caller_a", "db_patch", br#"{"key": "doc", "path": "$[0]", "value": "x"}"#)
+            .handle(
+                "caller_a",
+                "db_patch",
+                br#"{"key": "doc", "path": "$[0]", "value": "x"}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1136,7 +1338,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
         let err = h
-            .handle("caller_a", "db_patch", br#"{"key": "nope", "path": "$.a", "value": 1}"#)
+            .handle(
+                "caller_a",
+                "db_patch",
+                br#"{"key": "nope", "path": "$.a", "value": 1}"#,
+            )
             .await
             .unwrap_err();
         assert_eq!(err, "key not found: 'nope'", "error was: {err}");
@@ -1146,13 +1352,21 @@ mod tests {
     async fn patch_malformed_path_errors() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "doc", "value": {"a": 1}}"#)
-            .await
-            .unwrap();
+        h.handle(
+            "caller_a",
+            "db_set",
+            br#"{"key": "doc", "value": {"a": 1}}"#,
+        )
+        .await
+        .unwrap();
         // `$..a` raises "bad JSON path" in SQLite (unlike `$[`, which is
         // silently ignored and leaves the value unchanged).
         let err = h
-            .handle("caller_a", "db_patch", br#"{"key": "doc", "path": "$..a", "value": 1}"#)
+            .handle(
+                "caller_a",
+                "db_patch",
+                br#"{"key": "doc", "path": "$..a", "value": 1}"#,
+            )
             .await
             .unwrap_err();
         assert!(
@@ -1204,7 +1418,11 @@ mod tests {
         );
 
         let (_out, event) = h
-            .handle_with_events("caller_a", "db_patch", br#"{"key": "k", "path": "$.a", "value": 2}"#)
+            .handle_with_events(
+                "caller_a",
+                "db_patch",
+                br#"{"key": "k", "path": "$.a", "value": 2}"#,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1221,7 +1439,10 @@ mod tests {
             ("db_batch_get", br#"{"keys": ["k"]}"#.as_slice()),
             ("db_query", br#"{"sql": "select 1"}"#.as_slice()),
         ] {
-            let (_out, event) = h.handle_with_events("caller_a", action, params).await.unwrap();
+            let (_out, event) = h
+                .handle_with_events("caller_a", action, params)
+                .await
+                .unwrap();
             assert_eq!(event, None, "{action} must not produce a change event");
         }
     }
@@ -1230,7 +1451,9 @@ mod tests {
     async fn delete_event_only_when_a_row_was_removed() {
         let dir = tempfile::tempdir().unwrap();
         let h = handler(dir.path());
-        h.handle("caller_a", "db_set", br#"{"key": "k", "value": 1}"#).await.unwrap();
+        h.handle("caller_a", "db_set", br#"{"key": "k", "value": 1}"#)
+            .await
+            .unwrap();
 
         let (_out, event) = h
             .handle_with_events("caller_a", "db_delete", br#"{"key": "k"}"#)
@@ -1255,5 +1478,3 @@ mod tests {
         );
     }
 }
-
-

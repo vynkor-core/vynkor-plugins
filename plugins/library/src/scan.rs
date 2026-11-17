@@ -1,11 +1,15 @@
+use crate::store::{id_for_path, kind_for_ext, now_ms, Entry};
 use std::fs;
 use std::path::PathBuf;
 use walkdir::WalkDir;
-use crate::store::{kind_for_ext, Entry, id_for_path, now_ms};
 
 fn allowed_roots_from_env(override_roots: Option<Vec<String>>) -> Vec<PathBuf> {
     if let Some(roots) = override_roots {
-        return roots.into_iter().map(PathBuf::from).filter(|p| p.is_absolute()).collect();
+        return roots
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .collect();
     }
     if let Ok(raw) = std::env::var("LIBRARY_PLUGIN_ALLOWED_ROOTS") {
         if raw.trim().is_empty() {
@@ -48,10 +52,17 @@ pub fn scan_filesystem(roots: Option<Vec<String>>, _force: bool) -> Result<ScanR
 
     for root in roots {
         if !root.exists() {
-            eprintln!("[library] root does not exist, skipping: {}", root.display());
+            eprintln!(
+                "[library] root does not exist, skipping: {}",
+                root.display()
+            );
             continue;
         }
-        for entry in WalkDir::new(&root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if scanned >= max_files {
                 eprintln!("[library] hit max scan files {max_files}, truncating");
                 break;
@@ -66,7 +77,11 @@ pub fn scan_filesystem(roots: Option<Vec<String>>, _force: bool) -> Result<ScanR
                     continue;
                 }
             }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_string();
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_string();
             let kind = kind_for_ext(&ext);
             if kind == "other" {
                 // still index other? No, skip to keep index focused
@@ -84,7 +99,11 @@ pub fn scan_filesystem(roots: Option<Vec<String>>, _force: bool) -> Result<ScanR
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let path_str = path.display().to_string();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
             let id = id_for_path(&path_str);
             entries.push(Entry {
                 id,
@@ -138,7 +157,13 @@ mod tests {
         let res = scan_filesystem(roots, false).unwrap();
         assert_eq!(res.scanned, 2);
         assert_eq!(res.entries.len(), 2);
-        assert!(res.entries.iter().any(|e| e.name == "a.mp3" && e.kind == "audio"));
-        assert!(res.entries.iter().any(|e| e.name == "b.jpg" && e.kind == "photo"));
+        assert!(res
+            .entries
+            .iter()
+            .any(|e| e.name == "a.mp3" && e.kind == "audio"));
+        assert!(res
+            .entries
+            .iter()
+            .any(|e| e.name == "b.jpg" && e.kind == "photo"));
     }
 }

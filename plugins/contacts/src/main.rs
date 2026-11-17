@@ -25,8 +25,13 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "contacts";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 5] =
-    ["contact_create", "contact_get", "contact_list", "contact_update", "contact_delete"];
+const ACTIONS: [&str; 5] = [
+    "contact_create",
+    "contact_get",
+    "contact_list",
+    "contact_update",
+    "contact_delete",
+];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -212,7 +217,6 @@ async fn main() -> Result<(), VynkorError> {
     serve(client, config).await
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +239,10 @@ mod tests {
     impl FakeDb {
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
             fn key(p: &Value) -> String {
-                p.get("key").and_then(Value::as_str).unwrap_or_default().to_string()
+                p.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
             }
             match action {
                 "db_incr" => {
@@ -248,7 +255,8 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
-                    self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
+                    self.kv
+                        .insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
                 "db_get" => {
@@ -288,7 +296,11 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
     }
 
     struct Shim {
@@ -300,7 +312,11 @@ mod tests {
         async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
-                .send(Cmd::Call { action: action.into(), params, reply: reply_tx })
+                .send(Cmd::Call {
+                    action: action.into(),
+                    params,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("shim loop died");
             tokio::time::timeout(Duration::from_secs(5), reply_rx)
@@ -328,11 +344,7 @@ mod tests {
         Shim { tx, published }
     }
 
-    async fn run_shim(
-        mut kernel: VynkorClient,
-        mut rx: mpsc::Receiver<Cmd>,
-        published: Published,
-    ) {
+    async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>, published: Published) {
         let mut db = FakeDb::default();
         let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> =
             StdHashMap::new();
@@ -345,12 +357,20 @@ mod tests {
                 .expect("plugin stream closed before registration");
             match env.payload {
                 Some(envelope::Payload::PluginRegister(_)) => {
-                    let _ = kernel.send("contacts", Envelope {
-                        payload: Some(envelope::Payload::PluginRegisterAck(
-                            PluginRegisterAck { accepted: true, ..Default::default() },
-                        )),
-                        ..Default::default()
-                    }).await;
+                    let _ = kernel
+                        .send(
+                            "contacts",
+                            Envelope {
+                                payload: Some(envelope::Payload::PluginRegisterAck(
+                                    PluginRegisterAck {
+                                        accepted: true,
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
                     break;
                 }
                 _ => continue,
@@ -480,18 +500,30 @@ mod tests {
         assert_eq!(created["contact"]["email"], "alice@example.com");
         assert_eq!(created["contact"]["tags"][0], "friend");
 
-        let got = shim.call("contact_get", serde_json::json!({"id": "1"})).await.unwrap();
+        let got = shim
+            .call("contact_get", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap();
         assert_eq!(got["found"], true);
         assert_eq!(got["contact"]["name"], "Alice");
 
-        assert!(wait_for_published(&shim, "created", "1").await, "changed event missing");
+        assert!(
+            wait_for_published(&shim, "created", "1").await,
+            "changed event missing"
+        );
     }
 
     #[tokio::test]
     async fn create_assigns_monotonic_ids() {
         let shim = start_plugin(Config::default()).await;
-        let a = shim.call("contact_create", serde_json::json!({"name": "A"})).await.unwrap();
-        let b = shim.call("contact_create", serde_json::json!({"name": "B"})).await.unwrap();
+        let a = shim
+            .call("contact_create", serde_json::json!({"name": "A"}))
+            .await
+            .unwrap();
+        let b = shim
+            .call("contact_create", serde_json::json!({"name": "B"}))
+            .await
+            .unwrap();
         assert_eq!(a["id"], "1");
         assert_eq!(b["id"], "2");
     }
@@ -512,7 +544,10 @@ mod tests {
             .unwrap();
         }
 
-        let all = shim.call("contact_list", serde_json::json!({})).await.unwrap();
+        let all = shim
+            .call("contact_list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(all["total"], 3);
         let names: Vec<&str> = all["contacts"]
             .as_array()
@@ -522,10 +557,16 @@ mod tests {
             .collect();
         assert_eq!(names, vec!["Charlie", "Bob", "Alice"]);
 
-        let work = shim.call("contact_list", serde_json::json!({"tag": "work"})).await.unwrap();
+        let work = shim
+            .call("contact_list", serde_json::json!({"tag": "work"}))
+            .await
+            .unwrap();
         assert_eq!(work["total"], 2);
 
-        let query = shim.call("contact_list", serde_json::json!({"query": "ali"})).await.unwrap();
+        let query = shim
+            .call("contact_list", serde_json::json!({"query": "ali"}))
+            .await
+            .unwrap();
         assert_eq!(query["total"], 1);
         assert_eq!(query["contacts"][0]["name"], "Alice");
 
@@ -542,29 +583,44 @@ mod tests {
     async fn update_patches_fields() {
         let shim = start_plugin(Config::default()).await;
         let created = shim
-            .call("contact_create", serde_json::json!({"name": "Dave", "email": "d@x.cc"}))
+            .call(
+                "contact_create",
+                serde_json::json!({"name": "Dave", "email": "d@x.cc"}),
+            )
             .await
             .unwrap();
 
         let updated = shim
-            .call("contact_update", serde_json::json!({"id": created["id"], "phone": "+123"}))
+            .call(
+                "contact_update",
+                serde_json::json!({"id": created["id"], "phone": "+123"}),
+            )
             .await
             .unwrap();
         assert_eq!(updated["updated"], true);
         assert_eq!(updated["contact"]["name"], "Dave");
         assert_eq!(updated["contact"]["phone"], "+123");
 
-        let got = shim.call("contact_get", serde_json::json!({"id": created["id"]})).await.unwrap();
+        let got = shim
+            .call("contact_get", serde_json::json!({"id": created["id"]}))
+            .await
+            .unwrap();
         assert_eq!(got["contact"]["phone"], "+123");
 
-        assert!(wait_for_published(&shim, "updated", "1").await, "changed event missing");
+        assert!(
+            wait_for_published(&shim, "updated", "1").await,
+            "changed event missing"
+        );
     }
 
     #[tokio::test]
     async fn update_missing_is_error() {
         let shim = start_plugin(Config::default()).await;
         let err = shim
-            .call("contact_update", serde_json::json!({"id": "99", "name": "X"}))
+            .call(
+                "contact_update",
+                serde_json::json!({"id": "99", "name": "X"}),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("contact not found"), "error was: {err}");
@@ -579,24 +635,39 @@ mod tests {
             .unwrap();
         let id = created["id"].as_str().unwrap().to_string();
 
-        let first = shim.call("contact_delete", serde_json::json!({"id": id})).await.unwrap();
+        let first = shim
+            .call("contact_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(first["deleted"], true);
 
-        let second = shim.call("contact_delete", serde_json::json!({"id": id})).await.unwrap();
+        let second = shim
+            .call("contact_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(second["deleted"], false);
 
-        assert!(wait_for_published(&shim, "deleted", "1").await, "delete event missing");
+        assert!(
+            wait_for_published(&shim, "deleted", "1").await,
+            "delete event missing"
+        );
     }
 
     #[tokio::test]
     async fn validation_errors() {
         let shim = start_plugin(Config::default()).await;
 
-        let err = shim.call("contact_create", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("contact_create", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("name"), "error was: {err}");
 
         let err = shim
-            .call("contact_create", serde_json::json!({"name":"Bob","email":"bad"}))
+            .call(
+                "contact_create",
+                serde_json::json!({"name":"Bob","email":"bad"}),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("email"), "error was: {err}");
@@ -607,14 +678,20 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("limit"), "error was: {err}");
 
-        let err = shim.call("contact_update", serde_json::json!({"id": "1"})).await.unwrap_err();
+        let err = shim
+            .call("contact_update", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("at least one"), "error was: {err}");
     }
 
     #[tokio::test]
     async fn unknown_action() {
         let shim = start_plugin(Config::default()).await;
-        let err = shim.call("contact_frobnicate", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("contact_frobnicate", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("unknown action"), "error was: {err}");
     }
 }
@@ -641,14 +718,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

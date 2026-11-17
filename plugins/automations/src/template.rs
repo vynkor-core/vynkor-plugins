@@ -20,7 +20,11 @@ pub fn render(template: &Value, payload: &Value) -> Value {
     match template {
         Value::String(s) => render_str(s, payload),
         Value::Array(items) => Value::Array(items.iter().map(|v| render(v, payload)).collect()),
-        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), render(v, payload))).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), render(v, payload)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -45,7 +49,9 @@ fn render_str(s: &str, payload: &Value) -> Value {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("{{/") {
-        let Some(len) = rest[start..].find("}}") else { break };
+        let Some(len) = rest[start..].find("}}") else {
+            break;
+        };
         out.push_str(&rest[..start]);
         let ptr = &rest[start + 2..start + len];
         match payload.pointer(ptr) {
@@ -71,13 +77,19 @@ mod tests {
     #[test]
     fn whole_placeholder_keeps_the_json_type() {
         let t = json!({"code": "{{/status}}", "tags": "{{/tags}}", "missing": "{{/nope}}"});
-        assert_eq!(render(&t, &payload()), json!({"code": 503, "tags": ["x"], "missing": null}));
+        assert_eq!(
+            render(&t, &payload()),
+            json!({"code": 503, "tags": ["x"], "missing": null})
+        );
     }
 
     #[test]
     fn inline_placeholders_interpolate() {
         let t = json!({"message": "{{/url}} is down (HTTP {{/status}}){{/nope}}, {{/nested/k}}"});
-        assert_eq!(render(&t, &payload()), json!({"message": "https://a.example is down (HTTP 503), v"}));
+        assert_eq!(
+            render(&t, &payload()),
+            json!({"message": "https://a.example is down (HTTP 503), v"})
+        );
     }
 
     #[test]

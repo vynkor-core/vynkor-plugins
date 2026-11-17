@@ -3,15 +3,40 @@ use serde_json::Value;
 
 #[derive(Debug)]
 pub enum DbRequest {
-    Get { key: String },
-    Set { key: String, value: Value, ttl_ms: Option<i64> },
-    Delete { key: String },
-    BatchGet { keys: Vec<String> },
-    Query { sql: String, params: Vec<Value> },
-    Incr { key: String, delta: i64 },
-    Keys { prefix: String },
-    Append { key: String, value: Value },
-    Patch { key: String, path: String, value: Value },
+    Get {
+        key: String,
+    },
+    Set {
+        key: String,
+        value: Value,
+        ttl_ms: Option<i64>,
+    },
+    Delete {
+        key: String,
+    },
+    BatchGet {
+        keys: Vec<String>,
+    },
+    Query {
+        sql: String,
+        params: Vec<Value>,
+    },
+    Incr {
+        key: String,
+        delta: i64,
+    },
+    Keys {
+        prefix: String,
+    },
+    Append {
+        key: String,
+        value: Value,
+    },
+    Patch {
+        key: String,
+        path: String,
+        value: Value,
+    },
 }
 
 #[derive(Deserialize)]
@@ -87,8 +112,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<DbRequest, Stri
             })
         }
         "db_set" => {
-            let p: SetParams = serde_json::from_slice(params_json)
-                .map_err(|e| format!("invalid params for db_set, expected {{key, value, ttl_ms?}}: {e}"))?;
+            let p: SetParams = serde_json::from_slice(params_json).map_err(|e| {
+                format!("invalid params for db_set, expected {{key, value, ttl_ms?}}: {e}")
+            })?;
             Ok(DbRequest::Set {
                 key: require_nonempty_key(p.key)?,
                 value: p.value,
@@ -133,9 +159,8 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<DbRequest, Stri
             })
         }
         "db_keys" => {
-            let p: KeysParams = serde_json::from_slice(params_json).map_err(|e| {
-                format!("invalid params for db_keys, expected {{prefix?}}: {e}")
-            })?;
+            let p: KeysParams = serde_json::from_slice(params_json)
+                .map_err(|e| format!("invalid params for db_keys, expected {{prefix?}}: {e}"))?;
             Ok(DbRequest::Keys { prefix: p.prefix })
         }
         "db_append" => {
@@ -193,12 +218,15 @@ mod tests {
 
     #[test]
     fn db_set_parses_ttl_ms() {
-        let req = parse_request(
-            "db_set",
-            br#"{"key": "foo", "value": 1, "ttl_ms": 5000}"#,
-        )
-        .unwrap();
-        assert!(matches!(req, DbRequest::Set { ttl_ms: Some(5000), .. }));
+        let req =
+            parse_request("db_set", br#"{"key": "foo", "value": 1, "ttl_ms": 5000}"#).unwrap();
+        assert!(matches!(
+            req,
+            DbRequest::Set {
+                ttl_ms: Some(5000),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -206,7 +234,10 @@ mod tests {
         for ttl in [0, -1] {
             let params = format!(r#"{{"key": "k", "value": 1, "ttl_ms": {ttl}}}"#);
             let req = parse_request("db_set", params.as_bytes()).unwrap();
-            assert!(matches!(req, DbRequest::Set { ttl_ms: None, .. }), "ttl_ms {ttl}");
+            assert!(
+                matches!(req, DbRequest::Set { ttl_ms: None, .. }),
+                "ttl_ms {ttl}"
+            );
         }
     }
 
@@ -254,8 +285,11 @@ mod tests {
 
     #[test]
     fn parses_db_patch() {
-        let req =
-            parse_request("db_patch", br#"{"key": "doc", "path": "$.a.b", "value": 5}"#).unwrap();
+        let req = parse_request(
+            "db_patch",
+            br#"{"key": "doc", "path": "$.a.b", "value": 5}"#,
+        )
+        .unwrap();
         match req {
             DbRequest::Patch { key, path, value } => {
                 assert_eq!(key, "doc");
@@ -268,7 +302,8 @@ mod tests {
 
     #[test]
     fn db_patch_rejects_empty_path() {
-        let err = parse_request("db_patch", br#"{"key": "doc", "path": "", "value": 1}"#).unwrap_err();
+        let err =
+            parse_request("db_patch", br#"{"key": "doc", "path": "", "value": 1}"#).unwrap_err();
         assert!(err.contains("path"), "error was: {err}");
     }
 
@@ -288,7 +323,9 @@ mod tests {
     fn parses_db_batch_get() {
         let req = parse_request("db_batch_get", br#"{"keys": ["a", "b"]}"#).unwrap();
         match req {
-            DbRequest::BatchGet { keys } => assert_eq!(keys, vec!["a".to_string(), "b".to_string()]),
+            DbRequest::BatchGet { keys } => {
+                assert_eq!(keys, vec!["a".to_string(), "b".to_string()])
+            }
             other => panic!("wrong variant: {other:?}"),
         }
     }

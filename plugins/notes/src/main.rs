@@ -25,8 +25,13 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "notes";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 5] =
-    ["note_create", "note_get", "note_list", "note_update", "note_delete"];
+const ACTIONS: [&str; 5] = [
+    "note_create",
+    "note_get",
+    "note_list",
+    "note_update",
+    "note_delete",
+];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -238,7 +243,10 @@ mod tests {
     impl FakeDb {
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
             fn key(p: &Value) -> String {
-                p.get("key").and_then(Value::as_str).unwrap_or_default().to_string()
+                p.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
             }
             match action {
                 "db_incr" => {
@@ -251,7 +259,8 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
-                    self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
+                    self.kv
+                        .insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
                 "db_get" => {
@@ -291,7 +300,11 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
     }
 
     struct Shim {
@@ -305,7 +318,11 @@ mod tests {
         async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
-                .send(Cmd::Call { action: action.into(), params, reply: reply_tx })
+                .send(Cmd::Call {
+                    action: action.into(),
+                    params,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("shim loop died");
             tokio::time::timeout(Duration::from_secs(5), reply_rx)
@@ -335,11 +352,7 @@ mod tests {
         Shim { tx, published }
     }
 
-    async fn run_shim(
-        mut kernel: VynkorClient,
-        mut rx: mpsc::Receiver<Cmd>,
-        published: Published,
-    ) {
+    async fn run_shim(mut kernel: VynkorClient, mut rx: mpsc::Receiver<Cmd>, published: Published) {
         let mut db = FakeDb::default();
         let mut pending: StdHashMap<String, oneshot::Sender<Result<Value, String>>> =
             StdHashMap::new();
@@ -357,12 +370,20 @@ mod tests {
                 .expect("plugin stream closed before registration");
             match env.payload {
                 Some(envelope::Payload::PluginRegister(_)) => {
-                    let _ = kernel.send("notes", Envelope {
-                        payload: Some(envelope::Payload::PluginRegisterAck(
-                            PluginRegisterAck { accepted: true, ..Default::default() },
-                        )),
-                        ..Default::default()
-                    }).await;
+                    let _ = kernel
+                        .send(
+                            "notes",
+                            Envelope {
+                                payload: Some(envelope::Payload::PluginRegisterAck(
+                                    PluginRegisterAck {
+                                        accepted: true,
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
                     break;
                 }
                 _ => continue,
@@ -495,19 +516,31 @@ mod tests {
         assert_eq!(created["note"]["title"], "Shopping");
         assert_eq!(created["note"]["tags"][0], "errands");
 
-        let got = shim.call("note_get", serde_json::json!({"id": "1"})).await.unwrap();
+        let got = shim
+            .call("note_get", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap();
         assert_eq!(got["found"], true);
         assert_eq!(got["note"]["body"], "milk");
         assert!(got["note"]["created_at_ms"].is_i64());
 
-        assert!(wait_for_published(&shim, "created", "1").await, "changed event missing");
+        assert!(
+            wait_for_published(&shim, "created", "1").await,
+            "changed event missing"
+        );
     }
 
     #[tokio::test]
     async fn create_assigns_monotonic_ids() {
         let shim = start_plugin(Config::default()).await;
-        let a = shim.call("note_create", serde_json::json!({"body": "a"})).await.unwrap();
-        let b = shim.call("note_create", serde_json::json!({"body": "b"})).await.unwrap();
+        let a = shim
+            .call("note_create", serde_json::json!({"body": "a"}))
+            .await
+            .unwrap();
+        let b = shim
+            .call("note_create", serde_json::json!({"body": "b"}))
+            .await
+            .unwrap();
         assert_eq!(a["id"], "1");
         assert_eq!(b["id"], "2");
     }
@@ -539,7 +572,10 @@ mod tests {
             .collect();
         assert_eq!(bodies, vec!["third", "second", "first"]);
 
-        let work = shim.call("note_list", serde_json::json!({"tag": "work"})).await.unwrap();
+        let work = shim
+            .call("note_list", serde_json::json!({"tag": "work"}))
+            .await
+            .unwrap();
         assert_eq!(work["total"], 2);
 
         let page = shim
@@ -555,26 +591,41 @@ mod tests {
     async fn update_patches_fields_and_bumps_updated_at() {
         let shim = start_plugin(Config::default()).await;
         let created = shim
-            .call("note_create", serde_json::json!({"title": "t", "body": "old"}))
+            .call(
+                "note_create",
+                serde_json::json!({"title": "t", "body": "old"}),
+            )
             .await
             .unwrap();
 
         let updated = shim
-            .call("note_update", serde_json::json!({"id": created["id"], "body": "new"}))
+            .call(
+                "note_update",
+                serde_json::json!({"id": created["id"], "body": "new"}),
+            )
             .await
             .unwrap();
         assert_eq!(updated["updated"], true);
-        assert_eq!(updated["note"]["title"], "t", "untouched field must survive");
+        assert_eq!(
+            updated["note"]["title"], "t",
+            "untouched field must survive"
+        );
         assert_eq!(updated["note"]["body"], "new");
         assert!(
             updated["note"]["updated_at_ms"].as_i64().unwrap()
                 >= updated["note"]["created_at_ms"].as_i64().unwrap()
         );
 
-        let got = shim.call("note_get", serde_json::json!({"id": created["id"]})).await.unwrap();
+        let got = shim
+            .call("note_get", serde_json::json!({"id": created["id"]}))
+            .await
+            .unwrap();
         assert_eq!(got["note"]["body"], "new");
 
-        assert!(wait_for_published(&shim, "updated", "1").await, "changed event missing");
+        assert!(
+            wait_for_published(&shim, "updated", "1").await,
+            "changed event missing"
+        );
     }
 
     #[tokio::test]
@@ -596,13 +647,22 @@ mod tests {
             .unwrap();
         let id = created["id"].as_str().unwrap().to_string();
 
-        let first = shim.call("note_delete", serde_json::json!({"id": id})).await.unwrap();
+        let first = shim
+            .call("note_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(first["deleted"], true);
 
-        let second = shim.call("note_delete", serde_json::json!({"id": id})).await.unwrap();
+        let second = shim
+            .call("note_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(second["deleted"], false);
 
-        assert!(wait_for_published(&shim, "deleted", "1").await, "delete event missing");
+        assert!(
+            wait_for_published(&shim, "deleted", "1").await,
+            "delete event missing"
+        );
         // Exactly one deleted event for id 1 (no duplicate from the retry).
         let deletes = shim
             .published()
@@ -617,7 +677,10 @@ mod tests {
     async fn validation_errors_surface_as_action_errors() {
         let shim = start_plugin(Config::default()).await;
 
-        let err = shim.call("note_create", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("note_create", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("non-empty title or body"), "error was: {err}");
 
         let err = shim
@@ -626,14 +689,20 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("limit"), "error was: {err}");
 
-        let err = shim.call("note_update", serde_json::json!({"id": "1"})).await.unwrap_err();
+        let err = shim
+            .call("note_update", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("at least one of"), "error was: {err}");
     }
 
     #[tokio::test]
     async fn unknown_action_is_action_error() {
         let shim = start_plugin(Config::default()).await;
-        let err = shim.call("note_frobnicate", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("note_frobnicate", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("unknown action"), "error was: {err}");
     }
 }
@@ -651,12 +720,19 @@ mod manifest_specs_tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

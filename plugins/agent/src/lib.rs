@@ -29,11 +29,11 @@ pub mod recall;
 pub mod request;
 pub mod routines;
 pub mod running;
-pub mod smalltalk;
-pub mod watchdog;
 pub mod sessions;
+pub mod smalltalk;
 pub mod store;
 pub mod tools;
+pub mod watchdog;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -183,7 +183,10 @@ pub enum ProxyMsg {
 
 impl Rpc {
     pub fn new(tx: mpsc::Sender<ProxyMsg>) -> Self {
-        Self { tx, next_command_id: Arc::new(AtomicU64::new(1)) }
+        Self {
+            tx,
+            next_command_id: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     /// One kernel-routed action round-trip. Resolves to the decoded
@@ -199,7 +202,12 @@ impl Rpc {
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(ProxyMsg::Action(RpcCall { action: action.to_string(), params_json, timeout_ms, reply }))
+            .send(ProxyMsg::Action(RpcCall {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                reply,
+            }))
             .await
             .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
@@ -243,11 +251,7 @@ impl Rpc {
 }
 
 /// Decode a `KernelCommandAck` payload for [`Rpc::call_command`].
-pub fn command_ack_result(
-    status: i32,
-    data_json: Vec<u8>,
-    error: String,
-) -> Result<Value, String> {
+pub fn command_ack_result(status: i32, data_json: Vec<u8>, error: String) -> Result<Value, String> {
     if status == CommandStatus::CommandOk as i32 {
         serde_json::from_slice::<Value>(&data_json)
             .map_err(|e| format!("malformed command payload: {e}"))
@@ -272,13 +276,15 @@ pub struct ActionResult {
 }
 
 fn ok(data: Value, event: Option<ChangeEvent>) -> Result<ActionResult, String> {
-    let data =
-        serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
+    let data = serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
     Ok(ActionResult { data, event })
 }
 
 fn changed(status: &str, id: &str) -> ChangeEvent {
-    ChangeEvent { event_type: "changed", payload: json!({"op": status, "id": id}) }
+    ChangeEvent {
+        event_type: "changed",
+        payload: json!({"op": status, "id": id}),
+    }
 }
 
 /// Resolve one goal's LLM plan from env defaults + per-request overrides.
@@ -303,9 +309,7 @@ fn build_plan(cfg: &GoalStartParams) -> LlmPlan {
         max_tokens: cfg
             .llm
             .max_tokens
-            .or_else(|| {
-                env("AGENT_PLUGIN_AI_MAX_TOKENS").and_then(|s| s.parse().ok())
-            })
+            .or_else(|| env("AGENT_PLUGIN_AI_MAX_TOKENS").and_then(|s| s.parse().ok()))
             .unwrap_or(llm::DEFAULT_MAX_TOKENS),
     }
 }
@@ -364,7 +368,10 @@ async fn start_goal(
 
     let mut doc = GoalDoc {
         id: id.clone(),
-        title: params.title.clone().unwrap_or_else(|| default_title(&params.goal)),
+        title: params
+            .title
+            .clone()
+            .unwrap_or_else(|| default_title(&params.goal)),
         goal: params.goal,
         context: params.context,
         status: store::STATUS_RUNNING.to_string(),
@@ -396,8 +403,16 @@ async fn start_goal(
         recalled_sessions: Vec::new(),
     };
 
-    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history, query }, guard)
-        .await?;
+    run_and_record(
+        db,
+        rpc,
+        config,
+        &catalog,
+        &mut doc,
+        engine::Entry::Fresh { history, query },
+        guard,
+    )
+    .await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -475,8 +490,10 @@ async fn resume_goal(
     id: &str,
     approve: bool,
 ) -> Result<ActionResult, String> {
-    let mut doc =
-        db.get(id).await?.ok_or_else(|| format!("goal not found: {id}"))?;
+    let mut doc = db
+        .get(id)
+        .await?
+        .ok_or_else(|| format!("goal not found: {id}"))?;
     if doc.status != store::STATUS_NEEDS_CONFIRMATION {
         return Err(format!(
             "goal \"{id}\" is not awaiting confirmation (status: {})",
@@ -502,8 +519,16 @@ async fn resume_goal(
 
     let guard = config.running.register(&doc.id, None);
     let catalog = Catalog::load_with_discovery(rpc).await?;
-    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::ApprovedResume, guard)
-        .await?;
+    run_and_record(
+        db,
+        rpc,
+        config,
+        &catalog,
+        &mut doc,
+        engine::Entry::ApprovedResume,
+        guard,
+    )
+    .await?;
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
@@ -548,7 +573,9 @@ pub async fn handle_action(
             let goals = db.list_summaries(limit).await?;
             ok(json!({"total": goals.len(), "goals": goals}), None)
         }
-        AgentRequest::GoalResume { id, approve } => resume_goal(&db, &rpc, config, &id, approve).await,
+        AgentRequest::GoalResume { id, approve } => {
+            resume_goal(&db, &rpc, config, &id, approve).await
+        }
         AgentRequest::ToolsList => {
             let catalog = Catalog::load_with_discovery(&rpc).await?;
             ok(
@@ -579,7 +606,9 @@ pub async fn handle_action(
             // A parked `needs_confirmation` goal is not running and may go.
             if let Some(doc) = db.get(&id).await? {
                 if doc.status == store::STATUS_RUNNING {
-                    return Err(format!("goal {id} is still running; retry after it finishes"));
+                    return Err(format!(
+                        "goal {id} is still running; retry after it finishes"
+                    ));
                 }
             }
             let deleted = db.delete(&id).await?;
@@ -595,7 +624,10 @@ pub async fn handle_action(
         }
         AgentRequest::RoutineList => {
             let book = routines::store::load(&rpc, config.db_timeout_ms).await;
-            ok(json!({"total": book.routines.len(), "routines": book.routines}), None)
+            ok(
+                json!({"total": book.routines.len(), "routines": book.routines}),
+                None,
+            )
         }
         AgentRequest::RoutineDelete { id } => {
             let deleted = routines::store::update(&rpc, config.db_timeout_ms, |book| {

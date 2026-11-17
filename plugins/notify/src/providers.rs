@@ -272,7 +272,11 @@ fn notify_send_args_with(params: &NotifyParams, env_app_name: Option<&str>) -> V
         .app_name
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| env_app_name.map(str::to_string).filter(|s| !s.trim().is_empty()))
+        .or_else(|| {
+            env_app_name
+                .map(str::to_string)
+                .filter(|s| !s.trim().is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_APP_NAME.to_string());
     let mut args = vec!["-a".to_string(), app_name];
     if let Some(urgency) = &params.urgency {
@@ -437,7 +441,9 @@ fn pick_player(format: &str) -> Result<String, String> {
 pub async fn speak_via_tts(client: &mut VynkorClient, text: &str) -> Result<(), String> {
     let provider =
         std::env::var(TTS_PROVIDER_ENV).unwrap_or_else(|_| DEFAULT_TTS_PROVIDER.to_string());
-    let voice = std::env::var(TTS_VOICE_ENV).ok().filter(|s| !s.trim().is_empty());
+    let voice = std::env::var(TTS_VOICE_ENV)
+        .ok()
+        .filter(|s| !s.trim().is_empty());
     let format = std::env::var(TTS_FORMAT_ENV).unwrap_or_else(|_| DEFAULT_TTS_FORMAT.to_string());
 
     let request = build_tts_request(text, &provider, voice.as_deref(), &format);
@@ -480,12 +486,8 @@ pub async fn speak_via_tts(client: &mut VynkorClient, text: &str) -> Result<(), 
         unix_millis(),
         tts.format
     ));
-    std::fs::write(&file, &audio).map_err(|e| {
-        format!(
-            "failed to write audio temp file {}: {e}",
-            file.display()
-        )
-    })?;
+    std::fs::write(&file, &audio)
+        .map_err(|e| format!("failed to write audio temp file {}: {e}", file.display()))?;
 
     let result = run_command(&player, &[file.to_string_lossy().to_string()]).await;
     let _ = std::fs::remove_file(&file);
@@ -511,7 +513,10 @@ mod tests {
 
     #[test]
     fn parse_accepts_all_three_providers() {
-        assert_eq!(ProviderKind::parse("notify-send").unwrap(), ProviderKind::NotifySend);
+        assert_eq!(
+            ProviderKind::parse("notify-send").unwrap(),
+            ProviderKind::NotifySend
+        );
         assert_eq!(ProviderKind::parse("wall").unwrap(), ProviderKind::Wall);
         assert_eq!(ProviderKind::parse("espeak").unwrap(), ProviderKind::Espeak);
         // Ids are trimmed, so surrounding whitespace is tolerated.
@@ -522,7 +527,10 @@ mod tests {
     fn parse_rejects_unknown_provider_naming_valid_set() {
         let err = ProviderKind::parse("email").unwrap_err();
         assert!(err.contains("unknown provider 'email'"), "error was: {err}");
-        assert!(err.contains("notify-send, wall, espeak"), "error was: {err}");
+        assert!(
+            err.contains("notify-send, wall, espeak"),
+            "error was: {err}"
+        );
     }
 
     #[test]
@@ -632,7 +640,11 @@ mod tests {
             kind_available(ProviderKind::Espeak),
         ];
         for (info, avail) in infos.iter().zip(expected) {
-            assert_eq!(info.available, avail, "availability mismatch for {}", info.id);
+            assert_eq!(
+                info.available, avail,
+                "availability mismatch for {}",
+                info.id
+            );
         }
     }
 
@@ -663,7 +675,10 @@ mod tests {
     #[test]
     fn tts_request_omits_voice_when_none() {
         let req = build_tts_request("hello", "sherpa", None, "wav");
-        assert!(req.get("voice").is_none(), "voice key must be absent: {req}");
+        assert!(
+            req.get("voice").is_none(),
+            "voice key must be absent: {req}"
+        );
         assert_eq!(req["provider"], "sherpa");
         assert_eq!(req["text"], "hello");
         assert_eq!(req["format"], "wav");

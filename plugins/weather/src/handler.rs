@@ -56,7 +56,10 @@ async fn fetch_via_network(
         .map_err(|e| format!("malformed network response: {e}"))?;
 
     if !(200..300).contains(&net.status) {
-        return Err(format!("open-meteo returned HTTP {}: {}", net.status, net.body));
+        return Err(format!(
+            "open-meteo returned HTTP {}: {}",
+            net.status, net.body
+        ));
     }
 
     let body_bytes: Vec<u8> = match net.body_encoding.as_str() {
@@ -69,8 +72,8 @@ async fn fetch_via_network(
         _ => net.body.into_bytes(),
     };
 
-    let v: serde_json::Value =
-        serde_json::from_slice(&body_bytes).map_err(|e| format!("malformed open-meteo JSON: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&body_bytes)
+        .map_err(|e| format!("malformed open-meteo JSON: {e}"))?;
     Ok(v)
 }
 

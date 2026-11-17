@@ -93,24 +93,28 @@ pub fn split_sentences(text: &str) -> Vec<String> {
 /// kept (`"т.д."` → `"т.д."`). Casing matters for [`is_single_initial`], so
 /// the caller lowercases only here, at the boundary.
 fn last_word(window: &[char]) -> String {
-    let start = window.iter().rposition(|&c| c.is_whitespace()).map_or(0, |p| p + 1);
+    let start = window
+        .iter()
+        .rposition(|&c| c.is_whitespace())
+        .map_or(0, |p| p + 1);
     window[start..].iter().collect::<String>().to_lowercase()
 }
 
 fn is_single_initial(word_lower: &str) -> bool {
-    let Some(stem) = word_lower.strip_suffix('.') else { return false };
+    let Some(stem) = word_lower.strip_suffix('.') else {
+        return false;
+    };
     stem.chars().count() == 1
 }
 
 fn is_known_abbreviation(word_lower: &str) -> bool {
     const ABBREVS: &[&str] = &[
         // Russian
-        "т.д", "т.п", "т.е", "т.н", "т.к", "и т.д", "и т.п", "др", "пр",
-        "г", "ул", "кв", "ст", "рис", "см", "табл", "стр", "ч", "мин", "сек",
-        "проф", "акад", "доц", "им", "руб", "коп",
+        "т.д", "т.п", "т.е", "т.н", "т.к", "и т.д", "и т.п", "др", "пр", "г", "ул", "кв", "ст",
+        "рис", "см", "табл", "стр", "ч", "мин", "сек", "проф", "акад", "доц", "им", "руб", "коп",
         // English
-        "etc", "eg", "ie", "vs", "mr", "mrs", "ms", "dr", "prof", "sr", "jr",
-        "st", "no", "fig", "approx", "dept", "est", "inc", "ltd", "co",
+        "etc", "eg", "ie", "vs", "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "no", "fig",
+        "approx", "dept", "est", "inc", "ltd", "co",
     ];
     match word_lower.strip_suffix('.') {
         Some(stem) => ABBREVS.contains(&stem),
@@ -128,12 +132,18 @@ mod tests {
 
     #[test]
     fn splits_simple_ru_and_en() {
-        assert_eq!(split("Привет мир. Как дела?"), vec!["Привет мир.", "Как дела?"]);
+        assert_eq!(
+            split("Привет мир. Как дела?"),
+            vec!["Привет мир.", "Как дела?"]
+        );
         assert_eq!(
             split("First one! Second one? Third one... done"),
             vec!["First one!", "Second one?", "Third one...", "done"]
         );
-        assert_eq!(split("Один предложение. Два."), vec!["Один предложение.", "Два."]);
+        assert_eq!(
+            split("Один предложение. Два."),
+            vec!["Один предложение.", "Два."]
+        );
     }
 
     #[test]
@@ -142,14 +152,26 @@ mod tests {
             split("Я приду в 5 ч. и т.д. Потом уйду."),
             vec!["Я приду в 5 ч. и т.д. Потом уйду."]
         );
-        assert_eq!(split("Это т.н. случай. А это уже конец."), vec!["Это т.н. случай.", "А это уже конец."]);
-        assert_eq!(split("Опоздал, т.к. проспал. Бывает."), vec!["Опоздал, т.к. проспал.", "Бывает."]);
+        assert_eq!(
+            split("Это т.н. случай. А это уже конец."),
+            vec!["Это т.н. случай.", "А это уже конец."]
+        );
+        assert_eq!(
+            split("Опоздал, т.к. проспал. Бывает."),
+            vec!["Опоздал, т.к. проспал.", "Бывает."]
+        );
     }
 
     #[test]
     fn keeps_decimals_and_initials() {
-        assert_eq!(split("Pi is 3.14 roughly. Next"), vec!["Pi is 3.14 roughly.", "Next"]);
-        assert_eq!(split("Цена 10 000.50 руб. Итог"), vec!["Цена 10 000.50 руб. Итог"]);
+        assert_eq!(
+            split("Pi is 3.14 roughly. Next"),
+            vec!["Pi is 3.14 roughly.", "Next"]
+        );
+        assert_eq!(
+            split("Цена 10 000.50 руб. Итог"),
+            vec!["Цена 10 000.50 руб. Итог"]
+        );
         assert_eq!(
             split("A. S. Pushkin wrote here. Done"),
             vec!["A. S. Pushkin wrote here.", "Done"]
@@ -158,13 +180,22 @@ mod tests {
 
     #[test]
     fn english_titles_stay_glued() {
-        assert_eq!(split("Mr. Dr. Smith arrived. Late again."), vec!["Mr. Dr. Smith arrived.", "Late again."]);
-        assert_eq!(split("We tested etc. and it worked. Fine"), vec!["We tested etc. and it worked.", "Fine"]);
+        assert_eq!(
+            split("Mr. Dr. Smith arrived. Late again."),
+            vec!["Mr. Dr. Smith arrived.", "Late again."]
+        );
+        assert_eq!(
+            split("We tested etc. and it worked. Fine"),
+            vec!["We tested etc. and it worked.", "Fine"]
+        );
     }
 
     #[test]
     fn short_lowercase_stems_wait_for_capitals() {
-        assert_eq!(split("см. ниже раздел. Конец"), vec!["см. ниже раздел.", "Конец"]);
+        assert_eq!(
+            split("см. ниже раздел. Конец"),
+            vec!["см. ниже раздел.", "Конец"]
+        );
         assert_eq!(
             split("он вышел. мы остались"),
             vec!["он вышел.", "мы остались"],
@@ -174,11 +205,17 @@ mod tests {
 
     #[test]
     fn ellipsis_and_multiline() {
-        assert_eq!(split("Думал… и решил. Вот так. Всё"), vec!["Думал… и решил.", "Вот так.", "Всё"]);
+        assert_eq!(
+            split("Думал… и решил. Вот так. Всё"),
+            vec!["Думал… и решил.", "Вот так.", "Всё"]
+        );
         #[rustfmt::skip]
         assert_eq!(split("Стоп! Хватит… Всё"), vec!["Стоп!", "Хватит…", "Всё"],
             "… + capital closes — fine for streaming latency");
-        assert_eq!(split("Wait... what?! Really"), vec!["Wait...", "what?!", "Really"]);
+        assert_eq!(
+            split("Wait... what?! Really"),
+            vec!["Wait...", "what?!", "Really"]
+        );
     }
 
     #[test]

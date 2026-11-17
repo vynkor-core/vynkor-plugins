@@ -25,8 +25,8 @@ const MAX_TRIGGER_CHARS: usize = 64;
 /// Parse one action's params. Errors name the offending field — they land
 /// verbatim in `ActionResponse.error`.
 pub fn parse(action: &str, params_json: &[u8]) -> Result<HotkeyRequest, String> {
-    let params: serde_json::Value = serde_json::from_slice(params_json)
-        .map_err(|e| format!("malformed params_json: {e}"))?;
+    let params: serde_json::Value =
+        serde_json::from_slice(params_json).map_err(|e| format!("malformed params_json: {e}"))?;
 
     match action {
         "hotkey_bind" => {
@@ -43,17 +43,17 @@ pub fn parse(action: &str, params_json: &[u8]) -> Result<HotkeyRequest, String> 
                 Some(serde_json::Value::String(s)) => {
                     let s = s.trim();
                     if s.len() > MAX_DESCRIPTION_CHARS {
-                        return Err(format!(
-                            "description exceeds {MAX_DESCRIPTION_CHARS} chars"
-                        ));
+                        return Err(format!("description exceeds {MAX_DESCRIPTION_CHARS} chars"));
                     }
                     s.to_string()
                 }
-                Some(other) => {
-                    return Err(format!("description must be a string, got {other}"))
-                }
+                Some(other) => return Err(format!("description must be a string, got {other}")),
             };
-            Ok(HotkeyRequest::Bind { id, trigger: normalized, description })
+            Ok(HotkeyRequest::Bind {
+                id,
+                trigger: normalized,
+                description,
+            })
         }
         "hotkey_unbind" => {
             let id = string_field(&params, "id")?;
@@ -68,7 +68,9 @@ pub fn parse(action: &str, params_json: &[u8]) -> Result<HotkeyRequest, String> 
                 "pressed" => true,
                 "released" => false,
                 other => {
-                    return Err(format!("state must be 'pressed' or 'released', got '{other}'"))
+                    return Err(format!(
+                        "state must be 'pressed' or 'released', got '{other}'"
+                    ))
                 }
             };
             Ok(HotkeyRequest::Inject { binding, pressed })
@@ -79,9 +81,7 @@ pub fn parse(action: &str, params_json: &[u8]) -> Result<HotkeyRequest, String> 
 
 fn string_field(params: &serde_json::Value, field: &str) -> Result<String, String> {
     match params.get(field) {
-        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => {
-            Ok(s.trim().to_string())
-        }
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Ok(s.trim().to_string()),
         Some(serde_json::Value::String(_)) => Err(format!("{field} must not be empty")),
         Some(other) => Err(format!("{field} must be a string, got {other}")),
         None => Err(format!("missing required field '{field}'")),
@@ -120,7 +120,9 @@ mod tests {
     fn bind_defaults_description_to_the_id() {
         let req = parse(
             "hotkey_bind",
-            json!({"id": "mute", "trigger": "Super+M"}).to_string().as_bytes(),
+            json!({"id": "mute", "trigger": "Super+M"})
+                .to_string()
+                .as_bytes(),
         )
         .unwrap();
         match req {
@@ -133,10 +135,14 @@ mod tests {
     fn bind_field_errors_name_the_field() {
         assert!(err_for("hotkey_bind", json!({})).contains("'id'"));
         assert!(err_for("hotkey_bind", json!({"id": "ptt"})).contains("'trigger'"));
-        assert!(err_for("hotkey_bind", json!({"id": "BAD ID", "trigger": "Ctrl+a"}))
-            .contains("invalid binding id"));
-        assert!(err_for("hotkey_bind", json!({"id": "ptt", "trigger": "Space"}))
-            .contains("invalid trigger"));
+        assert!(
+            err_for("hotkey_bind", json!({"id": "BAD ID", "trigger": "Ctrl+a"}))
+                .contains("invalid binding id")
+        );
+        assert!(
+            err_for("hotkey_bind", json!({"id": "ptt", "trigger": "Space"}))
+                .contains("invalid trigger")
+        );
         assert!(err_for(
             "hotkey_bind",
             json!({"id": "ptt", "trigger": "Ctrl+a", "description": 5})
@@ -148,20 +154,38 @@ mod tests {
     fn inject_requires_a_known_state() {
         let req = parse(
             "hotkey_inject",
-            json!({"binding": "ptt", "state": "pressed"}).to_string().as_bytes(),
+            json!({"binding": "ptt", "state": "pressed"})
+                .to_string()
+                .as_bytes(),
         )
         .unwrap();
-        assert_eq!(req, HotkeyRequest::Inject { binding: "ptt".into(), pressed: true });
+        assert_eq!(
+            req,
+            HotkeyRequest::Inject {
+                binding: "ptt".into(),
+                pressed: true
+            }
+        );
 
         let req = parse(
             "hotkey_inject",
-            json!({"binding": "ptt", "state": "released"}).to_string().as_bytes(),
+            json!({"binding": "ptt", "state": "released"})
+                .to_string()
+                .as_bytes(),
         )
         .unwrap();
-        assert_eq!(req, HotkeyRequest::Inject { binding: "ptt".into(), pressed: false });
+        assert_eq!(
+            req,
+            HotkeyRequest::Inject {
+                binding: "ptt".into(),
+                pressed: false
+            }
+        );
 
-        assert!(err_for("hotkey_inject", json!({"binding": "p", "state": "held"}))
-            .contains("'pressed' or 'released'"));
+        assert!(
+            err_for("hotkey_inject", json!({"binding": "p", "state": "held"}))
+                .contains("'pressed' or 'released'")
+        );
         assert!(err_for("hotkey_inject", json!({"state": "pressed"})).contains("'binding'"));
     }
 

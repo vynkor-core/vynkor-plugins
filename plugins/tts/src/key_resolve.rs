@@ -36,7 +36,9 @@ pub async fn resolve_api_key(client: &mut VynkorClient, handle: &str) -> Result<
     match client
         .send_action(
             "secret_get",
-            &serde_json::json!({ "name": handle }).to_string().into_bytes(),
+            &serde_json::json!({ "name": handle })
+                .to_string()
+                .into_bytes(),
             SECRETS_TIMEOUT_MS,
         )
         .await

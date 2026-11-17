@@ -497,9 +497,15 @@ mod tests {
 
     async fn assert_valid_backup(path: &Path, rows: i64) {
         let mut c = open_ro(path).await;
-        let check: String = sqlx::query_scalar("pragma quick_check").fetch_one(&mut c).await.unwrap();
+        let check: String = sqlx::query_scalar("pragma quick_check")
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
         assert_eq!(check, "ok");
-        let n: i64 = sqlx::query_scalar("select count(*) from vectors").fetch_one(&mut c).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from vectors")
+            .fetch_one(&mut c)
+            .await
+            .unwrap();
         assert_eq!(n, rows);
         let ty: String = sqlx::query_scalar("select typeof(vector) from vectors limit 1")
             .fetch_one(&mut c)
@@ -508,7 +514,9 @@ mod tests {
         assert_eq!(ty, "text", "backup holds the original v0 data");
     }
 
-    fn refs(rows: &[(&'static str, &'static str, String)]) -> Vec<(&'static str, &'static str, String)> {
+    fn refs(
+        rows: &[(&'static str, &'static str, String)],
+    ) -> Vec<(&'static str, &'static str, String)> {
         rows.to_vec()
     }
 
@@ -516,7 +524,8 @@ mod tests {
     async fn backup_is_published_atomically_and_stale_tmp_replaced() {
         let dir = tempfile::tempdir().unwrap();
         let rows = refs(&sample_rows());
-        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        let r: Vec<(&str, &str, &str)> =
+            rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
         make_v0(dir.path(), "agent", &r).await;
         let bak = backup_path(&dir.path().join("agent.db"));
         let mut tmp = bak.as_os_str().to_owned();
@@ -533,7 +542,8 @@ mod tests {
     async fn corrupt_existing_backup_is_rewritten() {
         let dir = tempfile::tempdir().unwrap();
         let rows = refs(&sample_rows());
-        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        let r: Vec<(&str, &str, &str)> =
+            rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
         make_v0(dir.path(), "agent", &r).await;
         let bak = backup_path(&dir.path().join("agent.db"));
         std::fs::write(&bak, b"this is not a sqlite file at all, truncated").unwrap();
@@ -546,7 +556,8 @@ mod tests {
     async fn backup_with_wrong_row_count_is_rewritten_but_valid_one_kept() {
         let dir = tempfile::tempdir().unwrap();
         let rows = refs(&sample_rows());
-        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        let r: Vec<(&str, &str, &str)> =
+            rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
         make_v0(dir.path(), "agent", &r).await;
         let db = dir.path().join("agent.db");
         let bak = backup_path(&db);
@@ -571,7 +582,8 @@ mod tests {
     async fn v0_without_collections_table_migrates() {
         let dir = tempfile::tempdir().unwrap();
         let rows = refs(&sample_rows());
-        let r: Vec<(&str, &str, &str)> = rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
+        let r: Vec<(&str, &str, &str)> =
+            rows.iter().map(|(a, b, c)| (*a, *b, c.as_str())).collect();
         make_v0(dir.path(), "agent", &r).await;
         {
             let path = dir.path().join("agent.db");
@@ -580,10 +592,16 @@ mod tests {
                 .connect()
                 .await
                 .unwrap();
-            sqlx::query("drop table collections").execute(&mut conn).await.unwrap();
+            sqlx::query("drop table collections")
+                .execute(&mut conn)
+                .await
+                .unwrap();
         }
         let pool = pools(dir.path()).pool_for("agent").await.unwrap();
-        let v: i64 = sqlx::query_scalar("pragma user_version").fetch_one(&pool).await.unwrap();
+        let v: i64 = sqlx::query_scalar("pragma user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(v, 1);
         let has_model: i64 = sqlx::query_scalar(
             "select count(*) from pragma_table_info('collections') where name='model'",
@@ -592,7 +610,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(has_model, 1);
-        let n: i64 = sqlx::query_scalar("select count(*) from vectors").fetch_one(&pool).await.unwrap();
+        let n: i64 = sqlx::query_scalar("select count(*) from vectors")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(n, 3);
     }
 }

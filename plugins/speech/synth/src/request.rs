@@ -193,13 +193,17 @@ pub fn parse_request(params_json: &[u8]) -> Result<SynthesizeParams, String> {
         (Provider::OpenAi, Some("aac")) => AudioFormat::Aac,
         (Provider::OpenAi, Some("flac")) => AudioFormat::Flac,
         (Provider::OpenAi, Some(other)) => {
-            return Err(format!("openai supports formats mp3|wav|pcm|opus|aac|flac, got: {other}"))
+            return Err(format!(
+                "openai supports formats mp3|wav|pcm|opus|aac|flac, got: {other}"
+            ))
         }
         (Provider::ElevenLabs, None | Some("mp3")) => AudioFormat::Mp3,
         (Provider::ElevenLabs, Some("pcm")) => AudioFormat::Pcm,
         (Provider::ElevenLabs, Some("ulaw")) => AudioFormat::Ulaw,
         (Provider::ElevenLabs, Some(other)) => {
-            return Err(format!("elevenlabs supports formats mp3|pcm|ulaw, got: {other}"))
+            return Err(format!(
+                "elevenlabs supports formats mp3|pcm|ulaw, got: {other}"
+            ))
         }
     };
 

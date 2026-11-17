@@ -984,21 +984,34 @@ mod tests {
             .unwrap();
         assert_eq!(resp["status"], "answered", "{resp}");
         assert_eq!(resp["answer"], "Saved after approval.");
-        assert!(shim.params_of("goal_resume").await.is_empty(), "nothing denied");
+        assert!(
+            shim.params_of("goal_resume").await.is_empty(),
+            "nothing denied"
+        );
     }
 
     #[tokio::test]
     async fn unanswered_confirmation_is_denied_when_the_turn_gives_up() {
-        let shim = start_plugin(Config { goal_timeout_ms: 1_000, ..fast_config() }).await;
+        let shim = start_plugin(Config {
+            goal_timeout_ms: 1_000,
+            ..fast_config()
+        })
+        .await;
         shim.tweak(|s| s.confirm = Some("needs_confirmation")).await;
         let resp = shim
             .call("daemon_turn", serde_json::json!({"text": "save my note"}))
             .await
             .unwrap();
         assert_eq!(resp["status"], "error", "{resp}");
-        assert!(resp["error"].as_str().unwrap().contains("1000 ms"), "{resp}");
+        assert!(
+            resp["error"].as_str().unwrap().contains("1000 ms"),
+            "{resp}"
+        );
         let denied = shim.params_of("goal_resume").await;
-        assert_eq!(denied, vec![serde_json::json!({"id": "7", "approve": false})]);
+        assert_eq!(
+            denied,
+            vec![serde_json::json!({"id": "7", "approve": false})]
+        );
     }
 
     #[tokio::test]

@@ -194,8 +194,12 @@ fn parse_trigger(p: &SetParams, now_ms: i64) -> Result<Trigger, String> {
             let tz = match &c.tz {
                 Some(s) => {
                     let trimmed = s.trim();
-                    if trimmed.is_empty() { return Err("params.cron.tz must not be empty when present".into()); }
-                    if trimmed.len() > 64 { return Err("params.cron.tz exceeds 64 bytes".into()); }
+                    if trimmed.is_empty() {
+                        return Err("params.cron.tz must not be empty when present".into());
+                    }
+                    if trimmed.len() > 64 {
+                        return Err("params.cron.tz exceeds 64 bytes".into());
+                    }
                     Some(trimmed.to_string())
                 }
                 None => None,
@@ -209,13 +213,21 @@ fn parse_trigger(p: &SetParams, now_ms: i64) -> Result<Trigger, String> {
                     }
                 }
                 validate_cron_expr_tz(&c.expr, tz.as_deref(), 0)?;
-                Ok(Trigger::Cron { expr: c.expr.clone(), tz_offset_min: c.tz_offset_min, tz })
+                Ok(Trigger::Cron {
+                    expr: c.expr.clone(),
+                    tz_offset_min: c.tz_offset_min,
+                    tz,
+                })
             } else {
                 if !(MIN_TZ_OFFSET_MIN..=MAX_TZ_OFFSET_MIN).contains(&c.tz_offset_min) {
                     return Err(format!("params.cron.tz_offset_min must be between {MIN_TZ_OFFSET_MIN} and {MAX_TZ_OFFSET_MIN}"));
                 }
                 validate_cron_expr_tz(&c.expr, None, c.tz_offset_min)?;
-                Ok(Trigger::Cron { expr: c.expr.clone(), tz_offset_min: c.tz_offset_min, tz: None })
+                Ok(Trigger::Cron {
+                    expr: c.expr.clone(),
+                    tz_offset_min: c.tz_offset_min,
+                    tz: None,
+                })
             }
         }
     }

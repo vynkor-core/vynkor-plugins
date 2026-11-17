@@ -254,8 +254,10 @@ mod tests {
         secret_data: serde_json::Value,
         http_data: serde_json::Value,
     ) {
-        let mut pending: StdHashMap<String, tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>> =
-            StdHashMap::new();
+        let mut pending: StdHashMap<
+            String,
+            tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
+        > = StdHashMap::new();
         let mut seq: u64 = 0;
 
         // Registration handshake FIRST, before the command loop: the plugin's
@@ -457,8 +459,12 @@ mod tests {
         assert_eq!(reqs.len(), 1);
         assert_eq!(reqs[0]["method"], "POST");
         assert_eq!(reqs[0]["url"], "https://api.tavily.com/search");
-        assert_eq!(reqs[0]["headers"]["Authorization"], format!("Bearer {VAULT_KEY}"));
-        let body: serde_json::Value = serde_json::from_str(reqs[0]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            reqs[0]["headers"]["Authorization"],
+            format!("Bearer {VAULT_KEY}")
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(reqs[0]["body"].as_str().unwrap()).unwrap();
         assert_eq!(body["query"], "vynkor");
         assert_eq!(body["max_results"], 3);
         assert!(!reqs[0]["body"].as_str().unwrap().contains(VAULT_KEY));
@@ -514,11 +520,7 @@ mod tests {
     #[tokio::test]
     async fn missing_key_is_error_without_leak() {
         // Vault has no value, and SEARCH_TAVILY_KEY is not set in the env.
-        let shim = start_plugin(
-            serde_json::json!({"found": false}),
-            http_ok(BRAVE_FIXTURE),
-        )
-        .await;
+        let shim = start_plugin(serde_json::json!({"found": false}), http_ok(BRAVE_FIXTURE)).await;
 
         let err = shim
             .call(
@@ -532,7 +534,10 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(err.contains("neither in the secrets vault"), "error was: {err}");
+        assert!(
+            err.contains("neither in the secrets vault"),
+            "error was: {err}"
+        );
         // No http_request was ever sent.
         assert!(shim.http_requests().await.is_empty());
     }
@@ -560,14 +565,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

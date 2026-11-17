@@ -107,7 +107,11 @@ pub const fn map_state(raw: u32) -> BatteryState {
 
 /// UPower uses `-1` for "unknown" durations.
 pub const fn map_seconds(raw: i64) -> Option<u64> {
-    if raw < 0 { None } else { Some(raw as u64) }
+    if raw < 0 {
+        None
+    } else {
+        Some(raw as u64)
+    }
 }
 
 #[cfg(test)]

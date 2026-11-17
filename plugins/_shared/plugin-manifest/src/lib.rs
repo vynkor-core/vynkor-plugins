@@ -48,9 +48,16 @@ pub fn specs_from_manifest(manifest: &Value) -> Vec<ActionSpec> {
                     .to_string(),
                 // The kernel carries params_schema as a JSON-encoded string
                 // and does not parse it (see the proto's D-01 note).
-                params_schema: action.get("input").map(Value::to_string).unwrap_or_default(),
-                risk: risk_from_str(action.get("risk").and_then(Value::as_str).unwrap_or_default())
-                    as i32,
+                params_schema: action
+                    .get("input")
+                    .map(Value::to_string)
+                    .unwrap_or_default(),
+                risk: risk_from_str(
+                    action
+                        .get("risk")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                ) as i32,
                 requires_confirmation: action
                     .get("requires_confirmation")
                     .and_then(Value::as_bool)
@@ -134,7 +141,10 @@ mod tests {
     #[test]
     fn unknown_risk_strings_degrade_to_unknown() {
         let manifest = json!({"actions": [{"name": "a", "risk": "SPICY"}]});
-        assert_eq!(specs_from_manifest(&manifest)[0].risk, ActionRisk::Unknown as i32);
+        assert_eq!(
+            specs_from_manifest(&manifest)[0].risk,
+            ActionRisk::Unknown as i32
+        );
     }
 
     #[test]

@@ -20,7 +20,10 @@ const SCREENSHOT_INTERFACE: &str = "org.freedesktop.portal.Screenshot";
 const REQUEST_INTERFACE: &str = "org.freedesktop.portal.Request";
 const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-pub async fn screenshot_via_portal(interactive: bool, dest: &std::path::Path) -> Result<(), CaptureError> {
+pub async fn screenshot_via_portal(
+    interactive: bool,
+    dest: &std::path::Path,
+) -> Result<(), CaptureError> {
     let conn = Connection::session()
         .await
         .map_err(|e| CaptureError::Backend(format!("portal session bus: {e}")))?;
@@ -45,9 +48,14 @@ pub async fn screenshot_via_portal(interactive: bool, dest: &std::path::Path) ->
     // ERR_CAPTURE_CANCELLED. See `hotkey`'s `portal.rs` for the same
     // predict-the-path-first pattern against a different portal
     // interface.
-    let request_proxy = Proxy::new(&conn, PORTAL_SERVICE, expected_path.as_str(), REQUEST_INTERFACE)
-        .await
-        .map_err(|e| CaptureError::Backend(format!("request proxy: {e}")))?;
+    let request_proxy = Proxy::new(
+        &conn,
+        PORTAL_SERVICE,
+        expected_path.as_str(),
+        REQUEST_INTERFACE,
+    )
+    .await
+    .map_err(|e| CaptureError::Backend(format!("request proxy: {e}")))?;
     let mut stream = request_proxy
         .receive_signal("Response")
         .await
@@ -178,7 +186,10 @@ mod tests {
     #[test]
     fn file_uri_strips_scheme() {
         let uri = "file:///run/user/1000/xdg-desktop-portal/abc.png";
-        assert_eq!(uri.strip_prefix("file://"), Some("/run/user/1000/xdg-desktop-portal/abc.png"));
+        assert_eq!(
+            uri.strip_prefix("file://"),
+            Some("/run/user/1000/xdg-desktop-portal/abc.png")
+        );
     }
 
     #[test]
@@ -191,14 +202,20 @@ mod tests {
     fn uri_to_path_percent_decodes_spaces() {
         let uri = "file:///home/user/Pictures/Screenshots/Screenshot%20From%202026-09-17.png";
         let got = uri_to_path(uri).unwrap();
-        assert_eq!(got, PathBuf::from("/home/user/Pictures/Screenshots/Screenshot From 2026-09-17.png"));
+        assert_eq!(
+            got,
+            PathBuf::from("/home/user/Pictures/Screenshots/Screenshot From 2026-09-17.png")
+        );
     }
 
     #[test]
     fn uri_to_path_round_trips_plain_path_unchanged() {
         let uri = "file:///run/user/1000/xdg-desktop-portal/abc.png";
         let got = uri_to_path(uri).unwrap();
-        assert_eq!(got, PathBuf::from("/run/user/1000/xdg-desktop-portal/abc.png"));
+        assert_eq!(
+            got,
+            PathBuf::from("/run/user/1000/xdg-desktop-portal/abc.png")
+        );
     }
 
     #[test]

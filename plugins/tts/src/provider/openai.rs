@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::provider::{encode_base64, wav_duration_seconds, wav_info, AudioResult, HttpRequestJson, Provider};
+use crate::provider::{
+    encode_base64, wav_duration_seconds, wav_info, AudioResult, HttpRequestJson, Provider,
+};
 use crate::request::{
     AudioFormat, SynthesizeParams, DEFAULT_OPENAI_BASE_URL, DEFAULT_OPENAI_MODEL,
     NETWORK_MAX_TIMEOUT_MS,
@@ -50,11 +52,7 @@ impl Provider for OpenAiProvider {
     fn parse_response(&self, body: &[u8], format: AudioFormat) -> Result<AudioResult, String> {
         let (sample_rate_hz, num_channels, duration_seconds) = match format {
             // Raw PCM: OpenAI documents pcm as 24 kHz, 16-bit, mono.
-            AudioFormat::Pcm => (
-                24000,
-                1,
-                body.len() as f32 / (24000 * 2) as f32,
-            ),
+            AudioFormat::Pcm => (24000, 1, body.len() as f32 / (24000 * 2) as f32),
             AudioFormat::Wav => {
                 let (rate, channels) = wav_info(body).unwrap_or((0, 0));
                 let duration = wav_duration_seconds(body).unwrap_or(0.0);
@@ -127,7 +125,9 @@ mod tests {
     #[test]
     fn parse_mp3_passthrough() {
         let body = vec![0x49, 0x44, 0x33, 0x04, 0x00];
-        let result = OpenAiProvider.parse_response(&body, AudioFormat::Mp3).unwrap();
+        let result = OpenAiProvider
+            .parse_response(&body, AudioFormat::Mp3)
+            .unwrap();
         assert_eq!(result.format, "mp3");
         assert_eq!(result.sample_rate_hz, 0);
         assert_eq!(result.num_channels, 0);
@@ -137,7 +137,9 @@ mod tests {
     #[test]
     fn parse_wav_recovers_metadata() {
         let wav = crate::provider::f32_to_wav(&[0.0; 48000], 24000, 1);
-        let result = OpenAiProvider.parse_response(&wav, AudioFormat::Wav).unwrap();
+        let result = OpenAiProvider
+            .parse_response(&wav, AudioFormat::Wav)
+            .unwrap();
         assert_eq!(result.format, "wav");
         assert_eq!(result.sample_rate_hz, 24000);
         assert_eq!(result.num_channels, 1);
@@ -148,7 +150,9 @@ mod tests {
     fn parse_pcm_known_rate_and_duration() {
         // 24000 Hz mono 16-bit -> 96000 bytes = 2.0 s
         let body = vec![0u8; 96_000];
-        let result = OpenAiProvider.parse_response(&body, AudioFormat::Pcm).unwrap();
+        let result = OpenAiProvider
+            .parse_response(&body, AudioFormat::Pcm)
+            .unwrap();
         assert_eq!(result.format, "pcm");
         assert_eq!(result.sample_rate_hz, 24000);
         assert_eq!(result.duration_seconds, 2.0);
@@ -165,7 +169,8 @@ mod tests {
             p.format = format;
             let req = OpenAiProvider.build_http_request(&p, "sk-test");
             assert!(
-                req.body.contains(&format!("\"response_format\":\"{value}\"")),
+                req.body
+                    .contains(&format!("\"response_format\":\"{value}\"")),
                 "body was: {}",
                 req.body
             );

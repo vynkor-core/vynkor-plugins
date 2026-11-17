@@ -420,7 +420,8 @@ impl Handler {
             }
         };
         if let Some(guard) = guard {
-            let (pool, cache, rpc, cfg) = (pool.clone(), self.cache.clone(), rpc.clone(), cfg.clone());
+            let (pool, cache, rpc, cfg) =
+                (pool.clone(), self.cache.clone(), rpc.clone(), cfg.clone());
             tokio::spawn(async move {
                 let (caller, collection) = guard.key.clone();
                 match reembed_collection(&pool, &cache, &caller, &collection, &rpc, &cfg).await {
@@ -1023,21 +1024,42 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = make_handler(dir.path());
         let caller = "agent";
-        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"1","vector":[1,0,0]}"#)
+        h.handle(
+            caller,
+            "vec_upsert",
+            br#"{"collection":"c","id":"1","vector":[1,0,0]}"#,
+        )
+        .await
+        .unwrap();
+        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#)
             .await
             .unwrap();
-        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#).await.unwrap();
-        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[1,0,0,0,0]}"#)
-            .await
-            .expect("an empty collection must not pin its old dimension");
+        h.handle(
+            caller,
+            "vec_upsert",
+            br#"{"collection":"c","id":"2","vector":[1,0,0,0,0]}"#,
+        )
+        .await
+        .expect("an empty collection must not pin its old dimension");
         let err = h
-            .handle(caller, "vec_upsert", br#"{"collection":"c","id":"3","vector":[1,0,0]}"#)
+            .handle(
+                caller,
+                "vec_upsert",
+                br#"{"collection":"c","id":"3","vector":[1,0,0]}"#,
+            )
             .await
             .unwrap_err();
-        assert!(err.contains("dimension mismatch"), "a non-empty one still does: {err}");
+        assert!(
+            err.contains("dimension mismatch"),
+            "a non-empty one still does: {err}"
+        );
         // The cached slot must follow: a query at the new dimension works.
         let out = h
-            .handle(caller, "vec_query", br#"{"collection":"c","vector":[1,0,0,0,0],"top_k":1}"#)
+            .handle(
+                caller,
+                "vec_query",
+                br#"{"collection":"c","vector":[1,0,0,0,0],"top_k":1}"#,
+            )
             .await
             .expect("query after the dimension change");
         let v = out;
@@ -1049,22 +1071,44 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = make_handler(dir.path());
         let caller = "agent";
-        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"1","vector":[1,0,0]}"#)
-            .await
-            .unwrap();
+        h.handle(
+            caller,
+            "vec_upsert",
+            br#"{"collection":"c","id":"1","vector":[1,0,0]}"#,
+        )
+        .await
+        .unwrap();
         // load the slot at dim 3, then empty the collection
-        h.handle(caller, "vec_query", br#"{"collection":"c","vector":[1,0,0],"top_k":1}"#)
+        h.handle(
+            caller,
+            "vec_query",
+            br#"{"collection":"c","vector":[1,0,0],"top_k":1}"#,
+        )
+        .await
+        .unwrap();
+        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#)
             .await
             .unwrap();
-        h.handle(caller, "vec_delete", br#"{"collection":"c","id":"1"}"#).await.unwrap();
-        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[0,1,0,0,0]}"#)
-            .await
-            .unwrap();
-        h.handle(caller, "vec_upsert", br#"{"collection":"c","id":"2","vector":[0,0,1,0,0]}"#)
-            .await
-            .expect("overwrite at the new dimension");
+        h.handle(
+            caller,
+            "vec_upsert",
+            br#"{"collection":"c","id":"2","vector":[0,1,0,0,0]}"#,
+        )
+        .await
+        .unwrap();
+        h.handle(
+            caller,
+            "vec_upsert",
+            br#"{"collection":"c","id":"2","vector":[0,0,1,0,0]}"#,
+        )
+        .await
+        .expect("overwrite at the new dimension");
         let out = h
-            .handle(caller, "vec_query", br#"{"collection":"c","vector":[0,0,1,0,0],"top_k":1}"#)
+            .handle(
+                caller,
+                "vec_query",
+                br#"{"collection":"c","vector":[0,0,1,0,0],"top_k":1}"#,
+            )
             .await
             .expect("query at the new dimension");
         let v = out;
@@ -1326,7 +1370,13 @@ mod tests {
         /// Fail every request after this many successful ones.
         fail_after: Option<usize>,
         /// Called with the 1-based request number before replying.
-        hook: Option<Arc<dyn Fn(usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>>,
+        hook: Option<
+            Arc<
+                dyn Fn(usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        >,
     }
 
     /// Stand-in for the `ai` plugin. `array_ok == false` mimics an old `ai`
@@ -1364,24 +1414,27 @@ mod tests {
                 if let Some(h) = &opts.hook {
                     h(n_calls).await;
                 }
-                let forced = opts
-                    .fail_all
-                    .clone()
-                    .or_else(|| opts.fail_after.filter(|a| ok_count >= *a).map(|_| "ai.embedding failed: provider down".to_string()));
+                let forced = opts.fail_all.clone().or_else(|| {
+                    opts.fail_after
+                        .filter(|a| ok_count >= *a)
+                        .map(|_| "ai.embedding failed: provider down".to_string())
+                });
                 let reply = if let Some(e) = forced {
                     Err(e)
                 } else {
                     match &p["input"] {
-                        Value::String(t) => {
-                            Ok(json!({"embedding": emb(t), "dim": dim, "model": model, "usage": {}}))
-                        }
+                        Value::String(t) => Ok(
+                            json!({"embedding": emb(t), "dim": dim, "model": model, "usage": {}}),
+                        ),
                         Value::Array(items) => {
                             if let Some(e) = &opts.array_error {
                                 Err(e.clone())
                             } else if !opts.reject_arrays {
                                 let v: Vec<Vec<f32>> =
                                     items.iter().map(|t| emb(t.as_str().unwrap())).collect();
-                                Ok(json!({"embeddings": v, "dim": dim, "model": model, "usage": {}}))
+                                Ok(
+                                    json!({"embeddings": v, "dim": dim, "model": model, "usage": {}}),
+                                )
                             } else {
                                 Err("ai.embedding failed: invalid JSON: invalid type: sequence, expected a string".to_string())
                             }
@@ -1691,7 +1744,9 @@ mod tests {
         h.handle_with_rpc(
             "agent",
             "vec_upsert_batch",
-            json!({"collection": "c", "docs": docs}).to_string().as_bytes(),
+            json!({"collection": "c", "docs": docs})
+                .to_string()
+                .as_bytes(),
             Some(ai.rpc.clone()),
             Some(&cfg_for(model)),
         )
@@ -1713,11 +1768,20 @@ mod tests {
         let h = make_handler(dir.path());
         let good = spawn_fake_ai(true);
         seed_collection(&h, &good, "a", 2).await;
-        let down = spawn_ai(AiOpts { fail_all: Some("ai.embedding failed: down".into()), ..Default::default() });
+        let down = spawn_ai(AiOpts {
+            fail_all: Some("ai.embedding failed: down".into()),
+            ..Default::default()
+        });
         let cfg = cfg_fake_fallback("a");
 
         let err = h
-            .handle_with_rpc("agent", "vec_upsert", br#"{"collection":"c","id":"new","text":"x"}"#, Some(down.rpc.clone()), Some(&cfg))
+            .handle_with_rpc(
+                "agent",
+                "vec_upsert",
+                br#"{"collection":"c","id":"new","text":"x"}"#,
+                Some(down.rpc.clone()),
+                Some(&cfg),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("refusing fake vectors"), "err was: {err}");
@@ -1733,14 +1797,26 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("refusing fake vectors"), "err was: {err}");
         assert_eq!(count_rows(&h).await, 2, "nothing persisted");
-        let stats = h.handle("agent", "vec_stats", br#"{"collection":"c"}"#).await.unwrap();
+        let stats = h
+            .handle("agent", "vec_stats", br#"{"collection":"c"}"#)
+            .await
+            .unwrap();
         assert_eq!(stats["model"], "a");
 
         // a brand-new collection may use fake vectors, but is never stamped with a model
-        h.handle_with_rpc("agent", "vec_upsert", br#"{"collection":"fresh","id":"1","text":"x"}"#, Some(down.rpc.clone()), Some(&cfg))
+        h.handle_with_rpc(
+            "agent",
+            "vec_upsert",
+            br#"{"collection":"fresh","id":"1","text":"x"}"#,
+            Some(down.rpc.clone()),
+            Some(&cfg),
+        )
+        .await
+        .unwrap();
+        let stats = h
+            .handle("agent", "vec_stats", br#"{"collection":"fresh"}"#)
             .await
             .unwrap();
-        let stats = h.handle("agent", "vec_stats", br#"{"collection":"fresh"}"#).await.unwrap();
         assert_eq!(stats["model"], "");
     }
 
@@ -1750,10 +1826,19 @@ mod tests {
         let h = make_handler(dir.path());
         let good = spawn_fake_ai(true);
         seed_collection(&h, &good, "a", 3).await;
-        let down = spawn_ai(AiOpts { fail_all: Some("ai.embedding failed: down".into()), ..Default::default() });
+        let down = spawn_ai(AiOpts {
+            fail_all: Some("ai.embedding failed: down".into()),
+            ..Default::default()
+        });
         let cfg = cfg_fake_fallback("a");
         let err = h
-            .handle_with_rpc("agent", "vec_query", br#"{"collection":"c","text":"alpha","top_k":2}"#, Some(down.rpc.clone()), Some(&cfg))
+            .handle_with_rpc(
+                "agent",
+                "vec_query",
+                br#"{"collection":"c","text":"alpha","top_k":2}"#,
+                Some(down.rpc.clone()),
+                Some(&cfg),
+            )
             .await
             .unwrap_err();
         assert!(err.contains("refusing fake vectors"), "err was: {err}");
@@ -1762,7 +1847,9 @@ mod tests {
             .handle_with_rpc(
                 "agent",
                 "vec_query",
-                json!({"collection":"c","vector":[1,0,0,0,0,0,0,0],"top_k":2}).to_string().as_bytes(),
+                json!({"collection":"c","vector":[1,0,0,0,0,0,0,0],"top_k":2})
+                    .to_string()
+                    .as_bytes(),
                 Some(down.rpc.clone()),
                 Some(&cfg),
             )
@@ -1773,11 +1860,12 @@ mod tests {
 
     async fn vectors_of(h: &Handler) -> Vec<(String, usize)> {
         let pool = h.pools.pool_for("agent").await.unwrap();
-        let rows: Vec<(String, i64)> =
-            sqlx::query_as("select id, length(vector) / 4 from vectors where collection = 'c' order by id")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "select id, length(vector) / 4 from vectors where collection = 'c' order by id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
         rows.into_iter().map(|(i, d)| (i, d as usize)).collect()
     }
 
@@ -1795,24 +1883,53 @@ mod tests {
         let h = make_handler(dir.path());
         let good = spawn_fake_ai(true);
         seed_collection(&h, &good, "a", 5).await;
-        let before = h.handle("agent", "vec_get", br#"{"collection":"c","id":"3"}"#).await.unwrap();
+        let before = h
+            .handle("agent", "vec_get", br#"{"collection":"c","id":"3"}"#)
+            .await
+            .unwrap();
         let pool = h.pools.pool_for("agent").await.unwrap();
 
         let mut cfg_b = cfg_for("b");
         cfg_b.batch = 2; // 5 rows -> 3 requests
-        let flaky = spawn_ai(AiOpts { fail_after: Some(1), ..Default::default() });
+        let flaky = spawn_ai(AiOpts {
+            fail_after: Some(1),
+            ..Default::default()
+        });
         let err = reembed_collection(&pool, h.cache(), "agent", "c", &flaky.rpc, &cfg_b)
             .await
             .unwrap_err();
         assert!(err.contains("provider down"), "err was: {err}");
-        let stats = h.handle("agent", "vec_stats", br#"{"collection":"c"}"#).await.unwrap();
-        assert_eq!((stats["model"].as_str().unwrap(), stats["dim"].as_i64().unwrap()), ("a", 8));
-        assert!(vectors_of(&h).await.iter().all(|(_, d)| *d == 8), "no row was touched");
-        assert_eq!(h.handle("agent", "vec_get", br#"{"collection":"c","id":"3"}"#).await.unwrap(), before);
+        let stats = h
+            .handle("agent", "vec_stats", br#"{"collection":"c"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                stats["model"].as_str().unwrap(),
+                stats["dim"].as_i64().unwrap()
+            ),
+            ("a", 8)
+        );
+        assert!(
+            vectors_of(&h).await.iter().all(|(_, d)| *d == 8),
+            "no row was touched"
+        );
+        assert_eq!(
+            h.handle("agent", "vec_get", br#"{"collection":"c","id":"3"}"#)
+                .await
+                .unwrap(),
+            before
+        );
         assert_eq!(shadow_rows(&h).await, 0, "shadow cleared after failure");
         // and it still searches on the old model
         let q = h
-            .handle_with_rpc("agent", "vec_query", br#"{"collection":"c","text":"gamma","top_k":1}"#, Some(good.rpc.clone()), Some(&cfg_for("a")))
+            .handle_with_rpc(
+                "agent",
+                "vec_query",
+                br#"{"collection":"c","text":"gamma","top_k":1}"#,
+                Some(good.rpc.clone()),
+                Some(&cfg_for("a")),
+            )
             .await
             .unwrap();
         assert_eq!(q["results"][0]["id"], "3");
@@ -1825,7 +1942,13 @@ mod tests {
         let ai = spawn_fake_ai(true);
         seed_collection(&h, &ai, "a", 6).await;
         // warm the cache with the old vectors
-        h.handle("agent", "vec_query", br#"{"collection":"c","vector":[1,0,0,0,0,0,0,0],"top_k":1}"#).await.unwrap();
+        h.handle(
+            "agent",
+            "vec_query",
+            br#"{"collection":"c","vector":[1,0,0,0,0,0,0,0],"top_k":1}"#,
+        )
+        .await
+        .unwrap();
         assert!(h.cache().is_loaded("agent", "c").await);
         let pool = h.pools.pool_for("agent").await.unwrap();
 
@@ -1845,7 +1968,10 @@ mod tests {
                 .fetch_one(&obs_pool)
                 .await
                 .unwrap();
-                assert!(dim == lo && lo == hi, "torn state: dim={dim} vectors={lo}..{hi}");
+                assert!(
+                    dim == lo && lo == hi,
+                    "torn state: dim={dim} vectors={lo}..{hi}"
+                );
                 seen_new |= dim == 12;
                 snapshots += 1;
                 tokio::task::yield_now().await;
@@ -1855,20 +1981,40 @@ mod tests {
 
         let mut cfg_b = cfg_for("b");
         cfg_b.batch = 2;
-        let kept = reembed_collection(&pool, h.cache(), "agent", "c", &ai.rpc, &cfg_b).await.unwrap();
+        let kept = reembed_collection(&pool, h.cache(), "agent", "c", &ai.rpc, &cfg_b)
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         stop.store(true, Ordering::SeqCst);
         let (seen_new, snapshots) = observer.await.unwrap();
         assert!(snapshots > 0 && seen_new);
 
         assert_eq!(kept, 6);
-        let stats = h.handle("agent", "vec_stats", br#"{"collection":"c"}"#).await.unwrap();
-        assert_eq!((stats["model"].as_str().unwrap(), stats["dim"].as_i64().unwrap()), ("b", 12));
+        let stats = h
+            .handle("agent", "vec_stats", br#"{"collection":"c"}"#)
+            .await
+            .unwrap();
+        assert_eq!(
+            (
+                stats["model"].as_str().unwrap(),
+                stats["dim"].as_i64().unwrap()
+            ),
+            ("b", 12)
+        );
         assert!(vectors_of(&h).await.iter().all(|(_, d)| *d == 12));
         assert_eq!(shadow_rows(&h).await, 0);
-        assert!(!h.cache().is_loaded("agent", "c").await, "stale cache dropped by the swap");
+        assert!(
+            !h.cache().is_loaded("agent", "c").await,
+            "stale cache dropped by the swap"
+        );
         let q = h
-            .handle_with_rpc("agent", "vec_query", br#"{"collection":"c","text":"gamma","top_k":1}"#, Some(ai.rpc.clone()), Some(&cfg_b))
+            .handle_with_rpc(
+                "agent",
+                "vec_query",
+                br#"{"collection":"c","text":"gamma","top_k":1}"#,
+                Some(ai.rpc.clone()),
+                Some(&cfg_b),
+            )
             .await
             .unwrap();
         assert_eq!(q["results"][0]["id"], "3");
@@ -1884,28 +2030,42 @@ mod tests {
 
         // while the first embedding request is in flight, row 2 is rewritten
         let hook_pool = pool.clone();
-        let hook: Arc<dyn Fn(usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync> =
-            Arc::new(move |n| {
-                let p = hook_pool.clone();
-                Box::pin(async move {
-                    if n == 1 {
-                        sqlx::query("update vectors set text = 'changed text' where collection = 'c' and id = '2'")
+        let hook: Arc<
+            dyn Fn(usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
+                + Send
+                + Sync,
+        > = Arc::new(move |n| {
+            let p = hook_pool.clone();
+            Box::pin(async move {
+                if n == 1 {
+                    sqlx::query("update vectors set text = 'changed text' where collection = 'c' and id = '2'")
                             .execute(&p)
                             .await
                             .unwrap();
-                    }
-                })
-            });
-        let ai = spawn_ai(AiOpts { hook: Some(hook), ..Default::default() });
+                }
+            })
+        });
+        let ai = spawn_ai(AiOpts {
+            hook: Some(hook),
+            ..Default::default()
+        });
         let cfg_b = cfg_for("b");
-        reembed_collection(&pool, h.cache(), "agent", "c", &ai.rpc, &cfg_b).await.unwrap();
+        reembed_collection(&pool, h.cache(), "agent", "c", &ai.rpc, &cfg_b)
+            .await
+            .unwrap();
 
-        let got = h.handle("agent", "vec_get", br#"{"collection":"c","id":"2"}"#).await.unwrap();
+        let got = h
+            .handle("agent", "vec_get", br#"{"collection":"c","id":"2"}"#)
+            .await
+            .unwrap();
         let got: Vec<f32> = serde_json::from_value(got["vector"].clone()).unwrap();
         let mut want = fake_embed("b:changed text", 12);
         normalize(&mut want);
         for (a, b) in got.iter().zip(&want) {
-            assert!((a - b).abs() < 1e-5, "row 2 must carry the vector of its NEW text");
+            assert!(
+                (a - b).abs() < 1e-5,
+                "row 2 must carry the vector of its NEW text"
+            );
         }
         let calls = ai.calls.lock().unwrap().clone();
         assert_eq!(calls, vec![3, 1], "second pass embeds only the changed row");
@@ -1917,37 +2077,60 @@ mod tests {
         let h = make_handler(dir.path()).with_reembed_backoff_ms(100_000);
         let good = spawn_fake_ai(true);
         seed_collection(&h, &good, "a", 3).await;
-        let bad = spawn_ai(AiOpts { fail_all: Some("ai.embedding failed: boom".into()), ..Default::default() });
+        let bad = spawn_ai(AiOpts {
+            fail_all: Some("ai.embedding failed: boom".into()),
+            ..Default::default()
+        });
         let cfg_b = cfg_for("b");
         let q = br#"{"collection":"c","vector":[1,0,0,0,0,0,0,0],"top_k":1}"#;
         let key = ("agent".to_string(), "c".to_string());
-        let ask = || h.handle_with_rpc("agent", "vec_query", q, Some(bad.rpc.clone()), Some(&cfg_b));
+        let ask =
+            || h.handle_with_rpc("agent", "vec_query", q, Some(bad.rpc.clone()), Some(&cfg_b));
 
         assert!(ask().await.unwrap_err().contains("is being re-embedded"));
         // wait for the failing attempt to finish
         for _ in 0..100 {
-            if lock_map(&h.reembedding).get(&key).is_some_and(|s| !s.running && s.fails == 1) {
+            if lock_map(&h.reembedding)
+                .get(&key)
+                .is_some_and(|s| !s.running && s.fails == 1)
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         let st = lock_map(&h.reembedding).get(&key).cloned().unwrap();
-        assert!(!st.running && st.fails == 1, "key must not stay stuck: {st:?}");
+        assert!(
+            !st.running && st.fails == 1,
+            "key must not stay stuck: {st:?}"
+        );
         let attempts = bad.calls.lock().unwrap().len();
         assert!(attempts >= 1);
 
         // storm of requests during the backoff: same error, no new attempts
         for _ in 0..10 {
-            assert!(ask().await.unwrap_err().contains("is being re-embedded for model b"));
+            assert!(ask()
+                .await
+                .unwrap_err()
+                .contains("is being re-embedded for model b"));
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(bad.calls.lock().unwrap().len(), attempts, "no respawn during backoff");
+        assert_eq!(
+            bad.calls.lock().unwrap().len(),
+            attempts,
+            "no respawn during backoff"
+        );
 
         // backoff over -> one new attempt, backoff doubles
-        lock_map(&h.reembedding).get_mut(&key).unwrap().retry_after_ms = 0;
+        lock_map(&h.reembedding)
+            .get_mut(&key)
+            .unwrap()
+            .retry_after_ms = 0;
         assert!(ask().await.is_err());
         for _ in 0..100 {
-            if lock_map(&h.reembedding).get(&key).is_some_and(|s| !s.running && s.fails == 2) {
+            if lock_map(&h.reembedding)
+                .get(&key)
+                .is_some_and(|s| !s.running && s.fails == 2)
+            {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -1955,7 +2138,10 @@ mod tests {
         let st = lock_map(&h.reembedding).get(&key).cloned().unwrap();
         assert_eq!(st.fails, 2);
         let wait = st.retry_after_ms - crate::db::now_ms();
-        assert!(wait > 150_000 && wait <= 200_000, "doubled backoff, got {wait} ms");
+        assert!(
+            wait > 150_000 && wait <= 200_000,
+            "doubled backoff, got {wait} ms"
+        );
         assert!(bad.calls.lock().unwrap().len() > attempts);
     }
 
@@ -1963,8 +2149,19 @@ mod tests {
     async fn reembed_guard_releases_key_on_panic() {
         let map: ReembedMap = Arc::new(StdMutex::new(HashMap::new()));
         let key = ("agent".to_string(), "c".to_string());
-        lock_map(&map).insert(key.clone(), ReembedState { running: true, ..Default::default() });
-        let guard = ReembedGuard { map: map.clone(), key: key.clone(), ok: false, base_ms: 1000 };
+        lock_map(&map).insert(
+            key.clone(),
+            ReembedState {
+                running: true,
+                ..Default::default()
+            },
+        );
+        let guard = ReembedGuard {
+            map: map.clone(),
+            key: key.clone(),
+            ok: false,
+            base_ms: 1000,
+        };
         let joined = tokio::spawn(async move {
             let _g = guard;
             panic!("re-embed task blew up");
@@ -1972,7 +2169,10 @@ mod tests {
         .await;
         assert!(joined.is_err());
         let st = lock_map(&map).get(&key).cloned().unwrap();
-        assert!(!st.running, "panic must not leave the collection stuck as running");
+        assert!(
+            !st.running,
+            "panic must not leave the collection stuck as running"
+        );
         assert_eq!(st.fails, 1);
         assert!(st.retry_after_ms > crate::db::now_ms());
     }
@@ -1981,19 +2181,39 @@ mod tests {
     async fn auth_error_on_array_does_not_flip_unsupported_flag() {
         let dir = tempfile::tempdir().unwrap();
         let h = make_handler(dir.path());
-        let ai = spawn_ai(AiOpts { array_error: Some("ai.embedding failed: invalid_api_key".into()), ..Default::default() });
+        let ai = spawn_ai(AiOpts {
+            array_error: Some("ai.embedding failed: invalid_api_key".into()),
+            ..Default::default()
+        });
         let cfg = cfg_for("a");
         let batch = br#"{"collection":"c","docs":[{"id":"1","text":"a"},{"id":"2","text":"b"},{"id":"3","text":"c"}]}"#;
         for _ in 0..2 {
             let err = h
-                .handle_with_rpc("agent", "vec_upsert_batch", batch, Some(ai.rpc.clone()), Some(&cfg))
+                .handle_with_rpc(
+                    "agent",
+                    "vec_upsert_batch",
+                    batch,
+                    Some(ai.rpc.clone()),
+                    Some(&cfg),
+                )
                 .await
                 .unwrap_err();
             assert!(err.contains("invalid_api_key"), "err was: {err}");
         }
-        assert!(!ai.rpc.array_unsupported.load(Ordering::Relaxed), "auth error must not flip the flag");
-        assert_eq!(*ai.calls.lock().unwrap(), vec![3, 3], "array still tried both times, never degraded to singles");
-        assert!(looks_like_array_unsupported("ai.embedding failed: invalid JSON: invalid type: sequence, expected a string"));
-        assert!(!looks_like_array_unsupported("provider returned HTTP 401: invalid_api_key"));
+        assert!(
+            !ai.rpc.array_unsupported.load(Ordering::Relaxed),
+            "auth error must not flip the flag"
+        );
+        assert_eq!(
+            *ai.calls.lock().unwrap(),
+            vec![3, 3],
+            "array still tried both times, never degraded to singles"
+        );
+        assert!(looks_like_array_unsupported(
+            "ai.embedding failed: invalid JSON: invalid type: sequence, expected a string"
+        ));
+        assert!(!looks_like_array_unsupported(
+            "provider returned HTTP 401: invalid_api_key"
+        ));
     }
 }

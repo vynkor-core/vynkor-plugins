@@ -4,9 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::providers::{
-    parse_provider_pref, read_chain, write_chain, Runner, Session,
-};
+use crate::providers::{parse_provider_pref, read_chain, write_chain, Runner, Session};
 
 /// Operator policy resolved once per call from env (constructed directly in
 /// tests).
@@ -114,7 +112,10 @@ pub async fn handle_write(
     let mut tried: Vec<&'static str> = Vec::new();
     for inv in &chain {
         let payload = if inv.stdin { Some(text) } else { None };
-        match runner.run(inv.bin, &inv.args, payload, cfg.timeout_ms).await {
+        match runner
+            .run(inv.bin, &inv.args, payload, cfg.timeout_ms)
+            .await
+        {
             Ok(_) => return Ok(json!({ "ok": true, "provider": inv.bin, "bytes": text.len() })),
             Err(e) if e.contains("ERR_CLIPBOARD_PROVIDER_MISSING") => {
                 tried.push(inv.bin);
@@ -140,13 +141,15 @@ pub fn handle_providers(session: Session) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{
-        FakeRunner, ProviderPref,
-    };
+    use crate::providers::{FakeRunner, ProviderPref};
     use std::collections::HashMap;
 
     fn cfg(pref: ProviderPref, max_bytes: usize) -> Config {
-        Config { timeout_ms: 1_000, max_bytes, provider_pref: pref }
+        Config {
+            timeout_ms: 1_000,
+            max_bytes,
+            provider_pref: pref,
+        }
     }
 
     fn fake(pairs: Vec<(&str, Result<Vec<u8>, String>)>) -> FakeRunner {
@@ -190,7 +193,10 @@ mod tests {
     #[tokio::test]
     async fn read_falls_back_from_xclip_to_xsel() {
         let f = fake(vec![
-            ("xclip", Err("ERR_CLIPBOARD_PROVIDER_MISSING: binary 'xclip' not found on PATH".into())),
+            (
+                "xclip",
+                Err("ERR_CLIPBOARD_PROVIDER_MISSING: binary 'xclip' not found on PATH".into()),
+            ),
             ("xsel", Ok(b"fallback".to_vec())),
         ]);
         let v = handle_read(&f, &cfg(ProviderPref::Auto, 1024), Session::X11)
@@ -203,7 +209,9 @@ mod tests {
     #[tokio::test]
     async fn read_all_readers_missing_lists_tried() {
         let missing = |b: &str| {
-            Err(format!("ERR_CLIPBOARD_PROVIDER_MISSING: binary '{b}' not found on PATH"))
+            Err(format!(
+                "ERR_CLIPBOARD_PROVIDER_MISSING: binary '{b}' not found on PATH"
+            ))
         };
         let f = fake(vec![("xclip", missing("xclip")), ("xsel", missing("xsel"))]);
         let err = handle_read(&f, &cfg(ProviderPref::Auto, 1024), Session::X11)
@@ -224,7 +232,10 @@ mod tests {
 
     #[tokio::test]
     async fn read_error_other_than_missing_propagates() {
-        let f = fake(vec![("wl-paste", Err("ERR_CLIPBOARD_TIMEOUT: boom".into()))]);
+        let f = fake(vec![(
+            "wl-paste",
+            Err("ERR_CLIPBOARD_TIMEOUT: boom".into()),
+        )]);
         let err = handle_read(&f, &cfg(ProviderPref::Auto, 1024), Session::Wayland)
             .await
             .unwrap_err();
@@ -234,9 +245,14 @@ mod tests {
     #[tokio::test]
     async fn write_success_passes_text_via_stdin() {
         let f = fake(vec![("wl-copy", Ok(Vec::new()))]);
-        let v = handle_write(&f, &cfg(ProviderPref::Auto, 1024), Session::Wayland, "payload")
-            .await
-            .unwrap();
+        let v = handle_write(
+            &f,
+            &cfg(ProviderPref::Auto, 1024),
+            Session::Wayland,
+            "payload",
+        )
+        .await
+        .unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["provider"], "wl-copy");
         let calls = f.calls.lock().unwrap();
@@ -267,7 +283,9 @@ mod tests {
     #[tokio::test]
     async fn write_all_writers_missing_lists_tried() {
         let missing = |b: &str| {
-            Err(format!("ERR_CLIPBOARD_PROVIDER_MISSING: binary '{b}' not found on PATH"))
+            Err(format!(
+                "ERR_CLIPBOARD_PROVIDER_MISSING: binary '{b}' not found on PATH"
+            ))
         };
         let f = fake(vec![("xclip", missing("xclip")), ("xsel", missing("xsel"))]);
         let err = handle_write(&f, &cfg(ProviderPref::Auto, 1024), Session::X11, "t")

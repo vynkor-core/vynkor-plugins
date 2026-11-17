@@ -122,7 +122,10 @@ fn failed_detail(tool: &str, bin: &str, output: &std::process::Output) -> String
         output.status.to_string()
     };
     let detail = detail.chars().take(400).collect::<String>();
-    format!("ERR_LAUNCH_FAILED: '{tool} {bin}' exited {}: {}", output.status, detail)
+    format!(
+        "ERR_LAUNCH_FAILED: '{tool} {bin}' exited {}: {}",
+        output.status, detail
+    )
 }
 
 #[async_trait]
@@ -199,10 +202,15 @@ impl Launcher for RealLauncher {
                         format!("ERR_LAUNCH_SPAWN_FAILED: spawn '{bin}' failed: {e}")
                     }
                 })?;
-                let output = match tokio::time::timeout(Duration::from_secs(10), child.wait_with_output()).await {
-                    Ok(r) => r.map_err(|e| format!("ERR_LAUNCH_SPAWN_FAILED: wait '{bin}' failed: {e}"))?,
-                    Err(_) => return Ok(()),
-                };
+                let output =
+                    match tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+                        .await
+                    {
+                        Ok(r) => r.map_err(|e| {
+                            format!("ERR_LAUNCH_SPAWN_FAILED: wait '{bin}' failed: {e}")
+                        })?,
+                        Err(_) => return Ok(()),
+                    };
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();

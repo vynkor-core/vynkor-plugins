@@ -54,8 +54,8 @@ impl Provider for TavilyProvider {
             results: Vec<TavilyResult>,
         }
 
-        let resp: Response = serde_json::from_slice(body)
-            .map_err(|e| format!("malformed tavily response: {e}"))?;
+        let resp: Response =
+            serde_json::from_slice(body).map_err(|e| format!("malformed tavily response: {e}"))?;
 
         Ok(resp
             .results
@@ -136,7 +136,10 @@ mod tests {
     #[test]
     fn rejects_malformed_json() {
         let err = TavilyProvider.parse_response(b"not json").unwrap_err();
-        assert!(err.contains("malformed tavily response"), "error was: {err}");
+        assert!(
+            err.contains("malformed tavily response"),
+            "error was: {err}"
+        );
     }
 
     #[test]

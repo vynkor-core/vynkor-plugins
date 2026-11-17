@@ -29,14 +29,22 @@ use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "hotkey";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 5] =
-    ["hotkey_bind", "hotkey_unbind", "hotkey_list", "hotkey_inject", "hotkey_status"];
+const ACTIONS: [&str; 5] = [
+    "hotkey_bind",
+    "hotkey_unbind",
+    "hotkey_list",
+    "hotkey_inject",
+    "hotkey_status",
+];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
         // System-level input surface (global combos); see module docs for
         // the dedicated-permission note.
-        permissions: vec!["PERMISSION_SYSTEM".into(), "PERMISSION_EVENT_PUBLISH".into()],
+        permissions: vec![
+            "PERMISSION_SYSTEM".into(),
+            "PERMISSION_EVENT_PUBLISH".into(),
+        ],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
         action_specs: hotkey_plugin::manifest::action_specs(),
         ..Default::default()
@@ -66,7 +74,10 @@ impl State {
             .collect();
         let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
         cmd_tx
-            .send(portal::Rebind { triggers, reply: reply_tx })
+            .send(portal::Rebind {
+                triggers,
+                reply: reply_tx,
+            })
             .await
             .map_err(|_| "portal backend stopped".to_string())?;
         match tokio::time::timeout(std::time::Duration::from_secs(20), reply_rx).await {
@@ -112,7 +123,9 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
 
     let backend_choice =
         std::env::var("HOTKEY_PLUGIN_BACKEND").unwrap_or_else(|_| "auto".to_string());
-    let handle = resolve_backend(&backend_choice).await.map_err(VynkorError::Internal)?;
+    let handle = resolve_backend(&backend_choice)
+        .await
+        .map_err(VynkorError::Internal)?;
     let (backend_name, cmd_tx) = match &handle {
         Some(_) => {
             println!("[{PLUGIN_ID}] XDG GlobalShortcuts backend active");
@@ -146,7 +159,11 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
         _ => {}
     }
 
-    let state = Arc::new(State { store, backend_name, cmd_tx });
+    let state = Arc::new(State {
+        store,
+        backend_name,
+        cmd_tx,
+    });
     if state.cmd_tx.is_some() && !state.store.is_empty() {
         // Push the boot bindings into the portal; a failure doesn't kill
         // the plugin — binds stay correctable via hotkey_bind.
@@ -208,9 +225,16 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
 /// subscribe to (`plugin.hotkey.hotkey_pressed` / `_released`). Best-effort
 /// by contract: a failed publish logs instead of killing the loop.
 async fn publish_key(client: &mut VynkorClient, event: &portal::PortalEvent) {
-    let event_type = if event.pressed { "hotkey_pressed" } else { "hotkey_released" };
+    let event_type = if event.pressed {
+        "hotkey_pressed"
+    } else {
+        "hotkey_released"
+    };
     let payload = json!({ "binding": event.binding });
-    if let Err(e) = client.publish_event(event_type, payload.to_string().as_bytes(), 5000).await {
+    if let Err(e) = client
+        .publish_event(event_type, payload.to_string().as_bytes(), 5000)
+        .await
+    {
         eprintln!("[{PLUGIN_ID}] failed to publish {event_type}: {e}");
     }
 }
@@ -245,7 +269,11 @@ async fn dispatch(
     req: &ActionRequest,
 ) -> Result<Vec<u8>, String> {
     match request::parse(&req.action, &req.params_json)? {
-        request::HotkeyRequest::Bind { id, trigger, description } => {
+        request::HotkeyRequest::Bind {
+            id,
+            trigger,
+            description,
+        } => {
             state.store.set(bindings::Binding {
                 id: id.clone(),
                 trigger: trigger.clone(),
@@ -266,7 +294,9 @@ async fn dispatch(
             if removed {
                 state.rebind_portal().await?;
             }
-            Ok(json!({ "unbound": removed, "id": id }).to_string().into_bytes())
+            Ok(json!({ "unbound": removed, "id": id })
+                .to_string()
+                .into_bytes())
         }
         request::HotkeyRequest::List => {
             let list: Vec<Value> = state
@@ -295,7 +325,10 @@ async fn dispatch(
         request::HotkeyRequest::Inject { binding, pressed } => {
             publish_key(
                 client,
-                &portal::PortalEvent { binding: binding.clone(), pressed },
+                &portal::PortalEvent {
+                    binding: binding.clone(),
+                    pressed,
+                },
             )
             .await;
             Ok(json!({
@@ -320,7 +353,9 @@ fn unix_millis() -> u64 {
 async fn main() -> Result<(), VynkorError> {
     let socket_path = std::env::var("VYN_SOCKET_PATH")
         .unwrap_or_else(|_| vynkor_wire::socket::default_socket_path());
-    let secret = std::env::var("VYN_JWT_SECRET").ok().filter(|s| !s.is_empty());
+    let secret = std::env::var("VYN_JWT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
     let client = match secret {
         Some(s) => VynkorClient::connect_with_secret(&socket_path, s.as_bytes()).await?,
         None => VynkorClient::connect(&socket_path).await?,
@@ -351,14 +386,22 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: tokio::sync::oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
+        },
     }
 
     impl Shim {
         async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
             let (reply, rx) = tokio::sync::oneshot::channel();
             self.tx
-                .send(Cmd::Call { action: action.into(), params, reply })
+                .send(Cmd::Call {
+                    action: action.into(),
+                    params,
+                    reply,
+                })
                 .await
                 .expect("shim loop died");
             tokio::time::timeout(Duration::from_secs(5), rx)
@@ -483,7 +526,10 @@ mod tests {
                     Some(envelope::Payload::ActionRequest(req)) => {
                         seq += 1;
                         let _ = kernel
-                            .send("kernel", action_ok(&req.action_id, json!({"echo": req.action})))
+                            .send(
+                                "kernel",
+                                action_ok(&req.action_id, json!({"echo": req.action})),
+                            )
                             .await;
                     }
                     Some(envelope::Payload::EventPublish(ev)) => {
@@ -576,24 +622,36 @@ mod tests {
         ])
         .await;
 
-        shim.call("hotkey_inject", json!({"binding": "ptt", "state": "pressed"}))
-            .await
-            .unwrap();
+        shim.call(
+            "hotkey_inject",
+            json!({"binding": "ptt", "state": "pressed"}),
+        )
+        .await
+        .unwrap();
         let press = wait_for_published(&shim, |(t, _)| t == "hotkey_pressed")
             .await
             .expect("pressed event missing");
-        assert_eq!(press.1["binding"], "ptt", "daemon keys turns off this field");
+        assert_eq!(
+            press.1["binding"], "ptt",
+            "daemon keys turns off this field"
+        );
 
-        shim.call("hotkey_inject", json!({"binding": "ptt", "state": "released"}))
-            .await
-            .unwrap();
+        shim.call(
+            "hotkey_inject",
+            json!({"binding": "ptt", "state": "released"}),
+        )
+        .await
+        .unwrap();
         let release = wait_for_published(&shim, |(t, _)| t == "hotkey_released")
             .await
             .expect("released event missing");
         assert_eq!(release.1["binding"], "ptt");
 
         let resp = shim
-            .call("hotkey_inject", json!({"binding": "x", "state": "sideways"}))
+            .call(
+                "hotkey_inject",
+                json!({"binding": "x", "state": "sideways"}),
+            )
             .await
             .unwrap_err();
         assert!(resp.contains("'pressed' or 'released'"), "{resp}");
@@ -614,7 +672,10 @@ mod tests {
         assert_eq!(empty["count"], 0);
 
         let bound = shim
-            .call("hotkey_bind", json!({"id": "ptt", "trigger": "Ctrl+Shift+Space"}))
+            .call(
+                "hotkey_bind",
+                json!({"id": "ptt", "trigger": "Ctrl+Shift+Space"}),
+            )
             .await
             .unwrap();
         assert_eq!(bound["bound"], true);
@@ -628,12 +689,18 @@ mod tests {
         assert_eq!(status["count"], 1);
         assert!(status.get("bindings").is_none(), "status stays lean");
 
-        let unbound = shim.call("hotkey_unbind", json!({"id": "ptt"})).await.unwrap();
+        let unbound = shim
+            .call("hotkey_unbind", json!({"id": "ptt"}))
+            .await
+            .unwrap();
         assert_eq!(unbound["unbound"], true);
 
         // Unbind is idempotent like every other stop primitive in this
         // repo (cf. mic_stop): unknown id → {unbound: false}, no error.
-        let ghost = shim.call("hotkey_unbind", json!({"id": "ghost"})).await.unwrap();
+        let ghost = shim
+            .call("hotkey_unbind", json!({"id": "ghost"}))
+            .await
+            .unwrap();
         assert_eq!(ghost["unbound"], false);
     }
 

@@ -66,7 +66,10 @@ mod tests {
 
     #[test]
     fn codes_are_stable_per_variant() {
-        assert_eq!(SystemError::BadParams("x".into()).code().as_str(), "ERR_SYS_BAD_PARAMS");
+        assert_eq!(
+            SystemError::BadParams("x".into()).code().as_str(),
+            "ERR_SYS_BAD_PARAMS"
+        );
         assert_eq!(
             SystemError::UnknownAction("nope".into()).code().as_str(),
             "ERR_SYS_NOT_FOUND"
@@ -75,13 +78,19 @@ mod tests {
             SystemError::NotSupported("battery").code().as_str(),
             "ERR_SYS_NOT_SUPPORTED"
         );
-        assert_eq!(SystemError::Backend("boom".into()).code().as_str(), "ERR_SYS_BACKEND");
+        assert_eq!(
+            SystemError::Backend("boom".into()).code().as_str(),
+            "ERR_SYS_BACKEND"
+        );
     }
 
     #[test]
     fn display_carries_code_and_detail() {
         let e = SystemError::NotSupported("battery");
-        assert_eq!(e.to_string(), "ERR_SYS_NOT_SUPPORTED: battery is not available on this system");
+        assert_eq!(
+            e.to_string(),
+            "ERR_SYS_NOT_SUPPORTED: battery is not available on this system"
+        );
 
         let e = SystemError::UnknownAction("foo".to_string());
         assert_eq!(e.to_string(), "ERR_SYS_NOT_FOUND: unknown action 'foo'");

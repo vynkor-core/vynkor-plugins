@@ -188,7 +188,9 @@ mod tests {
     fn resolve_rejects_relative_paths() {
         let dir = tempfile::tempdir().unwrap();
         let sandbox = Sandbox::from_raw_roots(&[dir.path().display().to_string()]);
-        let err = sandbox.resolve(Path::new("some/relative/path")).unwrap_err();
+        let err = sandbox
+            .resolve(Path::new("some/relative/path"))
+            .unwrap_err();
         assert!(err.contains("ERR_FILES_PATH_MUST_BE_ABSOLUTE"), "{err}");
     }
 

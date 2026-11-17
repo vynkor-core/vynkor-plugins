@@ -23,11 +23,9 @@ impl Target {
     pub fn from_params(params: &Value, player: Option<String>) -> Result<Self, String> {
         let stream = match params.get("stream") {
             None | Some(Value::Null) => None,
-            Some(v) => Some(
-                v.as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or("ERR_MEDIA_BAD_PARAMS: stream must be a stream id (integer) from media_streams")?,
-            ),
+            Some(v) => Some(v.as_u64().and_then(|n| u32::try_from(n).ok()).ok_or(
+                "ERR_MEDIA_BAD_PARAMS: stream must be a stream id (integer) from media_streams",
+            )?),
         };
         let app = match params.get("app") {
             None | Some(Value::Null) => None,
@@ -36,7 +34,11 @@ impl Target {
                 _ => return Err("ERR_MEDIA_BAD_PARAMS: app must be a non-empty string".into()),
             },
         };
-        Ok(Self { stream, app, player })
+        Ok(Self {
+            stream,
+            app,
+            player,
+        })
     }
 }
 
@@ -45,7 +47,10 @@ fn player_streams<'a>(snap: &'a Snapshot, player: &str, pid: Option<u32>) -> Vec
     streams::streams_for_player(&snap.streams, player, pid, &streams::proc_parent)
 }
 
-async fn select<'a>(snap: &'a Snapshot, target: &Target) -> Result<(Vec<&'a AudioStream>, Option<String>), String> {
+async fn select<'a>(
+    snap: &'a Snapshot,
+    target: &Target,
+) -> Result<(Vec<&'a AudioStream>, Option<String>), String> {
     if let Some(id) = target.stream {
         let s = snap
             .streams
@@ -59,7 +64,10 @@ async fn select<'a>(snap: &'a Snapshot, target: &Target) -> Result<(Vec<&'a Audi
         if hits.is_empty() {
             return Err(format!(
                 "ERR_MEDIA_NO_STREAM: no audio stream for app '{app}' (have: {:?})",
-                snap.streams.iter().map(|s| s.app.as_str()).collect::<Vec<_>>()
+                snap.streams
+                    .iter()
+                    .map(|s| s.app.as_str())
+                    .collect::<Vec<_>>()
             ));
         }
         return Ok((hits, None));
@@ -89,7 +97,12 @@ fn describe(s: &AudioStream) -> Value {
 /// server actually applied, not what was asked.
 async fn after(st: &Streams, ids: &[u32], player: Option<String>) -> Result<Value, String> {
     let snap = st.snapshot().await?;
-    let streams: Vec<Value> = snap.streams.iter().filter(|s| ids.contains(&s.id)).map(describe).collect();
+    let streams: Vec<Value> = snap
+        .streams
+        .iter()
+        .filter(|s| ids.contains(&s.id))
+        .map(describe)
+        .collect();
     let mut out = json!({ "ok": true, "streams": streams });
     if let Some(p) = player {
         out["player"] = json!(p);
@@ -149,7 +162,11 @@ pub async fn set_mute(target: &Target, mode: MuteMode) -> Result<Value, String> 
     // leave a mixed state.
     let mode = match mode {
         MuteMode::Toggle if hits.len() > 1 => {
-            if hits.iter().any(|s| !s.muted) { MuteMode::On } else { MuteMode::Off }
+            if hits.iter().any(|s| !s.muted) {
+                MuteMode::On
+            } else {
+                MuteMode::Off
+            }
         }
         m => m,
     };
@@ -178,7 +195,9 @@ pub async fn move_to(target: &Target, sink: &str) -> Result<Value, String> {
 /// `stream` block for `media_status`: the player's streams, or `null` when
 /// it has none / audio tools are unavailable. Never fails the status call.
 pub async fn status_streams(player: &str) -> Value {
-    let Ok(snap) = Streams::real().snapshot().await else { return Value::Null };
+    let Ok(snap) = Streams::real().snapshot().await else {
+        return Value::Null;
+    };
     let pid = mpris::player_pid(player).await.ok();
     let hits = player_streams(&snap, player, pid);
     if hits.is_empty() {
@@ -191,7 +210,9 @@ pub async fn status_streams(player: &str) -> Value {
 /// players. Players without a matching stream are left out.
 pub async fn audible_map(players: &[String]) -> HashMap<String, bool> {
     let mut out = HashMap::new();
-    let Ok(snap) = Streams::real().snapshot().await else { return out };
+    let Ok(snap) = Streams::real().snapshot().await else {
+        return out;
+    };
     for p in players {
         let pid = mpris::player_pid(p).await.ok();
         let hits = player_streams(&snap, p, pid);
@@ -208,13 +229,26 @@ mod tests {
 
     #[test]
     fn target_parses_all_selectors() {
-        let t = Target::from_params(&json!({"stream": 78, "app": " Firefox "}), Some("spotify".into())).unwrap();
-        assert_eq!(t, Target { stream: Some(78), app: Some("Firefox".into()), player: Some("spotify".into()) });
+        let t = Target::from_params(
+            &json!({"stream": 78, "app": " Firefox "}),
+            Some("spotify".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            t,
+            Target {
+                stream: Some(78),
+                app: Some("Firefox".into()),
+                player: Some("spotify".into())
+            }
+        );
     }
 
     #[test]
     fn target_rejects_bad_types() {
-        assert!(Target::from_params(&json!({"stream": "78"}), None).unwrap_err().starts_with("ERR_MEDIA_BAD_PARAMS"));
+        assert!(Target::from_params(&json!({"stream": "78"}), None)
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_BAD_PARAMS"));
         assert!(Target::from_params(&json!({"stream": -1}), None).is_err());
         assert!(Target::from_params(&json!({"app": ""}), None).is_err());
         assert!(Target::from_params(&json!({"app": 3}), None).is_err());
@@ -222,20 +256,55 @@ mod tests {
 
     #[test]
     fn target_empty_is_active_player() {
-        assert_eq!(Target::from_params(&json!({"stream": null}), None).unwrap(), Target::default());
+        assert_eq!(
+            Target::from_params(&json!({"stream": null}), None).unwrap(),
+            Target::default()
+        );
     }
 
     #[tokio::test]
     async fn select_by_stream_and_app_needs_no_dbus() {
         let snap = streams::parse_pw_dump(include_str!("testdata/pw-dump.json")).unwrap();
-        let (hits, player) = select(&snap, &Target { stream: Some(78), ..Default::default() }).await.unwrap();
+        let (hits, player) = select(
+            &snap,
+            &Target {
+                stream: Some(78),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(hits[0].app, "Spotify");
         assert!(player.is_none());
-        let (hits, _) = select(&snap, &Target { app: Some("music player".into()), ..Default::default() }).await.unwrap();
+        let (hits, _) = select(
+            &snap,
+            &Target {
+                app: Some("music player".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(hits[0].id, 73);
-        let err = select(&snap, &Target { stream: Some(1), ..Default::default() }).await.unwrap_err();
+        let err = select(
+            &snap,
+            &Target {
+                stream: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.starts_with("ERR_MEDIA_NO_STREAM"), "{err}");
-        let err = select(&snap, &Target { app: Some("vlc".into()), ..Default::default() }).await.unwrap_err();
+        let err = select(
+            &snap,
+            &Target {
+                app: Some("vlc".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("Spotify"), "error lists available apps: {err}");
     }
 }

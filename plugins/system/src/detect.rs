@@ -103,7 +103,10 @@ async fn detect_volume(runner: SharedRunner) -> Option<Arc<dyn Volume>> {
 }
 
 async fn probe(runner: &dyn CommandRunner, program: &str, args: &[&str]) -> bool {
-    !matches!(runner.run(program, args).await, Err(RunnerError::NotFound(_)))
+    !matches!(
+        runner.run(program, args).await,
+        Err(RunnerError::NotFound(_))
+    )
 }
 
 /// Session lock: ScreenSaver → loginctl chain on Linux (always present —
@@ -114,7 +117,10 @@ async fn detect_lock(
     bus: Option<&SystemBus>,
 ) -> Option<Arc<dyn crate::backends::SessionLock>> {
     let conn = bus?.0.clone();
-    Some(Arc::new(crate::lock::SessionBusLock::new(conn, Arc::clone(runner))))
+    Some(Arc::new(crate::lock::SessionBusLock::new(
+        conn,
+        Arc::clone(runner),
+    )))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -153,7 +159,10 @@ mod tests {
 
     impl FakeRunner {
         fn new(present: &[&'static str]) -> Self {
-            Self { present: present.iter().copied().collect(), log: Mutex::new(Vec::new()) }
+            Self {
+                present: present.iter().copied().collect(),
+                log: Mutex::new(Vec::new()),
+            }
         }
 
         fn ran(&self) -> Vec<String> {
@@ -166,7 +175,11 @@ mod tests {
         async fn run(&self, program: &str, _args: &[&str]) -> RunResult {
             self.log.lock().expect("log lock").push(program.to_string());
             if self.present.contains(program) {
-                Ok(RunOutcome { ok: true, stdout: "version 1\n".into(), stderr: String::new() })
+                Ok(RunOutcome {
+                    ok: true,
+                    stdout: "version 1\n".into(),
+                    stderr: String::new(),
+                })
             } else {
                 Err(RunnerError::NotFound(program.to_string()))
             }

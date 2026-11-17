@@ -36,7 +36,9 @@ pub fn sample_now(id: String, timestamp_ms: i64) -> Sample {
 }
 
 fn sample_cpu_mem() -> (Option<f64>, Option<u64>, Option<u64>, Option<f64>) {
-    let cpu = fs::read_to_string("/proc/loadavg").ok().and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
+    let cpu = fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
     let meminfo = fs::read_to_string("/proc/meminfo").ok();
     let (total, avail) = if let Some(text) = meminfo {
         let mut total = None;
@@ -49,7 +51,9 @@ fn sample_cpu_mem() -> (Option<f64>, Option<u64>, Option<u64>, Option<f64>) {
             }
         }
         (total, avail)
-    } else { (None, None) };
+    } else {
+        (None, None)
+    };
     let used_percent = match (total, avail) {
         (Some(t), Some(a)) if t > 0 => Some(((t - a) as f64 / t as f64) * 100.0),
         _ => None,
@@ -63,11 +67,17 @@ fn sample_disk() -> (Option<u64>, Option<u64>, Option<f64>) {
     let cstr = std::ffi::CString::new(path).unwrap();
     let mut stat: libc_statvfs = unsafe { std::mem::zeroed() };
     let ret = unsafe { statvfs(cstr.as_ptr(), &mut stat as *mut _) };
-    if ret != 0 { return (None, None, None); }
+    if ret != 0 {
+        return (None, None, None);
+    }
     let bsize = stat.f_bsize as u64;
     let total = stat.f_blocks as u64 * bsize;
     let avail = stat.f_bavail as u64 * bsize;
-    let used_percent = if total > 0 { Some(((total - avail) as f64 / total as f64)*100.0) } else { None };
+    let used_percent = if total > 0 {
+        Some(((total - avail) as f64 / total as f64) * 100.0)
+    } else {
+        None
+    };
     (Some(total), Some(avail), used_percent)
 }
 
@@ -86,7 +96,9 @@ struct libc_statvfs {
     f_namemax: u64,
     _pad: [u64; 6],
 }
-extern "C" { fn statvfs(path: *const std::os::raw::c_char, buf: *mut libc_statvfs) -> i32; }
+extern "C" {
+    fn statvfs(path: *const std::os::raw::c_char, buf: *mut libc_statvfs) -> i32;
+}
 
 fn sample_battery() -> (Option<u8>, Option<bool>) {
     // try /sys/class/power_supply/BAT*/capacity and status
@@ -97,8 +109,12 @@ fn sample_battery() -> (Option<u8>, Option<bool>) {
             let p = entry.path();
             let cap_path = p.join("capacity");
             if cap_path.exists() {
-                let cap = fs::read_to_string(&cap_path).ok().and_then(|s| s.trim().parse::<u8>().ok());
-                let charging = fs::read_to_string(p.join("status")).ok().map(|s| s.trim().to_lowercase() == "charging");
+                let cap = fs::read_to_string(&cap_path)
+                    .ok()
+                    .and_then(|s| s.trim().parse::<u8>().ok());
+                let charging = fs::read_to_string(p.join("status"))
+                    .ok()
+                    .map(|s| s.trim().to_lowercase() == "charging");
                 return (cap, charging);
             }
         }

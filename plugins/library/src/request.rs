@@ -2,11 +2,27 @@ use serde::Deserialize;
 
 #[derive(Debug)]
 pub enum LibraryRequest {
-    Scan { roots: Option<Vec<String>>, force: bool },
-    Search { query: Option<String>, kind: String, limit: usize, offset: usize },
-    Get { id: String },
-    Random { kind: String, count: usize },
-    Recent { kind: String, limit: usize },
+    Scan {
+        roots: Option<Vec<String>>,
+        force: bool,
+    },
+    Search {
+        query: Option<String>,
+        kind: String,
+        limit: usize,
+        offset: usize,
+    },
+    Get {
+        id: String,
+    },
+    Random {
+        kind: String,
+        count: usize,
+    },
+    Recent {
+        kind: String,
+        limit: usize,
+    },
     Stats,
 }
 
@@ -78,7 +94,11 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<LibraryRequest,
             Ok(LibraryRequest::Search {
                 query: p.query.and_then(|q| {
                     let t = q.trim().to_string();
-                    if t.is_empty() { None } else { Some(t) }
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
                 }),
                 kind: normalize_kind(p.kind),
                 limit,
@@ -91,7 +111,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<LibraryRequest,
             if p.id.trim().is_empty() {
                 return Err("params.id must not be empty".into());
             }
-            Ok(LibraryRequest::Get { id: p.id.trim().to_string() })
+            Ok(LibraryRequest::Get {
+                id: p.id.trim().to_string(),
+            })
         }
         "library_random" => {
             let p: RandomParams = serde_json::from_slice(params_json)

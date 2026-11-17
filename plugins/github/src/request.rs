@@ -2,10 +2,30 @@ use serde::Deserialize;
 
 #[derive(Debug)]
 pub enum GithubRequest {
-    ListIssues { repo: String, state: String, limit: u32, pat_env: Option<String> },
-    CreateIssue { repo: String, title: String, body: Option<String>, pat_env: Option<String> },
-    ListPrs { repo: String, state: String, limit: u32, pat_env: Option<String> },
-    ListRuns { repo: String, branch: Option<String>, limit: u32, pat_env: Option<String> },
+    ListIssues {
+        repo: String,
+        state: String,
+        limit: u32,
+        pat_env: Option<String>,
+    },
+    CreateIssue {
+        repo: String,
+        title: String,
+        body: Option<String>,
+        pat_env: Option<String>,
+    },
+    ListPrs {
+        repo: String,
+        state: String,
+        limit: u32,
+        pat_env: Option<String>,
+    },
+    ListRuns {
+        repo: String,
+        branch: Option<String>,
+        limit: u32,
+        pat_env: Option<String>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -106,7 +126,11 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<GithubRequest, 
                 repo: validate_repo(&p.repo)?,
                 branch: p.branch.and_then(|b| {
                     let t = b.trim().to_string();
-                    if t.is_empty() { None } else { Some(t) }
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
                 }),
                 limit: p.limit.unwrap_or(10).clamp(1, 100),
                 pat_env: p.pat_env,
@@ -123,7 +147,9 @@ mod tests {
     fn list_issues_defaults() {
         let r = parse_request("gh_list_issues", br#"{"repo":"a/b"}"#).unwrap();
         match r {
-            GithubRequest::ListIssues { repo, state, limit, .. } => {
+            GithubRequest::ListIssues {
+                repo, state, limit, ..
+            } => {
                 assert_eq!(repo, "a/b");
                 assert_eq!(state, "open");
                 assert_eq!(limit, 20);

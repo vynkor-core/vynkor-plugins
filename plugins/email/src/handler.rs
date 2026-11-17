@@ -54,8 +54,7 @@ fn smtp_stub_enabled() -> bool {
 }
 
 fn imap_stub_enabled() -> bool {
-    std::env::var(IMAP_STUB_ENV).as_deref() == Ok("true")
-        || smtp_stub_enabled()
+    std::env::var(IMAP_STUB_ENV).as_deref() == Ok("true") || smtp_stub_enabled()
 }
 
 /// Build the `lettre` message from parsed params. `lettre`'s `Address` parser
@@ -115,15 +114,21 @@ fn build_message(params: &EmailSendParams) -> Result<lettre::Message, String> {
     } else {
         use lettre::message::{Attachment, MultiPart, SinglePart};
 
-        let mut multipart = MultiPart::mixed().singlepart(SinglePart::builder().header(content_type).body(params.body.clone()));
+        let mut multipart = MultiPart::mixed().singlepart(
+            SinglePart::builder()
+                .header(content_type)
+                .body(params.body.clone()),
+        );
         for att in &params.attachments {
-            let mime: lettre::message::header::ContentType = att
-                .content_type
-                .parse()
-                .map_err(|e| format!("attachment '{}' has invalid content_type: {e}", att.filename))?;
-            multipart = multipart.singlepart(
-                Attachment::new(att.filename.clone()).body(att.data.clone(), mime),
-            );
+            let mime: lettre::message::header::ContentType =
+                att.content_type.parse().map_err(|e| {
+                    format!(
+                        "attachment '{}' has invalid content_type: {e}",
+                        att.filename
+                    )
+                })?;
+            multipart = multipart
+                .singlepart(Attachment::new(att.filename.clone()).body(att.data.clone(), mime));
         }
 
         builder
@@ -322,7 +327,10 @@ mod tests {
         let mut params = base_params();
         params.cc = vec!["cc1@example.com".to_string(), "cc2@example.com".to_string()];
         let raw = formatted(&params);
-        assert!(raw.contains("Cc: cc1@example.com, cc2@example.com"), "raw was: {raw}");
+        assert!(
+            raw.contains("Cc: cc1@example.com, cc2@example.com"),
+            "raw was: {raw}"
+        );
     }
 
     #[test]
@@ -340,7 +348,10 @@ mod tests {
         let mut params = base_params();
         params.reply_to = Some("reply@example.com".to_string());
         let raw = formatted(&params);
-        assert!(raw.contains("Reply-To: reply@example.com"), "raw was: {raw}");
+        assert!(
+            raw.contains("Reply-To: reply@example.com"),
+            "raw was: {raw}"
+        );
     }
 
     #[test]
@@ -485,7 +496,11 @@ fn fetch_via_imap_sync(
                     .unwrap_or_default();
                 (from, subject, date)
             } else {
-                ("unknown@example.com".to_string(), String::new(), String::new())
+                (
+                    "unknown@example.com".to_string(),
+                    String::new(),
+                    String::new(),
+                )
             };
             emails.push(serde_json::json!({
                 "uid": uid,

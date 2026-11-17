@@ -57,7 +57,10 @@ impl Spawner for RealSpawner {
     async fn run_capturing(&self, bin: &str, args: &[String]) -> Result<(i32, String), String> {
         let mut cmd = Command::new(bin);
         cmd.args(args).stdin(Stdio::null());
-        let output = cmd.output().await.map_err(|e| not_found_or_spawn_failed(bin, e))?;
+        let output = cmd
+            .output()
+            .await
+            .map_err(|e| not_found_or_spawn_failed(bin, e))?;
         let code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         Ok((code, stdout))
@@ -118,11 +121,17 @@ mod fake {
         }
 
         pub fn allow_detached(&self, bin: &str) {
-            self.detached_ok.lock().unwrap().insert(bin.to_string(), true);
+            self.detached_ok
+                .lock()
+                .unwrap()
+                .insert(bin.to_string(), true);
         }
 
         pub fn set_capturing(&self, bin: &str, code: i32, stdout: &str) {
-            self.capturing.lock().unwrap().insert(bin.to_string(), (code, stdout.to_string()));
+            self.capturing
+                .lock()
+                .unwrap()
+                .insert(bin.to_string(), (code, stdout.to_string()));
         }
     }
 
@@ -151,22 +160,39 @@ mod fake {
     #[async_trait]
     impl Spawner for FakeSpawner {
         async fn run_detached(&self, bin: &str, args: &[String]) -> Result<BoxedProcess, String> {
-            self.detached_calls.lock().unwrap().push((bin.to_string(), args.to_vec()));
-            if self.detached_ok.lock().unwrap().get(bin).copied().unwrap_or(false) {
+            self.detached_calls
+                .lock()
+                .unwrap()
+                .push((bin.to_string(), args.to_vec()));
+            if self
+                .detached_ok
+                .lock()
+                .unwrap()
+                .get(bin)
+                .copied()
+                .unwrap_or(false)
+            {
                 Ok(Box::new(FakeProcess { exited: false }))
             } else {
-                Err(format!("ERR_CAPTURE_PROVIDER_MISSING: binary '{bin}' not found on PATH"))
+                Err(format!(
+                    "ERR_CAPTURE_PROVIDER_MISSING: binary '{bin}' not found on PATH"
+                ))
             }
         }
 
         async fn run_capturing(&self, bin: &str, args: &[String]) -> Result<(i32, String), String> {
-            self.capturing_calls.lock().unwrap().push((bin.to_string(), args.to_vec()));
+            self.capturing_calls
+                .lock()
+                .unwrap()
+                .push((bin.to_string(), args.to_vec()));
             self.capturing
                 .lock()
                 .unwrap()
                 .get(bin)
                 .cloned()
-                .ok_or_else(|| format!("ERR_CAPTURE_PROVIDER_MISSING: binary '{bin}' not found on PATH"))
+                .ok_or_else(|| {
+                    format!("ERR_CAPTURE_PROVIDER_MISSING: binary '{bin}' not found on PATH")
+                })
         }
     }
 }
@@ -178,7 +204,10 @@ mod tests {
     #[tokio::test]
     async fn real_spawner_reports_missing_binary() {
         let sp = RealSpawner;
-        let err = sp.run_detached("definitely-not-a-real-binary-xyz123", &[]).await.unwrap_err();
+        let err = sp
+            .run_detached("definitely-not-a-real-binary-xyz123", &[])
+            .await
+            .unwrap_err();
         assert!(err.contains("ERR_CAPTURE_PROVIDER_MISSING"), "{err}");
     }
 

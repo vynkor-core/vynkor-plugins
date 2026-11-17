@@ -50,10 +50,13 @@ impl Config {
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
-        let data_dir = get("CHATS_DATA_DIR")
+        // the kernel grants every plugin its own dir as VYN_DATA_DIR
+        let data_dir = ["CHATS_DATA_DIR", "VYN_DATA_DIR"]
+            .iter()
+            .filter_map(|k| get(k))
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .ok_or("CHATS_DATA_DIR is required")?;
+            .find(|s| !s.is_empty())
+            .ok_or("CHATS_DATA_DIR (or the kernel's VYN_DATA_DIR) is required")?;
         fn num<T: std::str::FromStr + PartialOrd + Default>(
             get: &impl Fn(&str) -> Option<String>,
             key: &str,
@@ -154,6 +157,19 @@ mod tests {
     fn config_requires_data_dir() {
         assert!(Config::from_lookup(|_| None).is_err());
         assert!(Config::from_lookup(|k| (k == "CHATS_DATA_DIR").then(|| "  ".into())).is_err());
+    }
+
+    #[test]
+    fn the_kernel_data_dir_is_the_fallback() {
+        let c = Config::from_lookup(|k| (k == "VYN_DATA_DIR").then(|| "/k".into())).unwrap();
+        assert_eq!(c.data_dir, std::path::PathBuf::from("/k"));
+        let own = Config::from_lookup(|k| match k {
+            "CHATS_DATA_DIR" => Some("/own".into()),
+            "VYN_DATA_DIR" => Some("/k".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(own.data_dir, std::path::PathBuf::from("/own"));
     }
 
     #[test]

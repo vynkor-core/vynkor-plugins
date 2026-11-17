@@ -24,7 +24,9 @@ pub fn parse(v: &Value) -> Result<Region, CaptureError> {
         Some(Value::String(s)) if s == "full" => return Ok(Region::Full),
         Some(Value::String(s)) if s == "select" => return Ok(Region::Select),
         Some(Value::String(s)) => {
-            return Err(CaptureError::BadParams(format!("unknown region string '{s}'")))
+            return Err(CaptureError::BadParams(format!(
+                "unknown region string '{s}'"
+            )))
         }
         Some(obj) => obj,
     };
@@ -39,9 +41,16 @@ pub fn parse(v: &Value) -> Result<Region, CaptureError> {
     let w = field("w")?;
     let h = field("h")?;
     if w <= 0 || h <= 0 {
-        return Err(CaptureError::BadParams("region.w and region.h must be positive".into()));
+        return Err(CaptureError::BadParams(
+            "region.w and region.h must be positive".into(),
+        ));
     }
-    Ok(Region::Rect { x: x as i32, y: y as i32, w: w as u32, h: h as u32 })
+    Ok(Region::Rect {
+        x: x as i32,
+        y: y as i32,
+        w: w as u32,
+        h: h as u32,
+    })
 }
 
 /// One screenshot candidate: binary name + argv builder given the target
@@ -58,9 +67,11 @@ struct Candidate {
 fn grim_args(region: Region, path: &str) -> Option<Vec<String>> {
     match region {
         Region::Full => Some(vec![path.to_string()]),
-        Region::Rect { x, y, w, h } => {
-            Some(vec!["-g".to_string(), format!("{x},{y} {w}x{h}"), path.to_string()])
-        }
+        Region::Rect { x, y, w, h } => Some(vec![
+            "-g".to_string(),
+            format!("{x},{y} {w}x{h}"),
+            path.to_string(),
+        ]),
         Region::Select => None, // built specially: slurp output feeds -g
     }
 }
@@ -75,8 +86,19 @@ fn gnome_screenshot_args(region: Region, path: &str) -> Option<Vec<String>> {
 
 fn spectacle_args(region: Region, path: &str) -> Option<Vec<String>> {
     match region {
-        Region::Full => Some(vec!["-b".into(), "-n".into(), "-o".into(), path.to_string()]),
-        Region::Select => Some(vec!["-b".into(), "-n".into(), "-r".into(), "-o".into(), path.to_string()]),
+        Region::Full => Some(vec![
+            "-b".into(),
+            "-n".into(),
+            "-o".into(),
+            path.to_string(),
+        ]),
+        Region::Select => Some(vec![
+            "-b".into(),
+            "-n".into(),
+            "-r".into(),
+            "-o".into(),
+            path.to_string(),
+        ]),
         Region::Rect { .. } => None,
     }
 }
@@ -85,9 +107,11 @@ fn maim_args(region: Region, path: &str) -> Option<Vec<String>> {
     match region {
         Region::Full => Some(vec![path.to_string()]),
         Region::Select => Some(vec!["-s".into(), path.to_string()]),
-        Region::Rect { x, y, w, h } => {
-            Some(vec!["-g".into(), format!("{w}x{h}+{x}+{y}"), path.to_string()])
-        }
+        Region::Rect { x, y, w, h } => Some(vec![
+            "-g".into(),
+            format!("{w}x{h}+{x}+{y}"),
+            path.to_string(),
+        ]),
     }
 }
 
@@ -102,26 +126,57 @@ fn import_args(region: Region, path: &str) -> Option<Vec<String>> {
     match region {
         Region::Full => Some(vec!["-window".into(), "root".into(), path.to_string()]),
         Region::Select => Some(vec![path.to_string()]), // no -window = interactive crosshair select
-        Region::Rect { x, y, w, h } => {
-            Some(vec!["-window".into(), "root".into(), "-crop".into(), format!("{w}x{h}+{x}+{y}"), path.to_string()])
-        }
+        Region::Rect { x, y, w, h } => Some(vec![
+            "-window".into(),
+            "root".into(),
+            "-crop".into(),
+            format!("{w}x{h}+{x}+{y}"),
+            path.to_string(),
+        ]),
     }
 }
 
 fn candidates_for(session: SessionType) -> &'static [Candidate] {
     match session {
-        SessionType::Wlroots => &[Candidate { bin: "grim", build: grim_args, needs_slurp: true }],
-        SessionType::Gnome => &[Candidate { bin: "gnome-screenshot", build: gnome_screenshot_args, needs_slurp: false }],
-        SessionType::Kde => &[Candidate { bin: "spectacle", build: spectacle_args, needs_slurp: false }],
+        SessionType::Wlroots => &[Candidate {
+            bin: "grim",
+            build: grim_args,
+            needs_slurp: true,
+        }],
+        SessionType::Gnome => &[Candidate {
+            bin: "gnome-screenshot",
+            build: gnome_screenshot_args,
+            needs_slurp: false,
+        }],
+        SessionType::Kde => &[Candidate {
+            bin: "spectacle",
+            build: spectacle_args,
+            needs_slurp: false,
+        }],
         SessionType::X11 | SessionType::Unknown => &[
-            Candidate { bin: "maim", build: maim_args, needs_slurp: false },
-            Candidate { bin: "scrot", build: scrot_args, needs_slurp: false },
-            Candidate { bin: "import", build: import_args, needs_slurp: false },
+            Candidate {
+                bin: "maim",
+                build: maim_args,
+                needs_slurp: false,
+            },
+            Candidate {
+                bin: "scrot",
+                build: scrot_args,
+                needs_slurp: false,
+            },
+            Candidate {
+                bin: "import",
+                build: import_args,
+                needs_slurp: false,
+            },
         ],
     }
 }
 
-pub async fn capture_screenshot(spawner: &dyn Spawner, params: &Value) -> Result<Value, CaptureError> {
+pub async fn capture_screenshot(
+    spawner: &dyn Spawner,
+    params: &Value,
+) -> Result<Value, CaptureError> {
     let region = parse(params)?;
     let ext = "png";
     let filename = screenshot_filename(ext);
@@ -214,7 +269,9 @@ async fn run_candidate(
 /// still succeeds the call) if the file is missing/malformed, e.g. under
 /// a `FakeSpawner` test that never wrote a real file.
 fn image_dimensions_best_effort(path: &std::path::Path) -> (u32, u32) {
-    let Ok(bytes) = std::fs::read(path) else { return (0, 0) };
+    let Ok(bytes) = std::fs::read(path) else {
+        return (0, 0);
+    };
     if bytes.len() < 24 || &bytes[0..8] != b"\x89PNG\r\n\x1a\n" {
         return (0, 0);
     }
@@ -235,38 +292,80 @@ mod tests {
 
     #[test]
     fn parse_select_string() {
-        assert_eq!(parse(&serde_json::json!({"region": "select"})).unwrap(), Region::Select);
+        assert_eq!(
+            parse(&serde_json::json!({"region": "select"})).unwrap(),
+            Region::Select
+        );
     }
 
     #[test]
     fn parse_rect_object() {
-        let r = parse(&serde_json::json!({"region": {"x": 1, "y": 2, "w": 300, "h": 400}})).unwrap();
-        assert_eq!(r, Region::Rect { x: 1, y: 2, w: 300, h: 400 });
+        let r =
+            parse(&serde_json::json!({"region": {"x": 1, "y": 2, "w": 300, "h": 400}})).unwrap();
+        assert_eq!(
+            r,
+            Region::Rect {
+                x: 1,
+                y: 2,
+                w: 300,
+                h: 400
+            }
+        );
     }
 
     #[test]
     fn parse_rejects_zero_size_rect() {
-        let err = parse(&serde_json::json!({"region": {"x": 0, "y": 0, "w": 0, "h": 10}})).unwrap_err();
+        let err =
+            parse(&serde_json::json!({"region": {"x": 0, "y": 0, "w": 0, "h": 10}})).unwrap_err();
         assert!(matches!(err, CaptureError::BadParams(_)));
     }
 
     #[test]
     fn grim_args_full_and_rect() {
-        assert_eq!(grim_args(Region::Full, "/o.png"), Some(vec!["/o.png".to_string()]));
         assert_eq!(
-            grim_args(Region::Rect { x: 1, y: 2, w: 3, h: 4 }, "/o.png"),
-            Some(vec!["-g".to_string(), "1,2 3x4".to_string(), "/o.png".to_string()])
+            grim_args(Region::Full, "/o.png"),
+            Some(vec!["/o.png".to_string()])
+        );
+        assert_eq!(
+            grim_args(
+                Region::Rect {
+                    x: 1,
+                    y: 2,
+                    w: 3,
+                    h: 4
+                },
+                "/o.png"
+            ),
+            Some(vec![
+                "-g".to_string(),
+                "1,2 3x4".to_string(),
+                "/o.png".to_string()
+            ])
         );
     }
 
     #[test]
     fn maim_select_uses_dash_s() {
-        assert_eq!(maim_args(Region::Select, "/o.png"), Some(vec!["-s".to_string(), "/o.png".to_string()]));
+        assert_eq!(
+            maim_args(Region::Select, "/o.png"),
+            Some(vec!["-s".to_string(), "/o.png".to_string()])
+        );
     }
 
     #[test]
     fn gnome_screenshot_has_no_rect_support() {
-        assert_eq!(gnome_screenshot_args(Region::Rect { x: 0, y: 0, w: 1, h: 1 }, "/o.png"), None);
+        assert_eq!(
+            gnome_screenshot_args(
+                Region::Rect {
+                    x: 0,
+                    y: 0,
+                    w: 1,
+                    h: 1
+                },
+                "/o.png"
+            ),
+            None
+        );
     }
 
     /// `detect_session` also branches on `XDG_SESSION_TYPE` and
@@ -290,7 +389,9 @@ mod tests {
         std::env::set_var("DISPLAY", ":0");
         let sp = crate::spawner::FakeSpawner::new();
         sp.set_capturing("scrot", 0, "");
-        let v = capture_screenshot(&sp, &serde_json::json!({})).await.unwrap();
+        let v = capture_screenshot(&sp, &serde_json::json!({}))
+            .await
+            .unwrap();
         assert!(v["path"].as_str().unwrap().ends_with(".png"));
         let calls = sp.capturing_calls.lock().unwrap().clone();
         assert_eq!(calls[0].0, "maim");
@@ -305,7 +406,9 @@ mod tests {
         std::env::set_var("DISPLAY", ":0");
         let sp = crate::spawner::FakeSpawner::new();
         sp.set_capturing("maim", 1, ""); // maim found, but -s was Esc'd -> nonzero exit
-        let err = capture_screenshot(&sp, &serde_json::json!({"region": "select"})).await.unwrap_err();
+        let err = capture_screenshot(&sp, &serde_json::json!({"region": "select"}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CaptureError::Cancelled("maim")), "{err:?}");
         std::env::remove_var("DISPLAY");
     }
@@ -316,7 +419,9 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         clear_session_env();
         let sp = crate::spawner::FakeSpawner::new();
-        let err = capture_screenshot(&sp, &serde_json::json!({})).await.unwrap_err();
+        let err = capture_screenshot(&sp, &serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CaptureError::NotSupported("screenshot")));
     }
 }

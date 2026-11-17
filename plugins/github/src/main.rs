@@ -1,14 +1,21 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use github_plugin::{handle_action, Config, Rpc, RpcCall};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, Pong, PluginManifest};
+use vynkor_sdk::proto::{
+    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, PluginManifest, Pong,
+};
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "github";
 const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
-const ACTIONS: [&str; 4] = ["gh_list_issues", "gh_create_issue", "gh_list_prs", "gh_list_runs"];
+const ACTIONS: [&str; 4] = [
+    "gh_list_issues",
+    "gh_create_issue",
+    "gh_list_prs",
+    "gh_list_runs",
+];
 
 fn manifest() -> PluginManifest {
     PluginManifest {
@@ -26,7 +33,12 @@ fn unix_millis() -> u64 {
         .unwrap_or(0)
 }
 
-fn action_response(action_id: String, status: ActionStatus, data_json: Vec<u8>, error: String) -> Envelope {
+fn action_response(
+    action_id: String,
+    status: ActionStatus,
+    data_json: Vec<u8>,
+    error: String,
+) -> Envelope {
     Envelope {
         payload: Some(envelope::Payload::ActionResponse(ActionResponse {
             action_id,
@@ -40,9 +52,14 @@ fn action_response(action_id: String, status: ActionStatus, data_json: Vec<u8>, 
 
 async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorError> {
     let jwt = std::env::var("VYN_JWT_TOKEN").unwrap_or_default();
-    let ack = client.register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt).await?;
+    let ack = client
+        .register_full(PLUGIN_ID, PLUGIN_VERSION, manifest(), &jwt)
+        .await?;
     if !ack.accepted {
-        return Err(VynkorError::PermissionDenied(format!("rejected: {}", ack.reject_reason)));
+        return Err(VynkorError::PermissionDenied(format!(
+            "rejected: {}",
+            ack.reject_reason
+        )));
     }
     println!("[{PLUGIN_ID}] registered");
     let start = std::time::Instant::now();
@@ -50,7 +67,8 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     let (out_tx, mut out_rx) = mpsc::channel::<Envelope>(64);
     let (rpc_tx, mut rpc_rx) = mpsc::channel::<RpcCall>(64);
     let rpc = Rpc::new(rpc_tx);
-    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> = HashMap::new();
+    let mut pending: HashMap<String, (String, oneshot::Sender<Result<Value, String>>)> =
+        HashMap::new();
     let mut seq: u64 = 0;
     loop {
         tokio::select! {
@@ -134,14 +152,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

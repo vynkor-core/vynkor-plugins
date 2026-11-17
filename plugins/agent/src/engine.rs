@@ -13,12 +13,14 @@ use serde_json::{json, Value};
 
 use crate::llm::{self, Reply};
 use crate::memory;
-use crate::routines;
-use crate::smalltalk;
 use crate::recall::{self, QueryVec};
-use crate::store::{self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR,
-                   STATUS_MAX_STEPS, STATUS_NEEDS_CONFIRMATION};
+use crate::routines;
 use crate::sessions::TraceRec;
+use crate::smalltalk;
+use crate::store::{
+    self, Db, GoalDoc, StepRec, Turn, STATUS_COMPLETED, STATUS_ERROR, STATUS_MAX_STEPS,
+    STATUS_NEEDS_CONFIRMATION,
+};
 use crate::tools::Catalog;
 use crate::watchdog;
 use crate::{Config, Rpc};
@@ -79,7 +81,10 @@ fn embedding_filter_enabled() -> bool {
 const CATALOG_HASH_ID: &str = "__catalog_hash__";
 
 fn embed_hints() -> std::collections::BTreeMap<String, String> {
-    let Some(path) = std::env::var(EMBED_HINTS_FILE_ENV).ok().filter(|p| !p.trim().is_empty()) else {
+    let Some(path) = std::env::var(EMBED_HINTS_FILE_ENV)
+        .ok()
+        .filter(|p| !p.trim().is_empty())
+    else {
         return Default::default();
     };
     match std::fs::read_to_string(&path)
@@ -95,7 +100,10 @@ fn embed_hints() -> std::collections::BTreeMap<String, String> {
 }
 
 /// What a tool is embedded from: name, description and the operator's hint.
-fn embed_text(tool: &crate::tools::ToolSpec, hints: &std::collections::BTreeMap<String, String>) -> String {
+fn embed_text(
+    tool: &crate::tools::ToolSpec,
+    hints: &std::collections::BTreeMap<String, String>,
+) -> String {
     match hints.get(&tool.name).filter(|h| !h.trim().is_empty()) {
         Some(hint) => format!("{} — {} {}", tool.name, tool.description, hint.trim()),
         None => format!("{} — {}", tool.name, tool.description),
@@ -112,7 +120,11 @@ fn catalog_content_hash(catalog: &Catalog) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let hints = embed_hints();
-    let mut texts: Vec<String> = catalog.tools.iter().map(|t| embed_text(t, &hints)).collect();
+    let mut texts: Vec<String> = catalog
+        .tools
+        .iter()
+        .map(|t| embed_text(t, &hints))
+        .collect();
     texts.sort_unstable();
     let mut hasher = DefaultHasher::new();
     texts.hash(&mut hasher);
@@ -122,11 +134,20 @@ fn catalog_content_hash(catalog: &Catalog) -> String {
 async fn ensure_tool_embeddings(rpc: &Rpc, catalog: &Catalog) -> Result<(), String> {
     let expected_hash = catalog_content_hash(catalog);
     let cached_hash = rpc
-        .call("vec_get", json!({"collection": TOOLS_COLLECTION, "id": CATALOG_HASH_ID}), 5000)
+        .call(
+            "vec_get",
+            json!({"collection": TOOLS_COLLECTION, "id": CATALOG_HASH_ID}),
+            5000,
+        )
         .await
         .ok()
         .filter(|v| v.get("found").and_then(Value::as_bool) == Some(true))
-        .and_then(|v| v.get("metadata").and_then(|m| m.get("hash")).and_then(Value::as_str).map(str::to_string));
+        .and_then(|v| {
+            v.get("metadata")
+                .and_then(|m| m.get("hash"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
     if cached_hash.as_deref() == Some(expected_hash.as_str()) {
         return Ok(());
     }
@@ -279,7 +300,8 @@ fn with_small_families(
     for t in &catalog.tools {
         *sizes.entry(family(&t.name)).or_default() += 1;
     }
-    let picked: std::collections::HashSet<String> = hits.iter().map(|h| family(h).to_string()).collect();
+    let picked: std::collections::HashSet<String> =
+        hits.iter().map(|h| family(h).to_string()).collect();
     for t in &catalog.tools {
         let f = family(&t.name);
         if picked.contains(f) && sizes[f] <= SMALL_FAMILY {
@@ -334,7 +356,10 @@ fn suggest_tools<'a>(catalog: &'a Catalog, guess: &str) -> Vec<&'a str> {
             let have = parts(&t.name);
             let hits = wanted
                 .iter()
-                .filter(|w| have.iter().any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str())))
+                .filter(|w| {
+                    have.iter()
+                        .any(|h| h.starts_with(w.as_str()) || w.starts_with(h.as_str()))
+                })
                 .count();
             (hits, t.name.as_str())
         })
@@ -352,7 +377,11 @@ const UNKNOWN_TOOL_LIMIT: usize = 2;
 
 /// Trailing run of `unknown_tool` steps: any other step breaks the streak.
 fn unknown_tool_streak(steps: &[StepRec]) -> usize {
-    steps.iter().rev().take_while(|s| s.kind == "unknown_tool").count()
+    steps
+        .iter()
+        .rev()
+        .take_while(|s| s.kind == "unknown_tool")
+        .count()
 }
 
 /// The ai plugin rejects more than this many native tools.
@@ -374,7 +403,9 @@ fn cap_native_tools(mut catalog: Catalog, goal: &str) -> Catalog {
         .map(|w| w.chars().take(5).collect())
         .collect();
     let score = |t: &crate::tools::ToolSpec| {
-        let hay = format!("{} {}", t.name, t.description).to_lowercase().replace('ё', "е");
+        let hay = format!("{} {}", t.name, t.description)
+            .to_lowercase()
+            .replace('ё', "е");
         stems.iter().filter(|s| hay.contains(s.as_str())).count()
     };
     let before = catalog.tools.len();
@@ -387,13 +418,21 @@ fn cap_native_tools(mut catalog: Catalog, goal: &str) -> Catalog {
 
 /// History as one string for tool filtering (questions and answers).
 fn history_text(history: &[(String, String)]) -> String {
-    history.iter().map(|(q, a)| format!("{q} {a}")).collect::<Vec<_>>().join(" ")
+    history
+        .iter()
+        .map(|(q, a)| format!("{q} {a}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Text the tool filter looks at besides the goal: session history when
 /// there is any, else the caller's `context`.
 fn catalog_hint(doc: &GoalDoc) -> String {
-    if doc.history_hint.is_empty() { doc.context.clone() } else { doc.history_hint.clone() }
+    if doc.history_hint.is_empty() {
+        doc.context.clone()
+    } else {
+        doc.history_hint.clone()
+    }
 }
 
 /// Insert prior (question, answer) pairs between the role message
@@ -408,12 +447,20 @@ fn weave_history(transcript: &mut Vec<Turn>, history: Vec<(String, String)>) {
     let mut woven = Vec::new();
     for (i, (q, a)) in history.into_iter().enumerate() {
         if i == 0 {
-            transcript[0].content =
-                format!("{}\n\n---\n[EARLIER IN THIS CONVERSATION]\n{q}", transcript[0].content);
+            transcript[0].content = format!(
+                "{}\n\n---\n[EARLIER IN THIS CONVERSATION]\n{q}",
+                transcript[0].content
+            );
         } else {
-            woven.push(Turn { role: "user".into(), content: q });
+            woven.push(Turn {
+                role: "user".into(),
+                content: q,
+            });
         }
-        woven.push(Turn { role: "assistant".into(), content: a });
+        woven.push(Turn {
+            role: "assistant".into(),
+            content: a,
+        });
     }
     transcript.splice(1..1, woven);
 }
@@ -422,7 +469,10 @@ pub enum Entry {
     /// Fresh goal: seed the transcript from goal + catalog. `history` is
     /// the session's prior (question, answer) pairs, oldest first; when
     /// non-empty it replaces the caller's `context` (never both).
-    Fresh { history: Vec<(String, String)>, query: Option<QueryVec> },
+    Fresh {
+        history: Vec<(String, String)>,
+        query: Option<QueryVec>,
+    },
     /// Resumed after approval: dispatch the pending confirmation first.
     ApprovedResume,
 }
@@ -443,12 +493,19 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 fn push_turn(doc: &mut GoalDoc, role: &str, content: String) -> Result<(), String> {
-    doc.transcript.push(Turn { role: role.to_string(), content });
+    doc.transcript.push(Turn {
+        role: role.to_string(),
+        content,
+    });
     check_budget(doc)
 }
 
 fn check_budget(doc: &GoalDoc) -> Result<(), String> {
-    let total: usize = doc.transcript.iter().map(|t| t.content.chars().count()).sum();
+    let total: usize = doc
+        .transcript
+        .iter()
+        .map(|t| t.content.chars().count())
+        .sum();
     if total > TRANSCRIPT_MAX_CHARS {
         return Err(format!(
             "transcript budget exceeded ({total} > {TRANSCRIPT_MAX_CHARS} chars); \
@@ -469,7 +526,11 @@ pub(crate) async fn persist(db: &Db, doc: &mut GoalDoc) -> Result<(), String> {
 
 pub(crate) fn next_step(doc: &mut GoalDoc, kind: &str, detail: Value) {
     let n = doc.steps.iter().map(|s| s.n).max().unwrap_or(0) + 1;
-    doc.steps.push(StepRec { n, kind: kind.to_string(), detail });
+    doc.steps.push(StepRec {
+        n,
+        kind: kind.to_string(),
+        detail,
+    });
 }
 
 fn is_retryable_device_error(err: &str) -> bool {
@@ -501,14 +562,24 @@ pub(crate) async fn dispatch_and_observe(
         }
     }
     let (status, body) = match outcome {
-        Ok(v) => ("ok", serde_json::to_string(&v).unwrap_or_else(|_| "{}".into())),
+        Ok(v) => (
+            "ok",
+            serde_json::to_string(&v).unwrap_or_else(|_| "{}".into()),
+        ),
         Err(e) => ("error", e),
     };
     let ok = status == "ok";
     let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    doc.tool_trace.push(TraceRec::new(name, &params, if ok { Ok(&body) } else { Err(&body) }, ms));
-    let observation =
-        truncate_chars(&format!("[TOOL RESULT name={name} status={status}]\n{body}"), OBSERVATION_MAX);
+    doc.tool_trace.push(TraceRec::new(
+        name,
+        &params,
+        if ok { Ok(&body) } else { Err(&body) },
+        ms,
+    ));
+    let observation = truncate_chars(
+        &format!("[TOOL RESULT name={name} status={status}]\n{body}"),
+        OBSERVATION_MAX,
+    );
     push_turn(doc, "user", observation)?;
     next_step(
         doc,
@@ -555,7 +626,10 @@ async fn run_small_talk(db: &Db, rpc: &Rpc, doc: &mut GoalDoc) -> Result<bool, S
         plan = llm::fallback_plan(&plan, &id);
     }
     let transcript = llm::small_talk_messages(&doc.goal, &doc.context);
-    let tag = llm::CallTag { purpose: "small_talk", goal_id: &doc.id };
+    let tag = llm::CallTag {
+        purpose: "small_talk",
+        goal_id: &doc.id,
+    };
     let answer = match llm::chat_with_fallback(rpc, &plan, &transcript, &[], &tag).await {
         Ok(o) => llm::strip_tool_markup(&o.content).trim().to_string(),
         Err(e) => {
@@ -620,12 +694,24 @@ pub async fn run(
             let native_seed = llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
             // A routine that failed its dispatch left [goal, observation]:
             // keep the observation so the model sees why the shortcut failed.
-            let carried: Vec<Turn> = std::mem::take(&mut doc.transcript).into_iter().skip(1).collect();
+            let carried: Vec<Turn> = std::mem::take(&mut doc.transcript)
+                .into_iter()
+                .skip(1)
+                .collect();
             // Session history wins over the caller's `context`: both would
             // carry the same exchanges twice.
-            let context = if history.is_empty() { doc.context.as_str() } else { "" };
-            doc.transcript =
-                llm::opening_messages_with_full(&doc.goal, context, llm_catalog, dispatch_catalog, native_seed);
+            let context = if history.is_empty() {
+                doc.context.as_str()
+            } else {
+                ""
+            };
+            doc.transcript = llm::opening_messages_with_full(
+                &doc.goal,
+                context,
+                llm_catalog,
+                dispatch_catalog,
+                native_seed,
+            );
             weave_history(&mut doc.transcript, history);
             let (facts, past) = tokio::join!(
                 async {
@@ -644,8 +730,10 @@ pub async fn run(
                     }
                 }
             );
-            let blocks: Vec<String> =
-                [facts, recall::format_past_sessions(&past)].into_iter().flatten().collect();
+            let blocks: Vec<String> = [facts, recall::format_past_sessions(&past)]
+                .into_iter()
+                .flatten()
+                .collect();
             if !blocks.is_empty() {
                 // Into the goal message (the last one), never the role message
                 // and never a message of its own: roles keep alternating.
@@ -658,7 +746,10 @@ pub async fn run(
             for turn in carried {
                 push_turn(doc, &turn.role, turn.content)?;
             }
-            eprintln!("{}", llm::prompt_breakdown(&doc.id, llm_catalog, dispatch_catalog, &doc.transcript));
+            eprintln!(
+                "{}",
+                llm::prompt_breakdown(&doc.id, llm_catalog, dispatch_catalog, &doc.transcript)
+            );
             persist(db, doc).await?;
         }
         Entry::ApprovedResume => {
@@ -669,13 +760,21 @@ pub async fn run(
             doc.status = store::STATUS_RUNNING.to_string();
             if let Some(s) = spec {
                 if let Err(e) = check_quota(doc, s) {
-                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&e), 0));
-                    push_turn(doc, "user", format!("[TOOL RESULT name={} status=error]\n{e}", name))?;
+                    doc.tool_trace
+                        .push(TraceRec::new(&name, &params, Err(&e), 0));
+                    push_turn(
+                        doc,
+                        "user",
+                        format!("[TOOL RESULT name={} status=error]\n{e}", name),
+                    )?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": e}));
                     persist(db, doc).await?;
                     return Ok(());
                 }
-                doc.tool_counts.entry(name.clone()).and_modify(|c| *c += 1).or_insert(1);
+                doc.tool_counts
+                    .entry(name.clone())
+                    .and_modify(|c| *c += 1)
+                    .or_insert(1);
                 doc.tool_last_ms.insert(name.clone(), store::now_ms());
             }
             dispatch_and_observe(rpc, doc, timeout, &name, params).await?;
@@ -694,14 +793,18 @@ pub async fn run(
         // Out of guesses: no tools param, so neither a retry nor the text
         // protocol fallback hands the model another catalog to guess from.
         let tools_off = unknown_tool_streak(&doc.steps) >= UNKNOWN_TOOL_LIMIT;
-        let want_native = !tools_off && llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
+        let want_native =
+            !tools_off && llm::want_native_tools(llm_catalog, doc.native_tools_disabled);
         let tools = if want_native {
             llm::catalog_tools_param(llm_catalog)
         } else {
             Vec::new()
         };
 
-        let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+        let tag = llm::CallTag {
+            purpose: "goal_step",
+            goal_id: &doc.id,
+        };
         let outcome = llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &tools, &tag).await;
         let outcome = match outcome {
             Ok(o) => o,
@@ -716,7 +819,10 @@ pub async fn run(
                 // retry, so the model isn't left with neither channel
                 // informed for the rest of the goal.
                 push_turn(doc, "user", llm::degraded_tool_catalog_block(llm_catalog))?;
-                let tag = llm::CallTag { purpose: "goal_step", goal_id: &doc.id };
+                let tag = llm::CallTag {
+                    purpose: "goal_step",
+                    goal_id: &doc.id,
+                };
                 match llm::chat_with_fallback(rpc, &doc.llm, &doc.transcript, &[], &tag).await {
                     Ok(o) => o,
                     Err(e2) => {
@@ -744,7 +850,9 @@ pub async fn run(
         match llm::outcome_to_reply(&outcome) {
             Reply::Final(answer) => {
                 // LLM calls = steps so far + this final turn
-                if let Some(alert) = watchdog::observe_goal(doc.steps.len() as u64 + 1, store::now_ms()) {
+                if let Some(alert) =
+                    watchdog::observe_goal(doc.steps.len() as u64 + 1, store::now_ms())
+                {
                     raise_token_alert(rpc, alert);
                 }
                 doc.status = STATUS_COMPLETED.to_string();
@@ -755,7 +863,10 @@ pub async fn run(
                 // knowledge — extracting from it stored "ESP offline" as a fact
                 // Same for a goal that found no tool ("no disk tool" is a
                 // gap in the catalog, not a fact about the user).
-                let failed_tool = doc.steps.iter().any(|s| s.kind == "tool_error" || s.kind == "unknown_tool");
+                let failed_tool = doc
+                    .steps
+                    .iter()
+                    .any(|s| s.kind == "tool_error" || s.kind == "unknown_tool");
                 if memory::enabled() && !failed_tool {
                     // Detached: extraction is one extra LLM round-trip and
                     // must not sit between the finished goal and its caller.
@@ -765,7 +876,15 @@ pub async fn run(
                     let session_id = doc.session_id.clone();
                     let goal = doc.goal.clone();
                     tokio::spawn(async move {
-                        memory::remember(&rpc, &plan, &goal_id, session_id.as_deref(), &goal, &answer).await;
+                        memory::remember(
+                            &rpc,
+                            &plan,
+                            &goal_id,
+                            session_id.as_deref(),
+                            &goal,
+                            &answer,
+                        )
+                        .await;
                     });
                 }
                 return Ok(());
@@ -775,9 +894,12 @@ pub async fn run(
                     if tools_off {
                         // Asked to answer in words and still guessing: stop
                         // here rather than spend steps up to `max_steps`.
-                        let answer = "Не нашёл подходящего инструмента для этой задачи.".to_string();
-                        let msg = format!("unknown tool \"{name}\": not in the operator's tool catalog");
-                        doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
+                        let answer =
+                            "Не нашёл подходящего инструмента для этой задачи.".to_string();
+                        let msg =
+                            format!("unknown tool \"{name}\": not in the operator's tool catalog");
+                        doc.tool_trace
+                            .push(TraceRec::new(&name, &params, Err(&msg), 0));
                         next_step(doc, "unknown_tool", json!({"tool": name}));
                         doc.status = STATUS_COMPLETED.to_string();
                         doc.final_answer = answer;
@@ -804,7 +926,8 @@ pub async fn run(
                     } else {
                         msg
                     };
-                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
+                    doc.tool_trace
+                        .push(TraceRec::new(&name, &params, Err(&msg), 0));
                     push_turn(
                         doc,
                         "user",
@@ -821,7 +944,11 @@ pub async fn run(
                         "{name}: missing required params {}; check the tool's schema or use another tool",
                         missing.join(", ")
                     );
-                    push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
+                    push_turn(
+                        doc,
+                        "user",
+                        format!("[TOOL RESULT name={name} status=error]\n{msg}"),
+                    )?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
                     persist(db, doc).await?;
                     continue;
@@ -836,13 +963,21 @@ pub async fn run(
                 }
                 if let Err(quota_err) = check_quota(doc, spec) {
                     let msg = quota_err.clone();
-                    doc.tool_trace.push(TraceRec::new(&name, &params, Err(&msg), 0));
-                    push_turn(doc, "user", format!("[TOOL RESULT name={name} status=error]\n{msg}"))?;
+                    doc.tool_trace
+                        .push(TraceRec::new(&name, &params, Err(&msg), 0));
+                    push_turn(
+                        doc,
+                        "user",
+                        format!("[TOOL RESULT name={name} status=error]\n{msg}"),
+                    )?;
                     next_step(doc, "tool_error", json!({"tool": name, "error": msg}));
                     persist(db, doc).await?;
                     continue;
                 }
-                doc.tool_counts.entry(name.clone()).and_modify(|c| *c += 1).or_insert(1);
+                doc.tool_counts
+                    .entry(name.clone())
+                    .and_modify(|c| *c += 1)
+                    .or_insert(1);
                 doc.tool_last_ms.insert(name.clone(), store::now_ms());
                 dispatch_and_observe(rpc, doc, spec.timeout_ms, &name, params).await?;
                 persist(db, doc).await?;
@@ -858,7 +993,11 @@ mod tests {
     fn steps(kinds: &[&str]) -> Vec<StepRec> {
         let mut out = Vec::new();
         for (i, k) in kinds.iter().enumerate() {
-            out.push(StepRec { n: i as u32 + 1, kind: k.to_string(), detail: json!({}) });
+            out.push(StepRec {
+                n: i as u32 + 1,
+                kind: k.to_string(),
+                detail: json!({}),
+            });
         }
         out
     }
@@ -867,48 +1006,82 @@ mod tests {
     fn embed_text_appends_the_hint_and_ignores_blank_ones() {
         let t = spec("clipboard_read", "read the clipboard");
         let mut hints = std::collections::BTreeMap::new();
-        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
+        assert_eq!(
+            embed_text(&t, &hints),
+            format!("clipboard_read — {}", t.description)
+        );
         hints.insert("clipboard_read".to_string(), "  буфер обмена  ".to_string());
         assert!(embed_text(&t, &hints).ends_with(" буфер обмена"));
         hints.insert("clipboard_read".to_string(), "   ".to_string());
-        assert_eq!(embed_text(&t, &hints), format!("clipboard_read — {}", t.description));
+        assert_eq!(
+            embed_text(&t, &hints),
+            format!("clipboard_read — {}", t.description)
+        );
     }
 
     #[test]
     fn small_families_come_whole_big_ones_do_not() {
-        let mut tools = vec![spec("launch", ""), spec("launch_list", ""), spec("launch_providers", "")];
+        let mut tools = vec![
+            spec("launch", ""),
+            spec("launch_list", ""),
+            spec("launch_providers", ""),
+        ];
         tools.extend((0..8).map(|i| spec(&format!("tg_action{i}"), "")));
         let c = cat(tools);
         let hits = with_small_families(&c, ["launch".to_string(), "tg_action0".to_string()].into());
         assert!(hits.contains("launch_list") && hits.contains("launch_providers"));
-        assert!(!hits.contains("tg_action1"), "telegram-sized families stay filtered");
+        assert!(
+            !hits.contains("tg_action1"),
+            "telegram-sized families stay filtered"
+        );
     }
 
     #[test]
     fn missing_required_params_are_named() {
         let mut s = spec("launch", "");
         s.parameters = json!({"type": "object", "required": ["app_id"], "properties": {"app_id": {"type": "string"}}});
-        assert_eq!(missing_required(&s, &json!({"providers": []})), vec!["app_id"]);
-        assert_eq!(missing_required(&s, &json!({"app_id": null})), vec!["app_id"]);
+        assert_eq!(
+            missing_required(&s, &json!({"providers": []})),
+            vec!["app_id"]
+        );
+        assert_eq!(
+            missing_required(&s, &json!({"app_id": null})),
+            vec!["app_id"]
+        );
         assert!(missing_required(&s, &json!({"app_id": "telegram"})).is_empty());
-        assert!(missing_required(&spec("x", ""), &json!({})).is_empty(), "no schema, no check");
+        assert!(
+            missing_required(&spec("x", ""), &json!({})).is_empty(),
+            "no schema, no check"
+        );
     }
 
     #[test]
     fn unknown_tool_streak_counts_only_the_trailing_run() {
         assert_eq!(unknown_tool_streak(&steps(&[])), 0);
-        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "unknown_tool"])), 2);
+        assert_eq!(
+            unknown_tool_streak(&steps(&["unknown_tool", "unknown_tool"])),
+            2
+        );
         assert_eq!(
             unknown_tool_streak(&steps(&["unknown_tool", "tool_ok", "unknown_tool"])),
             1,
             "a real call in between resets the guessing"
         );
-        assert_eq!(unknown_tool_streak(&steps(&["unknown_tool", "tool_error"])), 0);
+        assert_eq!(
+            unknown_tool_streak(&steps(&["unknown_tool", "tool_error"])),
+            0
+        );
     }
 
     #[test]
     fn unknown_tool_gets_real_names_that_look_alike() {
-        let names = ["sys_info", "sys_battery", "tg_send_message", "fs_read", "uptime_check"];
+        let names = [
+            "sys_info",
+            "sys_battery",
+            "tg_send_message",
+            "fs_read",
+            "uptime_check",
+        ];
         let catalog = Catalog {
             tools: names.iter().map(|n| spec(n, "d")).collect(),
             allowed_actions: vec![],
@@ -916,21 +1089,37 @@ mod tests {
         };
         let got = suggest_tools(&catalog, "system_info");
         assert_eq!(got[0], "sys_info", "two matching parts rank first: {got:?}");
-        assert!(got.contains(&"sys_battery") && !got.contains(&"tg_send_message"), "{got:?}");
+        assert!(
+            got.contains(&"sys_battery") && !got.contains(&"tg_send_message"),
+            "{got:?}"
+        );
         assert!(suggest_tools(&catalog, "zz").is_empty());
     }
 
     #[test]
     fn oversized_catalog_is_capped_keeping_goal_matches() {
-        let mut tools: Vec<_> = (0..100).map(|i| spec(&format!("tool_{i}"), "unrelated")).collect();
-        tools.push(spec("phone.battery", "Battery level of the phone (батарея, заряд)"));
-        let catalog = Catalog { tools, allowed_actions: vec![], tools_file_set: false };
+        let mut tools: Vec<_> = (0..100)
+            .map(|i| spec(&format!("tool_{i}"), "unrelated"))
+            .collect();
+        tools.push(spec(
+            "phone.battery",
+            "Battery level of the phone (батарея, заряд)",
+        ));
+        let catalog = Catalog {
+            tools,
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
         let capped = cap_native_tools(catalog, "Сколько заряда у батареи?");
         assert_eq!(capped.tools.len(), MAX_NATIVE_TOOLS);
         assert_eq!(capped.tools[0].name, "phone.battery");
         assert_eq!(capped.tools[1].name, "tool_0", "ties keep catalog order");
 
-        let small = Catalog { tools: vec![spec("a", "x")], allowed_actions: vec![], tools_file_set: false };
+        let small = Catalog {
+            tools: vec![spec("a", "x")],
+            allowed_actions: vec![],
+            tools_file_set: false,
+        };
         assert_eq!(cap_native_tools(small, "anything").tools.len(), 1);
     }
 
@@ -958,7 +1147,11 @@ mod tests {
     }
 
     fn cat(tools: Vec<crate::tools::ToolSpec>) -> Catalog {
-        Catalog { tools, allowed_actions: vec![], tools_file_set: false }
+        Catalog {
+            tools,
+            allowed_actions: vec![],
+            tools_file_set: false,
+        }
     }
 
     #[test]
@@ -1015,8 +1208,12 @@ mod tests {
     #[tokio::test]
     async fn follow_up_keeps_tools_from_history() {
         let catalog = cat(vec![
-            plain("fs_read"), plain("fs_list"), plain("fs_write"),
-            plain("a_one"), plain("a_two"), plain("a_three"),
+            plain("fs_read"),
+            plain("fs_list"),
+            plain("fs_write"),
+            plain("a_one"),
+            plain("a_two"),
+            plain("a_three"),
         ]);
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
         let rpc = Rpc::new(tx);
@@ -1027,13 +1224,21 @@ mod tests {
         doc.goal = "а потом?".into();
         let hint = catalog_hint(&doc);
         let bare = effective_catalog(&rpc, &catalog, &doc.goal, &hint, None).await;
-        assert!(!names(&bare).contains(&"fs_read".to_string()), "{:?}", names(&bare));
+        assert!(
+            !names(&bare).contains(&"fs_read".to_string()),
+            "{:?}",
+            names(&bare)
+        );
 
         // ...with the previous turn in the hint they stay.
         doc.history_hint = history_text(&[("прочитай файл notes.txt".into(), "готово".into())]);
         let hint = catalog_hint(&doc);
         let kept = effective_catalog(&rpc, &catalog, &doc.goal, &hint, None).await;
-        assert!(names(&kept).contains(&"fs_read".to_string()), "{:?}", names(&kept));
+        assert!(
+            names(&kept).contains(&"fs_read".to_string()),
+            "{:?}",
+            names(&kept)
+        );
 
         // No history: the caller's context is used as before.
         doc.history_hint.clear();
@@ -1044,10 +1249,19 @@ mod tests {
     #[test]
     fn weave_history_alternates_roles() {
         let mut t = vec![
-            Turn { role: "user".into(), content: "ROLE".into() },
-            Turn { role: "user".into(), content: "goal".into() },
+            Turn {
+                role: "user".into(),
+                content: "ROLE".into(),
+            },
+            Turn {
+                role: "user".into(),
+                content: "goal".into(),
+            },
         ];
-        weave_history(&mut t, vec![("q1".into(), "a1".into()), ("q2".into(), "a2".into())]);
+        weave_history(
+            &mut t,
+            vec![("q1".into(), "a1".into()), ("q2".into(), "a2".into())],
+        );
         let roles: Vec<&str> = t.iter().map(|x| x.role.as_str()).collect();
         assert_eq!(roles, ["user", "assistant", "user", "assistant", "user"]);
         assert!(t[0].content.starts_with("ROLE") && t[0].content.ends_with("q1"));

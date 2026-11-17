@@ -21,7 +21,12 @@ use crate::runner::{Launcher, RealLauncher};
 pub const PLUGIN_ID: &str = "launcher";
 pub const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const ACTIONS: &[&str] = &["launch", "launch_command", "launch_list", "launch_providers"];
+pub const ACTIONS: &[&str] = &[
+    "launch",
+    "launch_command",
+    "launch_list",
+    "launch_providers",
+];
 
 #[derive(Debug)]
 struct CachedEntries {
@@ -233,7 +238,9 @@ impl<L: Launcher> LauncherPlugin<L> {
             let ql = q.to_lowercase();
             let mut scored: Vec<(u32, AppEntry)> = apps
                 .into_iter()
-                .filter_map(|a| fuzzy_score(&ql, &a.id.to_lowercase(), &a.name.to_lowercase()).map(|s| (s, a)))
+                .filter_map(|a| {
+                    fuzzy_score(&ql, &a.id.to_lowercase(), &a.name.to_lowercase()).map(|s| (s, a))
+                })
                 .collect();
             scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
             apps = scored.into_iter().map(|(_, a)| a).collect();
@@ -268,7 +275,6 @@ impl<L: Launcher> LauncherPlugin<L> {
             .collect();
         Ok(json!({ "apps": json_apps, "providers": providers_scanned }))
     }
-
 
     async fn handle_providers(&self, params: &[u8]) -> Result<serde_json::Value, LauncherError> {
         if !params.is_empty() && params != b"{}" && params != b"null" {
@@ -309,7 +315,10 @@ fn check_plain_launch(provider: &str, args: &[String]) -> Result<(), String> {
         ));
     }
     if !args.is_empty() {
-        return Err("ERR_LAUNCH_BAD_PARAMS: `args` are not accepted by launch; use launch_command".to_string());
+        return Err(
+            "ERR_LAUNCH_BAD_PARAMS: `args` are not accepted by launch; use launch_command"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -362,17 +371,32 @@ impl Plugin for LauncherPlugin<RealLauncher> {
     }
 }
 
-
 fn fuzzy_score(query: &str, id: &str, name: &str) -> Option<u32> {
     let q = query.trim();
-    if q.is_empty() { return Some(0); }
-    if id == q || name == q { return Some(100); }
-    if id.starts_with(q) { return Some(90); }
-    if name.starts_with(q) { return Some(80); }
-    if id.contains(q) { return Some(70); }
-    if name.contains(q) { return Some(60); }
-    if is_subsequence(q, id) { return Some(40); }
-    if is_subsequence(q, name) { return Some(30); }
+    if q.is_empty() {
+        return Some(0);
+    }
+    if id == q || name == q {
+        return Some(100);
+    }
+    if id.starts_with(q) {
+        return Some(90);
+    }
+    if name.starts_with(q) {
+        return Some(80);
+    }
+    if id.contains(q) {
+        return Some(70);
+    }
+    if name.contains(q) {
+        return Some(60);
+    }
+    if is_subsequence(q, id) {
+        return Some(40);
+    }
+    if is_subsequence(q, name) {
+        return Some(30);
+    }
     let id_chars: std::collections::HashSet<char> = id.chars().collect();
     let name_chars: std::collections::HashSet<char> = name.chars().collect();
     let q_chars: std::collections::HashSet<char> = q.chars().collect();
@@ -540,12 +564,20 @@ mod tests {
             br#"{"app_id":"myapp","args":["-e","sh"]}"#.as_slice(),
         ] {
             let err = plugin.handle_action("launch", params).await.unwrap_err();
-            assert!(matches!(&err, LauncherError::BadParams(m) if m.contains("launch_command")), "{err:?}");
+            assert!(
+                matches!(&err, LauncherError::BadParams(m) if m.contains("launch_command")),
+                "{err:?}"
+            );
         }
         let v = plugin
-            .handle_action("launch_command", br#"{"app_id":"htop","provider":"tmux","dry_run":true}"#)
+            .handle_action(
+                "launch_command",
+                br#"{"app_id":"htop","provider":"tmux","dry_run":true}"#,
+            )
             .await;
-        assert!(!matches!(v, Err(LauncherError::BadParams(ref m)) if m.contains("use launch_command")));
+        assert!(
+            !matches!(v, Err(LauncherError::BadParams(ref m)) if m.contains("use launch_command"))
+        );
     }
 
     #[tokio::test]
@@ -570,10 +602,16 @@ mod tests {
             .unwrap();
         assert_eq!(v["apps"].as_array().unwrap().len(), 1);
         assert_eq!(v["apps"][0]["id"], "a");
-        assert_eq!(v["apps"][0]["exec"], "a", "a query lookup keeps the details");
+        assert_eq!(
+            v["apps"][0]["exec"], "a",
+            "a query lookup keeps the details"
+        );
         let all = plugin.handle_action("launch_list", b"{}").await.unwrap();
         assert_eq!(all["apps"].as_array().unwrap().len(), 2);
-        assert!(all["apps"][0].get("exec").is_none() && all["apps"][0].get("path").is_none(), "{all}");
+        assert!(
+            all["apps"][0].get("exec").is_none() && all["apps"][0].get("path").is_none(),
+            "{all}"
+        );
         assert_eq!(all["apps"][1]["name"], "Beta");
     }
 

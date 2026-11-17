@@ -103,7 +103,9 @@ pub fn parse_request(params_json: &[u8]) -> Result<WebSearchParams, String> {
         Some(other) => return Err(format!("unsupported provider: {other}")),
     };
 
-    let api_key_env = raw.api_key_env.ok_or("missing required field: api_key_env")?;
+    let api_key_env = raw
+        .api_key_env
+        .ok_or("missing required field: api_key_env")?;
     if api_key_env.is_empty() {
         return Err("api_key_env must not be empty".to_string());
     }

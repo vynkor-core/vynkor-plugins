@@ -37,7 +37,8 @@ pub async fn handle_stt_transcribe(
                 let dir = std::env::temp_dir();
                 let ogg_path = dir.join(format!("stt_in_{}.ogg", std::process::id()));
                 let wav_path = dir.join(format!("stt_out_{}.wav", std::process::id()));
-                std::fs::write(&ogg_path, &ogg).map_err(|e| format!("failed to write temp ogg: {e}"))?;
+                std::fs::write(&ogg_path, &ogg)
+                    .map_err(|e| format!("failed to write temp ogg: {e}"))?;
                 let status = std::process::Command::new("ffmpeg")
                     .args([
                         "-y",
@@ -59,7 +60,8 @@ pub async fn handle_stt_transcribe(
                         String::from_utf8_lossy(&status.stderr)
                     ));
                 }
-                let wav = std::fs::read(&wav_path).map_err(|e| format!("failed to read wav: {e}"))?;
+                let wav =
+                    std::fs::read(&wav_path).map_err(|e| format!("failed to read wav: {e}"))?;
                 let _ = std::fs::remove_file(&ogg_path);
                 let _ = std::fs::remove_file(&wav_path);
                 Ok::<Vec<u8>, String>(wav)

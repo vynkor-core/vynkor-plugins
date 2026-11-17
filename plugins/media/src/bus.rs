@@ -21,18 +21,23 @@ pub async fn session() -> Result<Connection, String> {
         Ok(c) => return Ok(c),
         Err(e) => e.to_string(),
     };
-    let path = session_socket_path()
-        .ok_or_else(|| format!("ERR_MEDIA_BUS_UNAVAILABLE: {first} (and no unix:path session bus address to retry)"))?;
-    connect_external_anonymous_id(&path)
-        .await
-        .map_err(|e| format!("ERR_MEDIA_BUS_UNAVAILABLE: {first}; empty-identity EXTERNAL retry: {e}"))
+    let path = session_socket_path().ok_or_else(|| {
+        format!(
+            "ERR_MEDIA_BUS_UNAVAILABLE: {first} (and no unix:path session bus address to retry)"
+        )
+    })?;
+    connect_external_anonymous_id(&path).await.map_err(|e| {
+        format!("ERR_MEDIA_BUS_UNAVAILABLE: {first}; empty-identity EXTERNAL retry: {e}")
+    })
 }
 
 /// `unix:path=/run/user/1000/bus[,guid=...]` -> the path. Other transports
 /// (abstract sockets, tcp) are left to zbus's own error.
 fn session_socket_path() -> Option<String> {
     let addr = std::env::var("DBUS_SESSION_BUS_ADDRESS").ok().or_else(|| {
-        std::env::var("XDG_RUNTIME_DIR").ok().map(|d| format!("unix:path={d}/bus"))
+        std::env::var("XDG_RUNTIME_DIR")
+            .ok()
+            .map(|d| format!("unix:path={d}/bus"))
     })?;
     parse_unix_path(&addr)
 }
@@ -41,7 +46,9 @@ fn parse_unix_path(addr: &str) -> Option<String> {
     // Several `;`-separated addresses may be listed; take the first unix:path.
     addr.split(';').find_map(|a| {
         let rest = a.strip_prefix("unix:")?;
-        rest.split(',').find_map(|kv| kv.strip_prefix("path=")).map(unescape)
+        rest.split(',')
+            .find_map(|kv| kv.strip_prefix("path="))
+            .map(unescape)
     })
 }
 
@@ -82,11 +89,16 @@ async fn read_line(stream: &mut UnixStream) -> Result<String, String> {
 }
 
 async fn send(stream: &mut UnixStream, cmd: &[u8]) -> Result<(), String> {
-    stream.write_all(cmd).await.map_err(|e| format!("write: {e}"))
+    stream
+        .write_all(cmd)
+        .await
+        .map_err(|e| format!("write: {e}"))
 }
 
 async fn connect_external_anonymous_id(path: &str) -> Result<Connection, String> {
-    let mut stream = UnixStream::connect(path).await.map_err(|e| format!("connect {path}: {e}"))?;
+    let mut stream = UnixStream::connect(path)
+        .await
+        .map_err(|e| format!("connect {path}: {e}"))?;
     let fut = async {
         // Leading NUL byte is required by the protocol (credentials byte).
         send(&mut stream, b"\0AUTH EXTERNAL\r\n").await?;
@@ -135,7 +147,10 @@ mod tests {
 
     #[test]
     fn parses_plain_and_guid_addresses() {
-        assert_eq!(parse_unix_path("unix:path=/run/user/1000/bus").as_deref(), Some("/run/user/1000/bus"));
+        assert_eq!(
+            parse_unix_path("unix:path=/run/user/1000/bus").as_deref(),
+            Some("/run/user/1000/bus")
+        );
         assert_eq!(
             parse_unix_path("unix:path=/tmp/b,guid=0123456789abcdef").as_deref(),
             Some("/tmp/b")
@@ -154,7 +169,14 @@ mod tests {
 
     #[test]
     fn percent_escapes_are_decoded() {
-        assert_eq!(parse_unix_path("unix:path=/tmp/a%20b").as_deref(), Some("/tmp/a b"));
-        assert_eq!(unescape("/tmp/%2"), "/tmp/%2", "truncated escape kept verbatim");
+        assert_eq!(
+            parse_unix_path("unix:path=/tmp/a%20b").as_deref(),
+            Some("/tmp/a b")
+        );
+        assert_eq!(
+            unescape("/tmp/%2"),
+            "/tmp/%2",
+            "truncated escape kept verbatim"
+        );
     }
 }

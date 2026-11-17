@@ -40,8 +40,9 @@ impl Battery for MacosBattery {
                 out.stderr.trim()
             )));
         }
-        parse_pmset_batt(&out.stdout)
-            .ok_or_else(|| SystemError::Backend(format!("no battery in pmset output: {:?}", out.stdout)))
+        parse_pmset_batt(&out.stdout).ok_or_else(|| {
+            SystemError::Backend(format!("no battery in pmset output: {:?}", out.stdout))
+        })
     }
 }
 
@@ -79,7 +80,8 @@ impl Volume for MacosVolume {
     }
 
     async fn set(&self, percent: u8) -> Result<VolumeStatus, SystemError> {
-        self.osascript(&format!("set volume output volume {percent}")).await?;
+        self.osascript(&format!("set volume output volume {percent}"))
+            .await?;
         self.get().await
     }
 
@@ -90,7 +92,8 @@ impl Volume for MacosVolume {
             // AppleScript has no toggle — read, then write the inverse.
             MuteMode::Toggle => !self.get().await?.muted,
         };
-        self.osascript(&format!("set volume output muted {muted}")).await?;
+        self.osascript(&format!("set volume output muted {muted}"))
+            .await?;
         self.get().await
     }
 }

@@ -259,15 +259,21 @@ mod tests {
     fn write_requires_exactly_one_payload() {
         let err = parse_request("fs_write", br#"{"path": "/a"}"#).unwrap_err();
         assert!(err.contains("exactly one"), "{err}");
-        let err = parse_request("fs_write", br#"{"path": "/a", "text": "x", "content_base64": "eA=="}"#)
-            .unwrap_err();
+        let err = parse_request(
+            "fs_write",
+            br#"{"path": "/a", "text": "x", "content_base64": "eA=="}"#,
+        )
+        .unwrap_err();
         assert!(err.contains("exactly one"), "{err}");
     }
 
     #[test]
     fn write_rejects_invalid_base64() {
-        let err = parse_request("fs_write", br#"{"path": "/a", "content_base64": "!!!not-base64"}"#)
-            .unwrap_err();
+        let err = parse_request(
+            "fs_write",
+            br#"{"path": "/a", "content_base64": "!!!not-base64"}"#,
+        )
+        .unwrap_err();
         assert!(err.contains("content_base64"), "{err}");
     }
 
@@ -338,8 +344,11 @@ mod tests {
             }
             other => panic!("wrong variant: {other:?}"),
         }
-        match parse_request("fs_move", br#"{"from": "/a", "to": "/b", "overwrite": true}"#)
-            .unwrap()
+        match parse_request(
+            "fs_move",
+            br#"{"from": "/a", "to": "/b", "overwrite": true}"#,
+        )
+        .unwrap()
         {
             Request::Move(p) => assert!(p.overwrite),
             other => panic!("wrong variant: {other:?}"),

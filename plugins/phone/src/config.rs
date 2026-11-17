@@ -30,7 +30,11 @@ impl Config {
     }
 
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, PhoneError> {
-        let val = |k: &str| get(k).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let val = |k: &str| {
+            get(k)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
 
         let transport = match val("PHONE_PLUGIN_TRANSPORT").as_deref() {
             None | Some("ssh") => TransportKind::Ssh,
@@ -46,11 +50,12 @@ impl Config {
         let ssh_mux = val("PHONE_PLUGIN_SSH_MUX").as_deref() != Some("0");
         let remote_uid = match val("PHONE_PLUGIN_REMOTE_UID") {
             None => 32011,
-            Some(s) => s
-                .parse::<u32>()
-                .map_err(|_| PhoneError::BadParams(format!("PHONE_PLUGIN_REMOTE_UID not a uid: '{s}'")))?,
+            Some(s) => s.parse::<u32>().map_err(|_| {
+                PhoneError::BadParams(format!("PHONE_PLUGIN_REMOTE_UID not a uid: '{s}'"))
+            })?,
         };
-        let remote_dir = val("PHONE_PLUGIN_REMOTE_DIR").unwrap_or_else(|| ".local/share/vyn-phone".to_string());
+        let remote_dir =
+            val("PHONE_PLUGIN_REMOTE_DIR").unwrap_or_else(|| ".local/share/vyn-phone".to_string());
         validate_remote_dir(&remote_dir)?;
         let dir = match val("PHONE_PLUGIN_DIR") {
             Some(d) => PathBuf::from(d),
@@ -59,7 +64,14 @@ impl Config {
                 PathBuf::from(home).join(".local/share/vyn/phone")
             }
         };
-        Ok(Self { transport, ssh_host, ssh_mux, remote_uid, remote_dir, dir })
+        Ok(Self {
+            transport,
+            ssh_host,
+            ssh_mux,
+            remote_uid,
+            remote_dir,
+            dir,
+        })
     }
 
     /// Create the data dir (mode 0700: it holds camera frames). Idempotent.
@@ -79,11 +91,14 @@ pub fn validate_host(h: &str) -> Result<(), PhoneError> {
     let ok = !h.is_empty()
         && h.len() <= 253
         && !h.starts_with('-')
-        && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
+        && h.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-');
     if ok {
         Ok(())
     } else {
-        Err(PhoneError::BadParams(format!("PHONE_PLUGIN_SSH_HOST invalid: '{h}'")))
+        Err(PhoneError::BadParams(format!(
+            "PHONE_PLUGIN_SSH_HOST invalid: '{h}'"
+        )))
     }
 }
 
@@ -97,7 +112,10 @@ pub fn validate_remote_dir(d: &str) -> Result<(), PhoneError> {
         if comp.is_empty() || comp == ".." || comp == "." || comp.starts_with('-') {
             return Err(bad("empty, '.', '..' or '-'-leading component"));
         }
-        if !comp.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
+        if !comp
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+        {
             return Err(bad("only [A-Za-z0-9._-] allowed in components"));
         }
     }
@@ -110,7 +128,10 @@ mod tests {
     use std::collections::HashMap;
 
     fn cfg(pairs: &[(&str, &str)]) -> Result<Config, PhoneError> {
-        let m: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let m: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         Config::from_lookup(move |k| m.get(k).cloned())
     }
 
@@ -148,14 +169,25 @@ mod tests {
     fn rejects_bad_transport_host_uid_and_dir() {
         assert!(cfg(&[("PHONE_PLUGIN_TRANSPORT", "telnet")]).is_err());
         for h in ["-oProxyCommand=x", "a b", "a;b", "a$(x)", "h/../x"] {
-            assert!(cfg(&[("PHONE_PLUGIN_SSH_HOST", h)]).is_err(), "host {h:?} must be rejected");
+            assert!(
+                cfg(&[("PHONE_PLUGIN_SSH_HOST", h)]).is_err(),
+                "host {h:?} must be rejected"
+            );
         }
         // an empty value means "unset" -> the default host, not an error
-        assert_eq!(cfg(&[("PHONE_PLUGIN_SSH_HOST", "  ")]).unwrap().ssh_host, "mi6");
+        assert_eq!(
+            cfg(&[("PHONE_PLUGIN_SSH_HOST", "  ")]).unwrap().ssh_host,
+            "mi6"
+        );
         assert!(cfg(&[("PHONE_PLUGIN_REMOTE_UID", "-1")]).is_err());
         assert!(cfg(&[("PHONE_PLUGIN_REMOTE_UID", "abc")]).is_err());
-        for d in ["/abs", "../up", "a/../b", "a//b", "a b", "a;b", "-x", "a/-x", "."] {
-            assert!(cfg(&[("PHONE_PLUGIN_REMOTE_DIR", d)]).is_err(), "dir {d:?} must be rejected");
+        for d in [
+            "/abs", "../up", "a/../b", "a//b", "a b", "a;b", "-x", "a/-x", ".",
+        ] {
+            assert!(
+                cfg(&[("PHONE_PLUGIN_REMOTE_DIR", d)]).is_err(),
+                "dir {d:?} must be rejected"
+            );
         }
     }
 

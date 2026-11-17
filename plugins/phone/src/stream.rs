@@ -91,7 +91,12 @@ async fn pump(
     record: Option<PathBuf>,
 ) {
     let mut rec = match record {
-        Some(p) => tokio::fs::OpenOptions::new().create(true).append(true).open(p).await.ok(),
+        Some(p) => tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .await
+            .ok(),
         None => None,
     };
     // Ends on clean EOF, a read error, or a bad frame header: all mean the helper is gone.
@@ -108,14 +113,20 @@ async fn pump(
             }
         }
         stats.frames.fetch_add(1, Ordering::SeqCst);
-        stats.last_frame_ms.store((started.elapsed().as_millis() as u64).max(1), Ordering::SeqCst);
+        stats.last_frame_ms.store(
+            (started.elapsed().as_millis() as u64).max(1),
+            Ordering::SeqCst,
+        );
     }
     stats.done.store(true, Ordering::SeqCst);
 }
 
 impl StreamRegistry {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(None), camera_lock: Mutex::new(()) }
+        Self {
+            inner: Mutex::new(None),
+            camera_lock: Mutex::new(()),
+        }
     }
 
     /// Hold this while talking to the camera for a single photo.
@@ -125,7 +136,10 @@ impl StreamRegistry {
 
     /// Drop a finished stream (helper exited / ssh dropped) so a new one can start.
     async fn reap(slot: &mut Option<Active>) {
-        let finished = slot.as_ref().map(|a| a.stats.done.load(Ordering::SeqCst)).unwrap_or(false);
+        let finished = slot
+            .as_ref()
+            .map(|a| a.stats.done.load(Ordering::SeqCst))
+            .unwrap_or(false);
         if finished {
             if let Some(a) = slot.take() {
                 a.control.lock().await.kill().await;
@@ -134,11 +148,19 @@ impl StreamRegistry {
         }
     }
 
-    pub async fn start(&self, t: &dyn Transport, cfg: &Config, p: &StreamParams) -> Result<Value, PhoneError> {
+    pub async fn start(
+        &self,
+        t: &dyn Transport,
+        cfg: &Config,
+        p: &StreamParams,
+    ) -> Result<Value, PhoneError> {
         let mut slot = self.inner.lock().await;
         Self::reap(&mut slot).await;
         if let Some(a) = slot.as_ref() {
-            return Err(PhoneError::Busy(format!("stream {} is already running (stop it first)", a.id)));
+            return Err(PhoneError::Busy(format!(
+                "stream {} is already running (stop it first)",
+                a.id
+            )));
         }
         let _cam = self
             .camera_lock
@@ -188,18 +210,26 @@ impl StreamRegistry {
         let mut slot = self.inner.lock().await;
         if let (Some(want), Some(a)) = (id.as_ref(), slot.as_ref()) {
             if *want != a.id {
-                return Err(PhoneError::BadParams(format!("no such stream '{want}' (active: {})", a.id)));
+                return Err(PhoneError::BadParams(format!(
+                    "no such stream '{want}' (active: {})",
+                    a.id
+                )));
             }
         }
         let Some(a) = slot.take() else {
-            return Ok(json!({"stopped": false, "frames": 0, "duration_ms": 0, "record_path": null}));
+            return Ok(
+                json!({"stopped": false, "frames": 0, "duration_ms": 0, "record_path": null}),
+            );
         };
         let stderr = {
             let mut c = a.control.lock().await;
             c.kill().await;
             c.stderr_tail()
         };
-        if tokio::time::timeout(Duration::from_secs(2), a.task).await.is_err() {
+        if tokio::time::timeout(Duration::from_secs(2), a.task)
+            .await
+            .is_err()
+        {
             // pump ends when stdout closes; kill above guarantees that
         }
         let frames = a.stats.frames.load(Ordering::SeqCst);
@@ -218,14 +248,21 @@ impl StreamRegistry {
 
     pub async fn status(&self) -> Value {
         let mut slot = self.inner.lock().await;
-        let finished = slot.as_ref().map(|a| a.stats.done.load(Ordering::SeqCst)).unwrap_or(false);
+        let finished = slot
+            .as_ref()
+            .map(|a| a.stats.done.load(Ordering::SeqCst))
+            .unwrap_or(false);
         let Some(a) = slot.as_ref() else {
             return json!({"active": false});
         };
         let frames = a.stats.frames.load(Ordering::SeqCst);
         let last = a.stats.last_frame_ms.load(Ordering::SeqCst);
         let elapsed = a.started.elapsed().as_millis() as u64;
-        let fps = if last > 0 { frames as f64 / (last as f64 / 1000.0) } else { 0.0 };
+        let fps = if last > 0 {
+            frames as f64 / (last as f64 / 1000.0)
+        } else {
+            0.0
+        };
         let mut out = json!({
             "active": !finished,
             "stream_id": a.id,
@@ -298,9 +335,15 @@ mod tests {
         let s = a.join(" ");
         assert!(s.contains("--cam back -W 640 -H 480 --fps 10 --secs 300 --fmt jpeg --q 80 --af video --framing len32 --out -"), "{s}");
         assert!(!s.contains("--flash"));
-        let f = stream_args(&StreamParams::parse(&json!({"flash":true,"max_duration_ms":1500})).unwrap());
+        let f = stream_args(
+            &StreamParams::parse(&json!({"flash":true,"max_duration_ms":1500})).unwrap(),
+        );
         assert!(f.join(" ").contains("--flash 3"));
-        assert!(f.join(" ").contains("--secs 2"), "1500 ms must round UP to 2 s: {}", f.join(" "));
+        assert!(
+            f.join(" ").contains("--secs 2"),
+            "1500 ms must round UP to 2 s: {}",
+            f.join(" ")
+        );
     }
 
     #[tokio::test]
@@ -313,7 +356,10 @@ mod tests {
         let started = reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
         assert!(started["stream_id"].as_str().unwrap().starts_with("s-"));
         wait_frames(&reg, 2).await;
-        assert_eq!(std::fs::read(dir.path().join("latest.jpg")).unwrap(), jpeg(2));
+        assert_eq!(
+            std::fs::read(dir.path().join("latest.jpg")).unwrap(),
+            jpeg(2)
+        );
         let rec = started["record_path"].as_str().unwrap();
         assert_eq!(std::fs::read(rec).unwrap(), [jpeg(1), jpeg(2)].concat());
         let st = reg.status().await;
@@ -323,7 +369,10 @@ mod tests {
         let stopped = reg.stop(None).await.unwrap();
         assert_eq!(stopped["stopped"], json!(true));
         assert_eq!(stopped["frames"], json!(2));
-        assert!(t.killed.load(Ordering::SeqCst), "stop must kill the child (dead-man frees the camera)");
+        assert!(
+            t.killed.load(Ordering::SeqCst),
+            "stop must kill the child (dead-man frees the camera)"
+        );
     }
 
     #[tokio::test]
@@ -332,8 +381,14 @@ mod tests {
         let t = FakeTransport::new().with_stream(encode_frame(&jpeg(1)), true);
         let reg = StreamRegistry::new();
         reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
-        assert!(matches!(reg.start(&t, &cfg(dir.path()), &params()).await, Err(PhoneError::Busy(_))));
-        assert!(matches!(reg.stop(Some("s-nope".into())).await, Err(PhoneError::BadParams(_))));
+        assert!(matches!(
+            reg.start(&t, &cfg(dir.path()), &params()).await,
+            Err(PhoneError::Busy(_))
+        ));
+        assert!(matches!(
+            reg.stop(Some("s-nope".into())).await,
+            Err(PhoneError::BadParams(_))
+        ));
         reg.stop(None).await.unwrap();
     }
 
@@ -383,8 +438,15 @@ mod tests {
         }
         assert_eq!(st["active"], json!(false));
         assert_eq!(st["frames"], json!(0));
-        assert!(st["error"].as_str().unwrap().starts_with("ERR_PHONE_"), "{st}");
-        assert_eq!(reg.status().await, json!({"active": false}), "reaped after the reason was reported");
+        assert!(
+            st["error"].as_str().unwrap().starts_with("ERR_PHONE_"),
+            "{st}"
+        );
+        assert_eq!(
+            reg.status().await,
+            json!({"active": false}),
+            "reaped after the reason was reported"
+        );
     }
 
     #[tokio::test]
@@ -396,7 +458,10 @@ mod tests {
         let reg = StreamRegistry::new();
         reg.start(&t, &cfg(dir.path()), &params()).await.unwrap();
         wait_frames(&reg, 1).await;
-        assert_eq!(std::fs::read(dir.path().join("latest.jpg")).unwrap(), jpeg(5));
+        assert_eq!(
+            std::fs::read(dir.path().join("latest.jpg")).unwrap(),
+            jpeg(5)
+        );
         reg.stop(None).await.unwrap();
     }
 

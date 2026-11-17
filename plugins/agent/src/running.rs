@@ -45,14 +45,26 @@ impl Running {
     pub fn register(&self, id: &str, cancel_key: Option<String>) -> Guard {
         let stop = Arc::new(Notify::new());
         if let Ok(mut m) = self.0.lock() {
-            m.insert(id.to_string(), Entry { cancel_key, stop: Arc::clone(&stop) });
+            m.insert(
+                id.to_string(),
+                Entry {
+                    cancel_key,
+                    stop: Arc::clone(&stop),
+                },
+            );
         }
-        Guard { running: self.clone(), id: id.to_string(), stop }
+        Guard {
+            running: self.clone(),
+            id: id.to_string(),
+            stop,
+        }
     }
 
     /// Wake every running goal matching `id` or `cancel_key`; returns their ids.
     pub fn cancel(&self, id: Option<&str>, cancel_key: Option<&str>) -> Vec<String> {
-        let Ok(m) = self.0.lock() else { return Vec::new() };
+        let Ok(m) = self.0.lock() else {
+            return Vec::new();
+        };
         let mut ids: Vec<String> = m
             .iter()
             .filter(|(gid, e)| {

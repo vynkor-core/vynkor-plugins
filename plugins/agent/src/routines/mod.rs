@@ -40,8 +40,15 @@ pub const DEFAULT_AT: (u32, u32) = (3, 30);
 pub const DEFAULT_LOOKBACK_DAYS: i64 = 30;
 /// How long after a routine fired a correction ("не тот") still blames it.
 pub const CORRECTION_WINDOW_MS: i64 = 120_000;
-const CORRECTION_MARKERS: &[&str] =
-    &["не то", "не тот", "не так", "неправильно", "отмена", "отмени", "верни"];
+const CORRECTION_MARKERS: &[&str] = &[
+    "не то",
+    "не тот",
+    "не так",
+    "неправильно",
+    "отмена",
+    "отмени",
+    "верни",
+];
 
 pub const STATUS_ACTIVE: &str = "active";
 pub const STATUS_DISABLED: &str = "disabled";
@@ -131,7 +138,9 @@ impl Book {
         if now_ms - last.at_ms > CORRECTION_WINDOW_MS {
             return None;
         }
-        self.routines.iter().position(|r| r.id == last.routine_id && r.is_active())
+        self.routines
+            .iter()
+            .position(|r| r.id == last.routine_id && r.is_active())
     }
 
     pub fn disable(&mut self, idx: usize, reason: &str, now_ms: i64) {
@@ -144,12 +153,18 @@ impl Book {
 }
 
 fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 pub fn enabled() -> bool {
     matches!(
-        env_nonempty(ROUTINES_ENV).unwrap_or_default().to_ascii_lowercase().as_str(),
+        env_nonempty(ROUTINES_ENV)
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
         "on" | "true" | "1" | "yes"
     )
 }
@@ -196,7 +211,10 @@ pub fn spec_hash(spec: &ToolSpec) -> String {
 
 pub fn is_correction(normalized: &str) -> bool {
     CORRECTION_MARKERS.iter().any(|m| {
-        normalized == *m || normalized.strip_prefix(m).is_some_and(|rest| rest.starts_with(' '))
+        normalized == *m
+            || normalized
+                .strip_prefix(m)
+                .is_some_and(|rest| rest.starts_with(' '))
     })
 }
 
@@ -207,7 +225,9 @@ pub fn parse_at(raw: &str) -> Option<(u32, u32)> {
 }
 
 pub fn mining_at() -> (u32, u32) {
-    env_nonempty(ROUTINES_AT_ENV).and_then(|s| parse_at(&s)).unwrap_or(DEFAULT_AT)
+    env_nonempty(ROUTINES_AT_ENV)
+        .and_then(|s| parse_at(&s))
+        .unwrap_or(DEFAULT_AT)
 }
 
 /// Time from `now` until the next local `at` (tomorrow if already past).
@@ -295,7 +315,10 @@ mod tests {
 
     #[test]
     fn find_active_matches_exact_phrases_of_active_routines_only() {
-        let mut book = Book { routines: vec![routine("r1", "включи свет", &["Готово."])], last_fire: None };
+        let mut book = Book {
+            routines: vec![routine("r1", "включи свет", &["Готово."])],
+            last_fire: None,
+        };
         assert_eq!(book.find_active("включи свет"), Some(0));
         assert_eq!(book.find_active("включи свет на кухне"), None);
         assert_eq!(book.find_active(""), None);
@@ -305,10 +328,16 @@ mod tests {
 
     #[test]
     fn next_reply_rotates_without_consecutive_repeats() {
-        let mut book = Book { routines: vec![routine("r1", "x", &["a", "b", "c"])], last_fire: None };
+        let mut book = Book {
+            routines: vec![routine("r1", "x", &["a", "b", "c"])],
+            last_fire: None,
+        };
         let got: Vec<String> = (0..4).map(|_| book.next_reply(0)).collect();
         assert!(got.windows(2).all(|w| w[0] != w[1]), "{got:?}");
-        let mut single = Book { routines: vec![routine("r1", "x", &["only"])], last_fire: None };
+        let mut single = Book {
+            routines: vec![routine("r1", "x", &["only"])],
+            last_fire: None,
+        };
         assert_eq!(single.next_reply(0), "only");
         assert_eq!(single.next_reply(0), "only");
     }
@@ -325,7 +354,10 @@ mod tests {
     fn correction_blames_the_last_fire_inside_the_window() {
         let mut book = Book {
             routines: vec![routine("r1", "x", &["a"])],
-            last_fire: Some(LastFire { routine_id: "r1".into(), at_ms: 1_000 }),
+            last_fire: Some(LastFire {
+                routine_id: "r1".into(),
+                at_ms: 1_000,
+            }),
         };
         assert_eq!(book.correction_target(1_000 + 119_000), Some(0));
         assert_eq!(book.correction_target(1_000 + 121_000), None);
@@ -340,8 +372,14 @@ mod tests {
         assert_eq!(parse_at("junk"), None);
         use chrono::TimeZone;
         let at_two = chrono::Utc.with_ymd_and_hms(2026, 10, 26, 2, 0, 0).unwrap();
-        assert_eq!(next_run_delay(at_two, (3, 30)), Duration::from_secs(90 * 60));
+        assert_eq!(
+            next_run_delay(at_two, (3, 30)),
+            Duration::from_secs(90 * 60)
+        );
         let at_four = chrono::Utc.with_ymd_and_hms(2026, 10, 26, 4, 0, 0).unwrap();
-        assert_eq!(next_run_delay(at_four, (3, 30)), Duration::from_secs((23 * 60 + 30) * 60));
+        assert_eq!(
+            next_run_delay(at_four, (3, 30)),
+            Duration::from_secs((23 * 60 + 30) * 60)
+        );
     }
 }
