@@ -45,6 +45,13 @@
         "signature": "c5b6c5b9be940ab59593da0d4c43220e4c7ecc59aecc3f377386a16b567cb4403dd51cb2772f9c4e46a4cb854d0d2ecc753dde1a9c985b5c1bf5856b55c31107",
         "min_kernel_version": "0.1.0",
         "max_kernel_version": "*"
+      },
+      "0.1.1": {
+        "archive_url": "dist/ai/versions/0.1.1/ai-0.1.1.zip",
+        "sha256": "b330c0b7404d2bc5339f1247b868ea8651f1bb931fce5e090fb576d7b9ece036",
+        "signature": "338dc1b0c413176f9aaaff231f95e3e5915d37ae6f7ca67cc88d9e838646fbebcc63aa6b0db4978e425a94d6f8f1a223c38f3650ce073eaf262a58d970bf8308",
+        "min_kernel_version": "0.1.0",
+        "max_kernel_version": "*"
       }
     }
   },
