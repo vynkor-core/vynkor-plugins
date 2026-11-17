@@ -45,15 +45,18 @@ impl Provider for OpenAiCompatProvider {
             "messages": messages,
         });
         if !params.tools.is_empty() {
+            // providers reject names outside [a-zA-Z0-9_-]; handler maps calls back
+            let names = crate::tool_names::wire_names(&params.tools);
             body["tools"] = serde_json::Value::Array(
                 params
                     .tools
                     .iter()
-                    .map(|t| {
+                    .zip(&names)
+                    .map(|(t, name)| {
                         serde_json::json!({
                             "type": "function",
                             "function": {
-                                "name": t.name,
+                                "name": name,
                                 "description": t.description,
                                 "parameters": t.input_schema,
                             }
@@ -452,6 +455,19 @@ mod tests {
         assert_eq!(body["tools"][0]["type"], "function");
         assert_eq!(body["tools"][0]["function"]["name"], "launch");
         assert_eq!(body["tools"][0]["function"]["parameters"]["type"], "object");
+    }
+
+    #[test]
+    fn device_tool_names_go_out_as_valid_aliases() {
+        let mut p = params("http://x/v1");
+        p.tools.push(ToolSpec {
+            name: "pixel-6pro.calendar".to_string(),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+        });
+        let req = OpenAiCompatProvider.build_http_request(&p, "k");
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["tools"][0]["function"]["name"], "pixel-6pro_calendar");
     }
 
     #[test]

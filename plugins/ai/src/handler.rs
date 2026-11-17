@@ -177,7 +177,8 @@ pub async fn handle_chat_completion(
         _ => net_resp.body.into_bytes(),
     };
 
-    let result = provider.parse_response(&body_bytes)?;
+    let mut result = provider.parse_response(&body_bytes)?;
+    crate::tool_names::restore(&mut result.tool_calls, &params.tools);
     record_chat_usage(db, meta, &params, &result);
 
     serde_json::to_vec(&result).map_err(|e| format!("failed to encode response: {e}"))
@@ -313,7 +314,8 @@ pub async fn handle_chat_completion_stream(
         return Err(e);
     }
 
-    let result = parser.finish()?;
+    let mut result = parser.finish()?;
+    crate::tool_names::restore(&mut result.tool_calls, &params.tools);
     record_chat_usage(db, meta, &params, &result);
     let done = serde_json::to_vec(&serde_json::json!({"type": "done", "result": result}))
         .map_err(|e| format!("failed to encode result: {e}"))?;
