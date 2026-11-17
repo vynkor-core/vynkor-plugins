@@ -1,6 +1,6 @@
 {
   "plugin_id": "agent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"
@@ -88,6 +88,13 @@
             "type": "string",
             "maxLength": 64,
             "description": "Origin label (default: the calling plugin)."
+          },
+          "cancel_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[0-9A-Za-z_-]+$",
+            "description": "Caller-chosen handle: goal_cancel {cancel_key} stops this goal while the call is in flight."
           }
         },
         "required": [
@@ -108,7 +115,8 @@
               "needs_confirmation",
               "declined",
               "max_steps_reached",
-              "error"
+              "error",
+              "cancelled"
             ]
           },
           "title": {
@@ -575,6 +583,50 @@
         },
         "required": [
           "deleted"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "goal_cancel",
+      "description": "Stop a running goal by id or by the cancel_key given to goal_start. The goal ends as cancelled and its chat turn is recorded as cancelled; an in-flight tool call finishes on its plugin but its result is discarded. Cancelling nothing is not an error (cancelled:false).",
+      "risk": "low",
+      "requires_confirmation": false,
+      "input": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "description": "Goal id."
+          },
+          "cancel_key": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[0-9A-Za-z_-]+$",
+            "description": "The cancel_key passed to goal_start."
+          }
+        },
+        "additionalProperties": false
+      },
+      "output": {
+        "type": "object",
+        "properties": {
+          "cancelled": {
+            "type": "boolean"
+          },
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "cancelled",
+          "ids"
         ],
         "additionalProperties": false
       }

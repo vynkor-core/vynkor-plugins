@@ -22,6 +22,8 @@ pub const STATUS_NEEDS_CONFIRMATION: &str = "needs_confirmation";
 pub const STATUS_DECLINED: &str = "declined";
 pub const STATUS_MAX_STEPS: &str = "max_steps_reached";
 pub const STATUS_ERROR: &str = "error";
+/// Stopped by `goal_cancel`.
+pub const STATUS_CANCELLED: &str = "cancelled";
 
 /// One message of the model conversation, persisted so a halted goal can be
 /// resumed with full context later.
@@ -142,7 +144,7 @@ impl GoalDoc {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.status.as_str(),
-            STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR
+            STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR | STATUS_CANCELLED
         )
     }
 
@@ -454,7 +456,7 @@ pub fn prune_ids_at(limit: Option<usize>, mut docs: Vec<PruneCandidate>) -> Vec<
         .filter(|d| {
             matches!(
                 d.status.as_str(),
-                STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR
+                STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR | STATUS_CANCELLED
             )
         })
         .map(|d| d.id)

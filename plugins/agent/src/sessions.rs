@@ -295,7 +295,7 @@ impl TraceRec {
 pub fn turn_status(goal_status: &str) -> Option<&'static str> {
     match goal_status {
         "completed" => Some("ok"),
-        "declined" => Some("cancelled"),
+        "declined" | "cancelled" => Some("cancelled"),
         "error" | "max_steps_reached" => Some("failed"),
         _ => None,
     }

@@ -25,8 +25,8 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "agent";
-const PLUGIN_VERSION: &str = "0.1.7";
-const ACTIONS: [&str; 13] = [
+const PLUGIN_VERSION: &str = "0.1.8";
+const ACTIONS: [&str; 14] = [
     "goal_start",
     "goal_get",
     "goal_list",
@@ -40,6 +40,7 @@ const ACTIONS: [&str; 13] = [
     "routine_mine",
     "memory_forget_session",
     "goal_delete",
+    "goal_cancel",
 ];
 
 fn manifest() -> PluginManifest {
@@ -854,6 +855,9 @@ mod tests {
                                 }
                             } else if req.action == "chat_completion" {
                                 ai_requests.lock().await.push(params.clone());
+                                if ai_replies.front().is_some_and(|r| r.get("__hang__").is_some()) {
+                                    continue; // never answer: a provider that hangs
+                                }
                                 match ai_replies.pop_front() {
                                     Some(reply) => match reply.get("__fail__").and_then(Value::as_str) {
                                         Some(msg) => Err(msg.to_string()),
@@ -2275,6 +2279,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok["deleted"], 2);
+    }
+
+    #[tokio::test]
+    async fn goal_cancel_stops_a_hanging_goal_and_records_the_turn() {
+        let shim = start_plugin(Config::default()).await;
+        shim.chats_normal("S1", true, vec![]).await;
+        shim.push_ai_reply_value(serde_json::json!({"__hang__": true})).await;
+        let start = shim.call(
+            "goal_start",
+            serde_json::json!({"goal": "check the weather", "cancel_key": "turn-1"}),
+        );
+        let cancel = async {
+            for _ in 0..200 {
+                if !shim.ai_requests().await.is_empty() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            shim.call("goal_cancel", serde_json::json!({"cancel_key": "turn-1"})).await
+        };
+        let (res, cancelled) = tokio::join!(start, cancel);
+        let cancelled = cancelled.unwrap();
+        assert_eq!(cancelled["cancelled"], true, "{cancelled}");
+        let res = res.unwrap();
+        assert_eq!(res["status"], "cancelled", "{res}");
+        assert_eq!(cancelled["ids"][0], res["id"]);
+        let a = &wait_for_chats_calls(&shim, "chat_turn_append", 1).await[0];
+        assert_eq!(a["status"], "cancelled");
+        // Finished goals are no longer cancellable.
+        let again = shim.call("goal_cancel", serde_json::json!({"id": res["id"]})).await.unwrap();
+        assert_eq!(again["cancelled"], false);
     }
 
     #[tokio::test]

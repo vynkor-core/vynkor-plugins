@@ -185,7 +185,7 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
   (`AGENT_PLUGIN_CHATS_TIMEOUT_MS`, 2000) just means no session. The model
   cannot call `chat_turn_append`, `chat_session_resolve`, `chat_sync`,
   `chat_session_update`, `chat_delete`, `chat_recall` or `chat_review_apply`, nor the agent's own `goal_start`,
-  `goal_resume`, `goal_delete`, `memory_forget_session` or `memory_clear`, even
+  `goal_resume`, `goal_delete`, `goal_cancel`, `memory_forget_session` or `memory_clear`, even
   if allowlisted (`memory_forget` / `memory_list` remain allowlistable).
 - Tool filtering by goal keywords also looks at the session history (or the
   caller's `context` without history), so a follow-up keeps the previous tools;
@@ -214,6 +214,15 @@ Every `goal_start` is bound to a session in the `chats` plugin (`0.1.5`+):
 - `goal_delete {id}` -> `{deleted}` and `memory_forget_session {session_id}` ->
   `{deleted}` (facts removed) exist for the history delete cascade; both are
   idempotent. Facts stored before sessions existed are not matched.
+- `goal_cancel {id? | cancel_key?}` -> `{cancelled, ids}` stops a running goal.
+  The caller does not know the goal id while `goal_start` is in flight, so
+  `goal_start` takes an optional `cancel_key` (`[0-9A-Za-z_-]{1,64}`, chosen by
+  the caller, e.g. one per chat turn). The engine is dropped at its next await
+  point; the goal ends as `cancelled` (returned by the pending `goal_start` /
+  `goal_resume`) and its chat turn is recorded with status `cancelled`. A tool
+  call already sent finishes on its plugin, its result is discarded. A cancel
+  that arrives before the engine starts (catalog load, session resolve) still
+  stops it. Nothing running → `{cancelled: false, ids: []}`, not an error.
 
 ## Tool catalog (operator-gated, manifest-discovered)
 
