@@ -18,7 +18,7 @@ use vynkor_sdk::proto::{envelope, ActionResponse, ActionStatus, Envelope, Plugin
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "tts";
-const PLUGIN_VERSION: &str = "0.1.1";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Comma-separated allowlist of `ipc_targets` for `tts_speak` streaming.
 /// The kernel gates peer-to-peer unicast per-target (T-04): a target not

@@ -9,7 +9,7 @@ use vynkor_sdk::proto::{envelope, ActionRequest, ActionResponse, ActionStatus, E
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "clipboard";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 5] = ["clipboard_read", "clipboard_write", "clipboard_providers", "clipboard_history", "clipboard_clear"];
 
 fn manifest() -> PluginManifest {

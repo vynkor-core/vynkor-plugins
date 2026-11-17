@@ -13,7 +13,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "vector-db";
-const PLUGIN_VERSION: &str = "0.2.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn manifest() -> PluginManifest {
     PluginManifest {

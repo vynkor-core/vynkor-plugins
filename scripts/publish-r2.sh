@@ -9,7 +9,10 @@
 #   PUBLIC_BASE_URL    optional; when set, every registered archive_url is
 #                      fetched and sha256-verified after upload
 # Usage:
-#   scripts/publish-r2.sh [--dry-run]
+#   scripts/publish-r2.sh [--dry-run] [--wipe]
+#
+# --wipe deletes every archive under dist/ in the bucket first: a clean store
+# where only what this dist/ holds (and registry.json lists) is left.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,7 +24,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${R2_SECRET_ACCESS_KEY:?set R2_SECRET_ACCESS_KEY}"
 
 DRY=""
-[[ "${1:-}" == "--dry-run" ]] && DRY="--dry-run"
+WIPE=""
+for a in "$@"; do
+    case "$a" in
+        --dry-run) DRY="--dry-run" ;;
+        --wipe) WIPE=1 ;;
+        *) echo "unknown option: $a" >&2; exit 2 ;;
+    esac
+done
 
 export RCLONE_CONFIG_R2_TYPE=s3
 export RCLONE_CONFIG_R2_PROVIDER=Cloudflare
@@ -35,6 +45,11 @@ rclone_copy() {
     rclone copyto "$1" "R2:$R2_BUCKET/$2" \
         --header "Cache-Control: $3" $DRY
 }
+
+if [[ -n "$WIPE" ]]; then
+    echo "==> deleting old archives"
+    rclone purge "R2:$R2_BUCKET/dist" $DRY || echo "    (nothing to delete)"
+fi
 
 # 1. archives first — a registry entry must never point at a missing object;
 #    content-addressed by slug+version+sha256, so immutable caching is safe

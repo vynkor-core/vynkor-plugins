@@ -1,6 +1,6 @@
 {
   "plugin_id": "tasks",
-  "version": "0.1.1",
+  "version": "0.1.0",
   "permissions": [
     "PERMISSION_STORAGE",
     "PERMISSION_EVENT_PUBLISH"

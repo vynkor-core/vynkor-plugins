@@ -15,7 +15,7 @@ use vynkor_sdk::proto::{ActionRequest, Envelope, PluginManifest};
 use vynkor_sdk::VynkorError;
 
 pub const PLUGIN_ID: &str = "secrets";
-pub const PLUGIN_VERSION: &str = "0.1.0";
+pub const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 impl ConcurrentHandler for handler::Handler {
     fn id(&self) -> &str {

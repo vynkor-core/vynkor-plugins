@@ -24,7 +24,7 @@ use vynkor_sdk::proto::{
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 const PLUGIN_ID: &str = "notes";
-const PLUGIN_VERSION: &str = "0.1.0";
+const PLUGIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTIONS: [&str; 5] =
     ["note_create", "note_get", "note_list", "note_update", "note_delete"];
 

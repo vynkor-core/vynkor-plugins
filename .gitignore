@@ -5,3 +5,4 @@ models/
 .env
 .worktrees/
 __pycache__/
+dist/
