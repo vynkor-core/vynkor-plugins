@@ -369,7 +369,7 @@ pub async fn forget_session(rpc: &Rpc, session_id: &str) -> Result<usize, String
         index.retain(|e| !in_session(e));
     } else {
         index.retain(|e| {
-            e.get("id").and_then(Value::as_str).map_or(true, |id| !gone.iter().any(|g| g == id))
+            e.get("id").and_then(Value::as_str).is_none_or(|id| !gone.iter().any(|g| g == id))
         });
     }
     if index.len() != before {

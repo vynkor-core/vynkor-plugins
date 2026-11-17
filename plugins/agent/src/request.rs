@@ -31,11 +31,13 @@ pub struct GoalStartParams {
     pub kind: Option<String>,
     /// Free-form origin label, e.g. `desktop`.
     pub source: Option<String>,
+    /// Caller-chosen handle for `goal_cancel` while the call is in flight.
+    pub cancel_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentRequest {
-    GoalStart(GoalStartParams),
+    GoalStart(Box<GoalStartParams>),
     GoalGet { id: String },
     GoalList { limit: usize },
     GoalResume { id: String, approve: bool },
@@ -56,6 +58,8 @@ pub enum AgentRequest {
     MemoryForgetSession { session_id: String },
     /// `goal_delete {"id": "…"}` — remove one stored goal document.
     GoalDelete { id: String },
+    /// `goal_cancel {"id"?: "…", "cancel_key"?: "…"}` — stop a running goal.
+    GoalCancel { id: Option<String>, cancel_key: Option<String> },
 }
 
 fn want_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
@@ -98,6 +102,17 @@ fn check_session_id(sid: &str) -> Result<(), String> {
     check_size("session_id", sid, 64)?;
     if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         return Err("params.session_id must be 1..64 chars of [0-9A-Za-z_-]".to_string());
+    }
+    Ok(())
+}
+
+/// `cancel_key` shares the session-id alphabet: `[0-9A-Za-z_-]{1,64}`.
+fn check_cancel_key(key: &str) -> Result<(), String> {
+    if key.is_empty()
+        || key.len() > 64
+        || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
+        return Err("params.cancel_key must be 1..64 chars of [0-9A-Za-z_-]".to_string());
     }
     Ok(())
 }
@@ -185,6 +200,10 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
     if let Some(s) = &source {
         check_size("source", s, 64)?;
     }
+    let cancel_key = opt_str("cancel_key")?;
+    if let Some(k) = &cancel_key {
+        check_cancel_key(k)?;
+    }
 
     Ok(GoalStartParams {
         goal,
@@ -195,6 +214,7 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
         session_id,
         kind,
         source,
+        cancel_key,
     })
 }
 
@@ -202,7 +222,7 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
     let body: serde_json::Value = serde_json::from_slice(params_json)
         .map_err(|e| format!("invalid JSON params for {action}: {e}"))?;
     match action {
-        "goal_start" => Ok(AgentRequest::GoalStart(parse_goal_start(&body)?)),
+        "goal_start" => Ok(AgentRequest::GoalStart(Box::new(parse_goal_start(&body)?))),
         "goal_get" => Ok(AgentRequest::GoalGet { id: want_string(&body, "id")? }),
         "goal_list" => {
             let limit = body.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(50);
@@ -244,6 +264,21 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
             check_size("id", &id, 64)?;
             Ok(AgentRequest::GoalDelete { id })
         }
+        "goal_cancel" => {
+            let get = |f: &str| body.get(f).and_then(serde_json::Value::as_str).map(str::to_string);
+            let id = get("id");
+            if let Some(i) = &id {
+                check_size("id", i, 64)?;
+            }
+            let cancel_key = get("cancel_key");
+            if let Some(k) = &cancel_key {
+                check_cancel_key(k)?;
+            }
+            if id.is_none() && cancel_key.is_none() {
+                return Err("goal_cancel needs id or cancel_key".to_string());
+            }
+            Ok(AgentRequest::GoalCancel { id, cancel_key })
+        }
         other => Err(format!("ERR_AGENT_BAD_PARAMS: unknown action: {other}")),
     }
 }
@@ -255,6 +290,21 @@ mod tests {
 
     fn parse(action: &str, v: serde_json::Value) -> Result<AgentRequest, String> {
         parse_request(action, serde_json::to_vec(&v).unwrap().as_slice())
+    }
+
+    #[test]
+    fn goal_cancel_needs_id_or_key_and_checks_key() {
+        assert!(parse("goal_cancel", json!({})).unwrap_err().contains("id or cancel_key"));
+        assert!(parse("goal_cancel", json!({"cancel_key": "a b"})).is_err());
+        assert_eq!(
+            parse("goal_cancel", json!({"cancel_key": "turn-1"})).unwrap(),
+            AgentRequest::GoalCancel { id: None, cancel_key: Some("turn-1".into()) }
+        );
+        match parse("goal_start", json!({"goal": "g", "cancel_key": "k_1"})).unwrap() {
+            AgentRequest::GoalStart(p) => assert_eq!(p.cancel_key.as_deref(), Some("k_1")),
+            other => panic!("{other:?}"),
+        }
+        assert!(parse("goal_start", json!({"goal": "g", "cancel_key": "../x"})).is_err());
     }
 
     #[test]

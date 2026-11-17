@@ -28,6 +28,7 @@ pub mod memory;
 pub mod recall;
 pub mod request;
 pub mod routines;
+pub mod running;
 pub mod smalltalk;
 pub mod watchdog;
 pub mod sessions;
@@ -66,6 +67,8 @@ pub struct Config {
     pub recall_budget_ms: u64,
     /// Timeout of the goal's `vec_embed` (`AGENT_PLUGIN_EMBED_TIMEOUT_MS`).
     pub embed_timeout_ms: u32,
+    /// Goals running now, for `goal_cancel`.
+    pub running: running::Running,
 }
 
 impl Default for Config {
@@ -80,6 +83,7 @@ impl Default for Config {
             recall_min_score: 0.72,
             recall_budget_ms: 150,
             embed_timeout_ms: 5000,
+            running: running::Running::default(),
         }
     }
 }
@@ -139,6 +143,7 @@ impl Config {
             recall_min_score,
             recall_budget_ms,
             embed_timeout_ms,
+            running: d.running,
         }
     }
 }
@@ -322,6 +327,9 @@ async fn start_goal(
 ) -> Result<ActionResult, String> {
     let catalog = Catalog::load_with_discovery(rpc).await?;
     let id = db.next_id().await?.to_string();
+    // Registered before session resolve: a cancel that lands meanwhile is
+    // kept as a permit and stops the engine on its first await.
+    let guard = config.running.register(&id, params.cancel_key.clone());
     let now = store::now_ms();
     let llm = build_plan(&params);
 
@@ -388,7 +396,8 @@ async fn start_goal(
         recalled_sessions: Vec::new(),
     };
 
-    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history, query }).await?;
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::Fresh { history, query }, guard)
+        .await?;
 
     // Best-effort retention: bound the store so it doesn't grow forever.
     // No-op unless the operator opted in via AGENT_PLUGIN_GOAL_RETENTION_LIMIT
@@ -422,8 +431,31 @@ async fn run_and_record(
     catalog: &Catalog,
     doc: &mut GoalDoc,
     entry: engine::Entry,
+    guard: running::Guard,
 ) -> Result<(), String> {
-    let result = engine::run(db, rpc, config, catalog, doc, entry).await;
+    let stop = Arc::clone(&guard.stop);
+    let outcome = {
+        let run = engine::run(db, rpc, config, catalog, doc, entry);
+        tokio::pin!(run);
+        tokio::select! {
+            r = &mut run => Some(r),
+            _ = stop.notified() => None,
+        }
+    };
+    drop(guard);
+    let Some(result) = outcome else {
+        // Cancelled: the engine future is dropped mid-step; an in-flight
+        // tool call finishes on its plugin but its result is discarded.
+        doc.status = store::STATUS_CANCELLED.to_string();
+        doc.pending_tool.clear();
+        doc.pending_params = Value::Null;
+        engine::next_step(doc, "cancelled", json!({}));
+        if let Err(pe) = engine::persist(db, doc).await {
+            eprintln!("[agent] could not persist cancelled goal {}: {pe}", doc.id);
+        }
+        record_turn(rpc, config, doc);
+        return Ok(());
+    };
     if let Err(e) = &result {
         doc.status = store::STATUS_ERROR.to_string();
         doc.error = e.clone();
@@ -468,8 +500,10 @@ async fn resume_goal(
         return ok(summary(&doc), Some(changed(&doc.status, &doc.id)));
     }
 
+    let guard = config.running.register(&doc.id, None);
     let catalog = Catalog::load_with_discovery(rpc).await?;
-    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::ApprovedResume).await?;
+    run_and_record(db, rpc, config, &catalog, &mut doc, engine::Entry::ApprovedResume, guard)
+        .await?;
     ok(summary(&doc), Some(changed(&doc.status, &doc.id)))
 }
 
@@ -502,7 +536,7 @@ pub async fn handle_action(
     let req = request::parse_request(action, params_json)?;
     let db = Db::new(rpc.clone(), config.db_timeout_ms);
     match req {
-        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, config, caller, params).await,
+        AgentRequest::GoalStart(params) => start_goal(&db, &rpc, config, caller, *params).await,
         AgentRequest::GoalGet { id } => match db.get(&id).await? {
             Some(mut doc) => {
                 sessions::redact_goal(&mut doc);
@@ -550,6 +584,10 @@ pub async fn handle_action(
             }
             let deleted = db.delete(&id).await?;
             ok(json!({"deleted": deleted}), None)
+        }
+        AgentRequest::GoalCancel { id, cancel_key } => {
+            let ids = config.running.cancel(id.as_deref(), cancel_key.as_deref());
+            ok(json!({"cancelled": !ids.is_empty(), "ids": ids}), None)
         }
         AgentRequest::MemoryList => {
             let facts = memory::list(&rpc).await?;

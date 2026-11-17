@@ -266,8 +266,14 @@ pub const CHATS_INTERNAL_ACTIONS: [&str; 7] = [
 /// goals, resume or delete goals, or wipe memory, whatever the allowlist or
 /// tools file says. (`memory_forget` / `memory_list` stay as they were:
 /// operator-allowlistable.)
-pub const AGENT_MANAGEMENT_ACTIONS: [&str; 5] =
-    ["goal_start", "goal_resume", "goal_delete", "memory_forget_session", "memory_clear"];
+pub const AGENT_MANAGEMENT_ACTIONS: [&str; 6] = [
+    "goal_start",
+    "goal_resume",
+    "goal_delete",
+    "goal_cancel",
+    "memory_forget_session",
+    "memory_clear",
+];
 
 fn is_hard_denied(name: &str) -> bool {
     CHATS_INTERNAL_ACTIONS.contains(&name) || AGENT_MANAGEMENT_ACTIONS.contains(&name)
