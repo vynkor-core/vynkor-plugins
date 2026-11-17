@@ -67,9 +67,9 @@ pub enum SysRequest {
 /// Percent-typed newtype range check shared by volume and brightness
 /// setters: integer 0..=100 only.
 fn parse_percent(v: &serde_json::Value, field: &'static str) -> Result<u8, SystemError> {
-    let n = v.as_u64().ok_or_else(|| {
-        SystemError::BadParams(format!("'{field}' must be an integer 0..=100"))
-    })?;
+    let n = v
+        .as_u64()
+        .ok_or_else(|| SystemError::BadParams(format!("'{field}' must be an integer 0..=100")))?;
     u8::try_from(n)
         .ok()
         .filter(|p| *p <= 100)
@@ -77,7 +77,8 @@ fn parse_percent(v: &serde_json::Value, field: &'static str) -> Result<u8, Syste
 }
 
 fn field<'a>(v: &'a serde_json::Value, name: &str) -> Result<&'a serde_json::Value, SystemError> {
-    v.get(name).ok_or_else(|| SystemError::BadParams(format!("missing '{name}'")))
+    v.get(name)
+        .ok_or_else(|| SystemError::BadParams(format!("missing '{name}'")))
 }
 
 fn expect_object(params_json: &[u8]) -> Result<serde_json::Value, SystemError> {
@@ -86,7 +87,9 @@ fn expect_object(params_json: &[u8]) -> Result<serde_json::Value, SystemError> {
         .map_err(|e| SystemError::BadParams(format!("params must be a JSON object: {e}")))?;
     match v {
         obj @ serde_json::Value::Object(_) => Ok(obj),
-        _ => Err(SystemError::BadParams("params must be a JSON object".to_string())),
+        _ => Err(SystemError::BadParams(
+            "params must be a JSON object".to_string(),
+        )),
     }
 }
 
@@ -159,7 +162,10 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
     let Some(start) = bytes.iter().position(not_ws) else {
         return &[];
     };
-    let end = bytes.iter().rposition(not_ws).expect("start implies a non-ws byte exists");
+    let end = bytes
+        .iter()
+        .rposition(not_ws)
+        .expect("start implies a non-ws byte exists");
     &bytes[start..=end]
 }
 
@@ -169,7 +175,13 @@ mod tests {
 
     #[test]
     fn getters_accept_empty_and_reject_extra_params() {
-        for action in ["sys_info", "sys_battery", "sys_procs", "sys_volume", "sys_lock"] {
+        for action in [
+            "sys_info",
+            "sys_battery",
+            "sys_procs",
+            "sys_volume",
+            "sys_lock",
+        ] {
             assert_eq!(parse(action, b"").unwrap(), SysRequest::NoParams);
             assert_eq!(parse(action, b"  {} \n").unwrap(), SysRequest::NoParams);
             assert_eq!(
@@ -185,17 +197,31 @@ mod tests {
             parse("sys_volume_set", br#"{"percent": 42}"#).unwrap(),
             SysRequest::VolumeSet { percent: 42 }
         );
-        assert_eq!(parse("sys_volume_set", br#"{"percent": 0}"#).unwrap().clone(), SysRequest::VolumeSet { percent: 0 });
         assert_eq!(
-            parse("sys_volume_set", br#"{"percent": 101}"#).unwrap_err().code().as_str(),
+            parse("sys_volume_set", br#"{"percent": 0}"#)
+                .unwrap()
+                .clone(),
+            SysRequest::VolumeSet { percent: 0 }
+        );
+        assert_eq!(
+            parse("sys_volume_set", br#"{"percent": 101}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
         assert_eq!(
-            parse("sys_volume_set", br#"{"percent": 42.5}"#).unwrap_err().code().as_str(),
+            parse("sys_volume_set", br#"{"percent": 42.5}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
         assert_eq!(
-            parse("sys_volume_set", br#"{"percent": "42"}"#).unwrap_err().code().as_str(),
+            parse("sys_volume_set", br#"{"percent": "42"}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
         assert_eq!(
@@ -212,14 +238,22 @@ mod tests {
         );
         assert_eq!(
             parse("sys_volume_mute", br#"{"mode":"toggle"}"#).unwrap(),
-            SysRequest::VolumeMute { mode: MuteMode::Toggle }
+            SysRequest::VolumeMute {
+                mode: MuteMode::Toggle
+            }
         );
         assert_eq!(
-            parse("sys_volume_mute", br#"{"mode":"banana"}"#).unwrap_err().code().as_str(),
+            parse("sys_volume_mute", br#"{"mode":"banana"}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
         assert_eq!(
-            parse("sys_volume_mute", br#"{"mode":true}"#).unwrap_err().code().as_str(),
+            parse("sys_volume_mute", br#"{"mode":true}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
     }
@@ -231,7 +265,10 @@ mod tests {
             SysRequest::BrightnessSet { percent: 100 }
         );
         assert_eq!(
-            parse("sys_brightness_set", br#"{"percent":-1}"#).unwrap_err().code().as_str(),
+            parse("sys_brightness_set", br#"{"percent":-1}"#)
+                .unwrap_err()
+                .code()
+                .as_str(),
             "ERR_SYS_BAD_PARAMS"
         );
     }
@@ -240,11 +277,15 @@ mod tests {
     fn power_profile_set_parses_wire_strings_with_aliases() {
         assert_eq!(
             parse("sys_power_profile_set", br#"{"profile":"power-saver"}"#).unwrap(),
-            SysRequest::PowerProfileSet { profile: Profile::PowerSaver }
+            SysRequest::PowerProfileSet {
+                profile: Profile::PowerSaver
+            }
         );
         assert_eq!(
             parse("sys_power_profile_set", br#"{"profile":"saver"}"#).unwrap(),
-            SysRequest::PowerProfileSet { profile: Profile::PowerSaver }
+            SysRequest::PowerProfileSet {
+                profile: Profile::PowerSaver
+            }
         );
         assert_eq!(
             parse("sys_power_profile_set", br#"{"profile":"turbo"}"#)

@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 
 use super::guard::{self, Polarity};
-use super::{allowed_tools, eligible, mining_agent_id, spec_hash, store, Book, Routine, STATUS_ACTIVE};
+use super::{
+    allowed_tools, eligible, mining_agent_id, spec_hash, store, Book, Routine, STATUS_ACTIVE,
+};
 use crate::llm::{self, CallTag};
 use crate::smalltalk::normalize;
 use crate::store::{now_ms, Db, LlmPlan, MiningRow, Turn, STATUS_COMPLETED};
@@ -85,14 +87,26 @@ fn single_call(goal: &MiningRow) -> Option<(&str, &Value)> {
     if ok.next().is_some() {
         return None;
     }
-    Some((step.detail.get("tool")?.as_str()?, step.detail.get("params")?))
+    Some((
+        step.detail.get("tool")?.as_str()?,
+        step.detail.get("params")?,
+    ))
 }
 
-pub fn candidates(goals: &[MiningRow], catalog: &Catalog, allow: &[String], book: &Book) -> Vec<Candidate> {
+pub fn candidates(
+    goals: &[MiningRow],
+    catalog: &Catalog,
+    allow: &[String],
+    book: &Book,
+) -> Vec<Candidate> {
     let mut groups: BTreeMap<(String, String), Candidate> = BTreeMap::new();
     for goal in goals {
-        let Some((tool, params)) = single_call(goal) else { continue };
-        if !catalog.get(tool).is_some_and(|s| eligible(s, allow)) || guard::is_read_call(tool, params) {
+        let Some((tool, params)) = single_call(goal) else {
+            continue;
+        };
+        if !catalog.get(tool).is_some_and(|s| eligible(s, allow))
+            || guard::is_read_call(tool, params)
+        {
             continue;
         }
         let text = normalize(&goal.goal);
@@ -106,12 +120,14 @@ pub fn candidates(goals: &[MiningRow], catalog: &Catalog, allow: &[String], book
         if stale {
             continue;
         }
-        let c = groups.entry((tool.to_string(), canonical(params))).or_insert_with(|| Candidate {
-            tool: tool.to_string(),
-            params: params.clone(),
-            texts: Vec::new(),
-            successes: 0,
-        });
+        let c = groups
+            .entry((tool.to_string(), canonical(params)))
+            .or_insert_with(|| Candidate {
+                tool: tool.to_string(),
+                params: params.clone(),
+                texts: Vec::new(),
+                successes: 0,
+            });
         c.successes += 1;
         if !c.texts.contains(&text) {
             c.texts.push(text);
@@ -129,7 +145,8 @@ pub fn candidates(goals: &[MiningRow], catalog: &Catalog, allow: &[String], book
         .into_values()
         .filter_map(|mut c| {
             let polarity = guard::call_polarity(&c.params);
-            c.texts.retain(|t| owners[t] == 1 && guard::phrase_ok(t, polarity));
+            c.texts
+                .retain(|t| owners[t] == 1 && guard::phrase_ok(t, polarity));
             c.texts.sort();
             (c.successes >= MIN_SUCCESSES && !c.texts.is_empty()).then_some(c)
         })
@@ -142,7 +159,12 @@ pub fn parse_enrichment(content: &str) -> Option<Enrichment> {
     let strings = |k: &str| -> Vec<String> {
         v.get(k)
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let mut replies: Vec<String> = strings("replies")
@@ -155,13 +177,22 @@ pub fn parse_enrichment(content: &str) -> Option<Enrichment> {
     if replies.is_empty() {
         return None;
     }
-    let mut paraphrases: Vec<String> =
-        strings("paraphrases").iter().map(|p| normalize(p)).filter(|p| !p.is_empty()).collect();
+    let mut paraphrases: Vec<String> = strings("paraphrases")
+        .iter()
+        .map(|p| normalize(p))
+        .filter(|p| !p.is_empty())
+        .collect();
     paraphrases.dedup();
     paraphrases.truncate(MAX_PARAPHRASES);
     Some(Enrichment {
         learn: v.get("learn").and_then(Value::as_bool).unwrap_or(false),
-        reason: v.get("reason").and_then(Value::as_str).unwrap_or_default().chars().take(200).collect(),
+        reason: v
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect(),
         paraphrases,
         replies,
     })
@@ -169,13 +200,24 @@ pub fn parse_enrichment(content: &str) -> Option<Enrichment> {
 
 /// The model decides whether to learn; [`guard`] only vetoes what it
 /// writes that would act or answer wrongly.
-pub fn merge(book: &mut Book, c: &Candidate, e: &Enrichment, spec_hash: &str, now_ms: i64) -> MergeOutcome {
+pub fn merge(
+    book: &mut Book,
+    c: &Candidate,
+    e: &Enrichment,
+    spec_hash: &str,
+    now_ms: i64,
+) -> MergeOutcome {
     if !e.learn {
         return MergeOutcome::Dropped;
     }
     let polarity = guard::call_polarity(&c.params);
-    let mut replies: Vec<String> =
-        e.replies.iter().filter(|r| guard::reply_ok(r, polarity, &c.texts)).take(MAX_REPLIES).cloned().collect();
+    let mut replies: Vec<String> = e
+        .replies
+        .iter()
+        .filter(|r| guard::reply_ok(r, polarity, &c.texts))
+        .take(MAX_REPLIES)
+        .cloned()
+        .collect();
     for stock in guard::stock_replies(polarity) {
         if replies.len() >= MIN_REPLIES {
             break;
@@ -184,7 +226,10 @@ pub fn merge(book: &mut Book, c: &Candidate, e: &Enrichment, spec_hash: &str, no
             replies.push(stock.to_string());
         }
     }
-    let existing = book.routines.iter().position(|r| same_call(r, &c.tool, &c.params));
+    let existing = book
+        .routines
+        .iter()
+        .position(|r| same_call(r, &c.tool, &c.params));
     let owned_elsewhere = |p: &String| {
         book.routines
             .iter()
@@ -192,8 +237,10 @@ pub fn merge(book: &mut Book, c: &Candidate, e: &Enrichment, spec_hash: &str, no
             .any(|(i, r)| Some(i) != existing && r.phrases.contains(p))
     };
     let mut phrases: Vec<String> = Vec::new();
-    let paraphrases =
-        e.paraphrases.iter().filter(|p| guard::phrase_ok(p, polarity) && guard::anchored(p, &c.texts));
+    let paraphrases = e
+        .paraphrases
+        .iter()
+        .filter(|p| guard::phrase_ok(p, polarity) && guard::anchored(p, &c.texts));
     for p in c.texts.iter().chain(paraphrases) {
         if !phrases.contains(p) && !owned_elsewhere(p) {
             phrases.push(p.clone());
@@ -298,14 +345,27 @@ pub async fn run(rpc: &Rpc, db: &Db, catalog: &Catalog) -> Result<Value, String>
     let since = now_ms() - super::lookback_days() * 86_400_000;
     let goals = db.mining_rows(since).await?;
     let allow = allowed_tools();
-    let found = candidates(&goals, catalog, &allow, &store::load(rpc, db.timeout_ms()).await);
+    let found = candidates(
+        &goals,
+        catalog,
+        &allow,
+        &store::load(rpc, db.timeout_ms()).await,
+    );
 
     let mut enriched = Vec::new();
     let mut skipped = 0;
     for c in &found {
-        let Some(spec) = catalog.get(&c.tool) else { continue };
-        let transcript = [Turn { role: "user".into(), content: mining_prompt(c, spec) }];
-        let tag = CallTag { purpose: "routine_mine", goal_id: "" };
+        let Some(spec) = catalog.get(&c.tool) else {
+            continue;
+        };
+        let transcript = [Turn {
+            role: "user".into(),
+            content: mining_prompt(c, spec),
+        }];
+        let tag = CallTag {
+            purpose: "routine_mine",
+            goal_id: "",
+        };
         // no fallback on purpose: the fallback profile may be a cloud one
         match llm::chat(rpc, &plan, &transcript, &[], &tag).await {
             Ok(o) => match parse_enrichment(&o.content) {
@@ -317,7 +377,10 @@ pub async fn run(rpc: &Rpc, db: &Db, catalog: &Catalog) -> Result<Value, String>
                     enriched.push((c, e, spec_hash(spec)))
                 }
                 None => {
-                    eprintln!("[agent] routines: unusable mining reply for {}: {}", c.tool, o.content);
+                    eprintln!(
+                        "[agent] routines: unusable mining reply for {}: {}",
+                        c.tool, o.content
+                    );
                     skipped += 1;
                 }
             },
@@ -414,7 +477,11 @@ mod tests {
     fn two_identical_successes_make_one_candidate() {
         let goals = [
             goal("включи свет", &[("tool_ok", "light", on())], 1),
-            goal("Включи свет.", &[("tool_ok", "light", json!({"value": 1, "pin": "D1"}))], 2),
+            goal(
+                "Включи свет.",
+                &[("tool_ok", "light", json!({"value": 1, "pin": "D1"}))],
+                2,
+            ),
         ];
         let got = candidates(&goals, &catalog(&["light"]), &allow(), &Book::default());
         assert_eq!(got.len(), 1);
@@ -433,7 +500,11 @@ mod tests {
         ];
         assert!(candidates(&foreign, &cat, &allow(), &Book::default()).is_empty());
         let with_error = [
-            goal("включи свет", &[("tool_error", "light", on()), ("tool_ok", "light", on())], 1),
+            goal(
+                "включи свет",
+                &[("tool_error", "light", on()), ("tool_ok", "light", on())],
+                1,
+            ),
             goal("включи свет", &[("tool_ok", "light", on())], 2),
         ];
         assert!(candidates(&with_error, &cat, &allow(), &Book::default()).is_empty());
@@ -459,7 +530,12 @@ mod tests {
         ];
         let mut book = Book::default();
         let c = candidates(&goals, &catalog(&["light"]), &allow(), &book).remove(0);
-        let e = Enrichment { learn: true, reason: String::new(), paraphrases: vec![], replies: vec!["Свет включён.".into()] };
+        let e = Enrichment {
+            learn: true,
+            reason: String::new(),
+            paraphrases: vec![],
+            replies: vec!["Свет включён.".into()],
+        };
         merge(&mut book, &c, &e, "h", 5);
         book.disable(0, "user_correction", 10);
         assert!(candidates(&goals, &catalog(&["light"]), &allow(), &book).is_empty());
@@ -470,7 +546,11 @@ mod tests {
         let cat = catalog(&["light"]);
         let state = json!({"command": "get_state", "params": {"name": "led"}});
         let reads = [
-            goal("статус светодиода", &[("tool_ok", "light", state.clone())], 1),
+            goal(
+                "статус светодиода",
+                &[("tool_ok", "light", state.clone())],
+                1,
+            ),
             goal("статус светодиода", &[("tool_ok", "light", state)], 2),
         ];
         assert!(candidates(&reads, &cat, &allow(), &Book::default()).is_empty());
@@ -490,9 +570,15 @@ mod tests {
         };
         let mut book = Book::default();
         assert_eq!(merge(&mut book, &c, &e, "h", 1), MergeOutcome::Created);
-        assert_eq!(book.routines[0].phrases, vec!["выключи светодиод", "погаси светодиод"]);
+        assert_eq!(
+            book.routines[0].phrases,
+            vec!["выключи светодиод", "погаси светодиод"]
+        );
         // "Зажёг." is gone, and the one survivor is topped up without a duplicate
-        assert_eq!(book.routines[0].replies, guard::stock_replies(Some(Polarity::Off)));
+        assert_eq!(
+            book.routines[0].replies,
+            guard::stock_replies(Some(Polarity::Off))
+        );
     }
 
     #[test]
@@ -501,11 +587,19 @@ mod tests {
         let raw = format!(
             "```json\n{{\"learn\": true, \"paraphrases\": [\"Свет вкл!\", \"\", {p}], \
              \"replies\": [\"Готово.\", \"{long}\", \" \"]}}\n```",
-            p = (0..10).map(|i| format!("\"вариант {i}\"")).collect::<Vec<_>>().join(", "),
+            p = (0..10)
+                .map(|i| format!("\"вариант {i}\""))
+                .collect::<Vec<_>>()
+                .join(", "),
         );
         let e = parse_enrichment(&raw).unwrap();
         assert!(e.learn);
-        assert!(!parse_enrichment(r#"{"replies": ["Готово."]}"#).unwrap().learn, "missing verdict = no");
+        assert!(
+            !parse_enrichment(r#"{"replies": ["Готово."]}"#)
+                .unwrap()
+                .learn,
+            "missing verdict = no"
+        );
         assert_eq!(e.replies, vec!["Готово."]);
         assert_eq!(e.paraphrases.len(), MAX_PARAPHRASES);
         assert_eq!(e.paraphrases[0], "свет вкл");
@@ -515,14 +609,37 @@ mod tests {
 
     #[test]
     fn merge_tops_up_replies_and_skips_phrases_owned_elsewhere() {
-        let c = Candidate { tool: "light".into(), params: on(), texts: vec!["включи свет".into()], successes: 2 };
-        let declined =
-            Enrichment { learn: false, reason: "ambiguous".into(), paraphrases: vec![], replies: vec!["Включил.".into()] };
-        assert_eq!(merge(&mut Book::default(), &c, &declined, "h", 1), MergeOutcome::Dropped);
-        let wrong = Enrichment { learn: true, reason: String::new(), paraphrases: vec![], replies: vec!["Выключил.".into()] };
+        let c = Candidate {
+            tool: "light".into(),
+            params: on(),
+            texts: vec!["включи свет".into()],
+            successes: 2,
+        };
+        let declined = Enrichment {
+            learn: false,
+            reason: "ambiguous".into(),
+            paraphrases: vec![],
+            replies: vec!["Включил.".into()],
+        };
+        assert_eq!(
+            merge(&mut Book::default(), &c, &declined, "h", 1),
+            MergeOutcome::Dropped
+        );
+        let wrong = Enrichment {
+            learn: true,
+            reason: String::new(),
+            paraphrases: vec![],
+            replies: vec!["Выключил.".into()],
+        };
         let mut scratch = Book::default();
-        assert_eq!(merge(&mut scratch, &c, &wrong, "h", 1), MergeOutcome::Created);
-        assert_eq!(scratch.routines[0].replies, guard::stock_replies(Some(Polarity::On)));
+        assert_eq!(
+            merge(&mut scratch, &c, &wrong, "h", 1),
+            MergeOutcome::Created
+        );
+        assert_eq!(
+            scratch.routines[0].replies,
+            guard::stock_replies(Some(Polarity::On))
+        );
 
         let mut book = Book::default();
 
@@ -540,7 +657,11 @@ mod tests {
             successes: 2,
         };
         assert_eq!(merge(&mut book, &other, &e, "h", 2), MergeOutcome::Created);
-        assert_eq!(book.routines[1].phrases, vec!["включи второй свет"], "\"зажги свет\" belongs to r0");
+        assert_eq!(
+            book.routines[1].phrases,
+            vec!["включи второй свет"],
+            "\"зажги свет\" belongs to r0"
+        );
         assert_eq!(merge(&mut book, &c, &e, "h2", 3), MergeOutcome::Updated);
         assert_eq!(book.routines[0].spec_hash, "h2");
     }

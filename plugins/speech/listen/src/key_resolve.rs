@@ -35,7 +35,9 @@ const SECRETS_TIMEOUT_MS: u32 = 3000;
 /// `[stt]` prefix and falls through to the env var. `Err` only when both
 /// sources miss.
 pub async fn resolve_api_key(client: &mut VynkorClient, handle: &str) -> Result<String, String> {
-    let params = serde_json::json!({ "name": handle }).to_string().into_bytes();
+    let params = serde_json::json!({ "name": handle })
+        .to_string()
+        .into_bytes();
     match client
         .send_action("secret_get", &params, SECRETS_TIMEOUT_MS)
         .await
@@ -60,9 +62,9 @@ pub async fn resolve_api_key(client: &mut VynkorClient, handle: &str) -> Result<
                 );
             }
         }
-        Err(e) => eprintln!(
-            "[stt] secrets vault unavailable ({e}), falling back to env var '{handle}'"
-        ),
+        Err(e) => {
+            eprintln!("[stt] secrets vault unavailable ({e}), falling back to env var '{handle}'")
+        }
     }
 
     match std::env::var(handle) {

@@ -38,12 +38,21 @@ pub struct GoalStartParams {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentRequest {
     GoalStart(Box<GoalStartParams>),
-    GoalGet { id: String },
-    GoalList { limit: usize },
-    GoalResume { id: String, approve: bool },
+    GoalGet {
+        id: String,
+    },
+    GoalList {
+        limit: usize,
+    },
+    GoalResume {
+        id: String,
+        approve: bool,
+    },
     ToolsList,
     /// `memory_forget {"query": "…"}` — delete the top similar fact.
-    MemoryForget { query: String },
+    MemoryForget {
+        query: String,
+    },
     /// `memory_clear {}` — wipe every stored fact.
     MemoryClear,
     /// `memory_list {}` — index contents, newest first.
@@ -51,15 +60,24 @@ pub enum AgentRequest {
     /// `routine_list {}` — every learned routine.
     RoutineList,
     /// `routine_delete {"id": "…"}`
-    RoutineDelete { id: String },
+    RoutineDelete {
+        id: String,
+    },
     /// `routine_mine {}` — run mining now.
     RoutineMine,
     /// `memory_forget_session {"session_id": "…"}` — drop every fact learned in a session.
-    MemoryForgetSession { session_id: String },
+    MemoryForgetSession {
+        session_id: String,
+    },
     /// `goal_delete {"id": "…"}` — remove one stored goal document.
-    GoalDelete { id: String },
+    GoalDelete {
+        id: String,
+    },
     /// `goal_cancel {"id"?: "…", "cancel_key"?: "…"}` — stop a running goal.
-    GoalCancel { id: Option<String>, cancel_key: Option<String> },
+    GoalCancel {
+        id: Option<String>,
+        cancel_key: Option<String>,
+    },
 }
 
 fn want_string(body: &serde_json::Value, field: &str) -> Result<String, String> {
@@ -71,7 +89,10 @@ fn want_string(body: &serde_json::Value, field: &str) -> Result<String, String> 
 
 fn check_size(field: &str, value: &str, max: usize) -> Result<(), String> {
     if value.len() > max {
-        Err(format!("params.{field} exceeds {max} bytes (got {})", value.len()))
+        Err(format!(
+            "params.{field} exceeds {max} bytes (got {})",
+            value.len()
+        ))
     } else {
         Ok(())
     }
@@ -100,7 +121,11 @@ fn check_base_url(value: &str) -> Result<(), String> {
 /// `chats` session ids are ULIDs; accept the safe superset `[0-9A-Za-z_-]{1,64}`.
 fn check_session_id(sid: &str) -> Result<(), String> {
     check_size("session_id", sid, 64)?;
-    if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if sid.is_empty()
+        || !sid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return Err("params.session_id must be 1..64 chars of [0-9A-Za-z_-]".to_string());
     }
     Ok(())
@@ -110,7 +135,9 @@ fn check_session_id(sid: &str) -> Result<(), String> {
 fn check_cancel_key(key: &str) -> Result<(), String> {
     if key.is_empty()
         || key.len() > 64
-        || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Err("params.cancel_key must be 1..64 chars of [0-9A-Za-z_-]".to_string());
     }
@@ -141,7 +168,9 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
 
     let max_steps = match body.get("max_steps") {
         Some(v) => {
-            let n = v.as_u64().ok_or_else(|| "params.max_steps must be an integer".to_string())?;
+            let n = v
+                .as_u64()
+                .ok_or_else(|| "params.max_steps must be an integer".to_string())?;
             u32::try_from(n).map_err(|_| "params.max_steps out of range".to_string())?
         }
         None => 0, // 0 = use the operator default (env), resolved by the engine
@@ -161,7 +190,9 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
     let provider = opt_str("provider")?;
     if let Some(p) = &provider {
         if p != "anthropic" && p != "openai" {
-            return Err(format!("params.provider must be \"anthropic\" or \"openai\" (got \"{p}\")"));
+            return Err(format!(
+                "params.provider must be \"anthropic\" or \"openai\" (got \"{p}\")"
+            ));
         }
     }
     let base_url = opt_str("base_url")?;
@@ -193,7 +224,9 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
     let kind = opt_str("kind")?;
     if let Some(k) = &kind {
         if k != "chat" && k != "voice" {
-            return Err(format!("params.kind must be \"chat\" or \"voice\" (got \"{k}\")"));
+            return Err(format!(
+                "params.kind must be \"chat\" or \"voice\" (got \"{k}\")"
+            ));
         }
     }
     let source = opt_str("source")?;
@@ -210,7 +243,14 @@ fn parse_goal_start(body: &serde_json::Value) -> Result<GoalStartParams, String>
         context,
         title,
         max_steps,
-        llm: LlmOverrides { provider, base_url, model, api_key_env, agent_id, max_tokens },
+        llm: LlmOverrides {
+            provider,
+            base_url,
+            model,
+            api_key_env,
+            agent_id,
+            max_tokens,
+        },
         session_id,
         kind,
         source,
@@ -223,12 +263,15 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
         .map_err(|e| format!("invalid JSON params for {action}: {e}"))?;
     match action {
         "goal_start" => Ok(AgentRequest::GoalStart(Box::new(parse_goal_start(&body)?))),
-        "goal_get" => Ok(AgentRequest::GoalGet { id: want_string(&body, "id")? }),
+        "goal_get" => Ok(AgentRequest::GoalGet {
+            id: want_string(&body, "id")?,
+        }),
         "goal_list" => {
-            let limit = body.get("limit").and_then(serde_json::Value::as_u64).unwrap_or(50);
-            let limit = usize::try_from(limit)
-                .unwrap_or(50)
-                .clamp(1, 200);
+            let limit = body
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50);
+            let limit = usize::try_from(limit).unwrap_or(50).clamp(1, 200);
             Ok(AgentRequest::GoalList { limit })
         }
         "goal_resume" => {
@@ -265,7 +308,11 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AgentRequest, S
             Ok(AgentRequest::GoalDelete { id })
         }
         "goal_cancel" => {
-            let get = |f: &str| body.get(f).and_then(serde_json::Value::as_str).map(str::to_string);
+            let get = |f: &str| {
+                body.get(f)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            };
             let id = get("id");
             if let Some(i) = &id {
                 check_size("id", i, 64)?;
@@ -294,11 +341,16 @@ mod tests {
 
     #[test]
     fn goal_cancel_needs_id_or_key_and_checks_key() {
-        assert!(parse("goal_cancel", json!({})).unwrap_err().contains("id or cancel_key"));
+        assert!(parse("goal_cancel", json!({}))
+            .unwrap_err()
+            .contains("id or cancel_key"));
         assert!(parse("goal_cancel", json!({"cancel_key": "a b"})).is_err());
         assert_eq!(
             parse("goal_cancel", json!({"cancel_key": "turn-1"})).unwrap(),
-            AgentRequest::GoalCancel { id: None, cancel_key: Some("turn-1".into()) }
+            AgentRequest::GoalCancel {
+                id: None,
+                cancel_key: Some("turn-1".into())
+            }
         );
         match parse("goal_start", json!({"goal": "g", "cancel_key": "k_1"})).unwrap() {
             AgentRequest::GoalStart(p) => assert_eq!(p.cancel_key.as_deref(), Some("k_1")),
@@ -315,10 +367,17 @@ mod tests {
                 assert_eq!(p.context, "");
                 assert_eq!(p.title, None);
                 assert_eq!(p.max_steps, 0);
-                assert_eq!(p.llm, LlmOverrides {
-                    provider: None, base_url: None, model: None,
-                    api_key_env: None, agent_id: None, max_tokens: None,
-                });
+                assert_eq!(
+                    p.llm,
+                    LlmOverrides {
+                        provider: None,
+                        base_url: None,
+                        model: None,
+                        api_key_env: None,
+                        agent_id: None,
+                        max_tokens: None,
+                    }
+                );
             }
             other => panic!("wrong variant: {other:?}"),
         }
@@ -368,7 +427,11 @@ mod tests {
         assert!(err.contains("provider"), "{err}");
         let err = parse("goal_start", json!({"goal": "g", "base_url": "ftp://x"})).unwrap_err();
         assert!(err.contains("base_url"), "{err}");
-        let err = parse("goal_start", json!({"goal": "g", "api_key_env": "two words"})).unwrap_err();
+        let err = parse(
+            "goal_start",
+            json!({"goal": "g", "api_key_env": "two words"}),
+        )
+        .unwrap_err();
         assert!(err.contains("api_key_env"), "{err}");
     }
 
@@ -394,7 +457,10 @@ mod tests {
         }
         let err = parse("goal_resume", json!({"id": "3"})).unwrap_err();
         assert!(err.contains("approve"), "{err}");
-        assert!(matches!(parse("tools_list", json!({})).unwrap(), AgentRequest::ToolsList));
+        assert!(matches!(
+            parse("tools_list", json!({})).unwrap(),
+            AgentRequest::ToolsList
+        ));
     }
 
     #[test]
@@ -420,7 +486,11 @@ mod tests {
         }
         let err = parse("goal_start", json!({"goal": "g", "kind": "sms"})).unwrap_err();
         assert!(err.contains("kind"), "{err}");
-        let err = parse("goal_start", json!({"goal": "g", "session_id": "x".repeat(65)})).unwrap_err();
+        let err = parse(
+            "goal_start",
+            json!({"goal": "g", "session_id": "x".repeat(65)}),
+        )
+        .unwrap_err();
         assert!(err.contains("session_id"), "{err}");
         let err = parse("goal_start", json!({"goal": "g", "session_id": "a b"})).unwrap_err();
         assert!(err.contains("session_id"), "{err}");
@@ -434,7 +504,9 @@ mod tests {
             AgentRequest::MemoryForgetSession { session_id } => assert_eq!(session_id, "S1"),
             other => panic!("wrong variant: {other:?}"),
         }
-        assert!(parse("memory_forget_session", json!({})).unwrap_err().contains("session_id"));
+        assert!(parse("memory_forget_session", json!({}))
+            .unwrap_err()
+            .contains("session_id"));
         assert!(parse("memory_forget_session", json!({"session_id": ""})).is_err());
         assert!(parse("memory_forget_session", json!({"session_id": "a b"})).is_err());
         match parse("goal_delete", json!({"id": "7"})).unwrap() {
@@ -452,8 +524,14 @@ mod tests {
 
     #[test]
     fn routine_actions_parse() {
-        assert_eq!(parse("routine_list", json!({})).unwrap(), AgentRequest::RoutineList);
-        assert_eq!(parse("routine_mine", json!({})).unwrap(), AgentRequest::RoutineMine);
+        assert_eq!(
+            parse("routine_list", json!({})).unwrap(),
+            AgentRequest::RoutineList
+        );
+        assert_eq!(
+            parse("routine_mine", json!({})).unwrap(),
+            AgentRequest::RoutineMine
+        );
         assert_eq!(
             parse("routine_delete", json!({"id": "r1"})).unwrap(),
             AgentRequest::RoutineDelete { id: "r1".into() }

@@ -181,7 +181,11 @@ pub fn validate_cron_expr(expr: &str, tz_offset_min: i32) -> Result<(), String> 
     Ok(())
 }
 
-pub fn validate_cron_expr_tz(expr: &str, tz: Option<&str>, tz_offset_min: i32) -> Result<(), String> {
+pub fn validate_cron_expr_tz(
+    expr: &str,
+    tz: Option<&str>,
+    tz_offset_min: i32,
+) -> Result<(), String> {
     let normalized = normalize_cron_expr(expr);
     Schedule::from_str(&normalized)
         .map(|_| ())
@@ -195,7 +199,9 @@ pub fn validate_cron_expr_tz(expr: &str, tz: Option<&str>, tz_offset_min: i32) -
 }
 
 fn parse_tz(tz_str: &str) -> Result<chrono_tz::Tz, String> {
-    tz_str.parse::<chrono_tz::Tz>().map_err(|_| format!("invalid IANA timezone {tz_str:?}"))
+    tz_str
+        .parse::<chrono_tz::Tz>()
+        .map_err(|_| format!("invalid IANA timezone {tz_str:?}"))
 }
 
 pub fn next_cron_after_ms(
@@ -226,9 +232,15 @@ pub fn next_cron_after_ms_tz(
     let normalized = normalize_cron_expr(expr);
     let sched = Schedule::from_str(&normalized)
         .map_err(|e| format!("invalid cron expression {expr:?}: {e}"))?;
-    let after_utc: DateTime<Utc> = Utc.timestamp_millis_opt(after_ms).single().ok_or_else(|| format!("timestamp out of range: {after_ms}"))?;
+    let after_utc: DateTime<Utc> = Utc
+        .timestamp_millis_opt(after_ms)
+        .single()
+        .ok_or_else(|| format!("timestamp out of range: {after_ms}"))?;
     let after_tz = after_utc.with_timezone(&tz);
-    Ok(sched.after(&after_tz).next().map(|dt| dt.with_timezone(&Utc).timestamp_millis()))
+    Ok(sched
+        .after(&after_tz)
+        .next()
+        .map(|dt| dt.with_timezone(&Utc).timestamp_millis()))
 }
 
 #[cfg(test)]

@@ -101,9 +101,11 @@ async fn serve(mut client: VynkorClient, config: Config) -> Result<(), VynkorErr
     // A zero period would panic tokio's interval; when scanning is disabled
     // the branch below is never polled, so the placeholder period is inert.
     let scanning = config.scan_secs > 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(
-        if scanning { config.scan_secs.max(1) } else { 3600 },
-    ));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(if scanning {
+        config.scan_secs.max(1)
+    } else {
+        3600
+    }));
 
     println!("[{PLUGIN_ID}] registered with kernel");
     if scanning {
@@ -272,7 +274,10 @@ mod tests {
     impl FakeDb {
         fn handle(&mut self, action: &str, params: Value) -> Result<Value, String> {
             fn key(p: &Value) -> String {
-                p.get("key").and_then(Value::as_str).unwrap_or_default().to_string()
+                p.get("key")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
             }
             match action {
                 "db_incr" => {
@@ -285,7 +290,8 @@ mod tests {
                 }
                 "db_set" => {
                     let k = key(&params);
-                    self.kv.insert(k, params.get("value").cloned().unwrap_or(Value::Null));
+                    self.kv
+                        .insert(k, params.get("value").cloned().unwrap_or(Value::Null));
                     Ok(serde_json::json!({"ok": true}))
                 }
                 "db_get" => {
@@ -325,7 +331,11 @@ mod tests {
     }
 
     enum Cmd {
-        Call { action: String, params: Value, reply: oneshot::Sender<Result<Value, String>> },
+        Call {
+            action: String,
+            params: Value,
+            reply: oneshot::Sender<Result<Value, String>>,
+        },
     }
 
     struct Shim {
@@ -338,7 +348,11 @@ mod tests {
         async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
             let (reply_tx, reply_rx) = oneshot::channel();
             self.tx
-                .send(Cmd::Call { action: action.into(), params, reply: reply_tx })
+                .send(Cmd::Call {
+                    action: action.into(),
+                    params,
+                    reply: reply_tx,
+                })
                 .await
                 .expect("shim loop died");
             tokio::time::timeout(Duration::from_secs(5), reply_rx)
@@ -370,8 +384,17 @@ mod tests {
         let (tx, rx) = mpsc::channel::<Cmd>(16);
         let published: Published = Arc::new(Mutex::new(Vec::new()));
         let notified: Notified = Arc::new(Mutex::new(Vec::new()));
-        tokio::spawn(run_shim(kernel_client, rx, published.clone(), notified.clone()));
-        Shim { tx, published, notified }
+        tokio::spawn(run_shim(
+            kernel_client,
+            rx,
+            published.clone(),
+            notified.clone(),
+        ));
+        Shim {
+            tx,
+            published,
+            notified,
+        }
     }
 
     async fn run_shim(
@@ -397,12 +420,20 @@ mod tests {
                 .expect("plugin stream closed before registration");
             match env.payload {
                 Some(envelope::Payload::PluginRegister(_)) => {
-                    let _ = kernel.send("calendar", Envelope {
-                        payload: Some(envelope::Payload::PluginRegisterAck(
-                            PluginRegisterAck { accepted: true, ..Default::default() },
-                        )),
-                        ..Default::default()
-                    }).await;
+                    let _ = kernel
+                        .send(
+                            "calendar",
+                            Envelope {
+                                payload: Some(envelope::Payload::PluginRegisterAck(
+                                    PluginRegisterAck {
+                                        accepted: true,
+                                        ..Default::default()
+                                    },
+                                )),
+                                ..Default::default()
+                            },
+                        )
+                        .await;
                     break;
                 }
                 _ => continue,
@@ -540,7 +571,11 @@ mod tests {
     }
 
     fn scan_config() -> Config {
-        Config { db_timeout_ms: 5000, scan_secs: 1, notify_enabled: true }
+        Config {
+            db_timeout_ms: 5000,
+            scan_secs: 1,
+            notify_enabled: true,
+        }
     }
 
     #[tokio::test]
@@ -563,12 +598,18 @@ mod tests {
         assert_eq!(created["id"], "1");
         assert_eq!(created["event"]["reminder_fired"], false);
 
-        let got = shim.call("event_get", serde_json::json!({"id": "1"})).await.unwrap();
+        let got = shim
+            .call("event_get", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap();
         assert_eq!(got["found"], true);
         assert_eq!(got["event"]["title"], "Dentist");
         assert_eq!(got["event"]["end_ms"], 1_800_000);
 
-        let missing = shim.call("event_get", serde_json::json!({"id": "9"})).await.unwrap();
+        let missing = shim
+            .call("event_get", serde_json::json!({"id": "9"}))
+            .await
+            .unwrap();
         assert_eq!(missing["found"], false);
     }
 
@@ -588,7 +629,10 @@ mod tests {
             .unwrap();
         }
 
-        let all = shim.call("event_list", serde_json::json!({})).await.unwrap();
+        let all = shim
+            .call("event_list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(all["total"], 3);
         let titles: Vec<&str> = all["events"]
             .as_array()
@@ -607,7 +651,10 @@ mod tests {
             .unwrap();
         assert_eq!(ranged["total"], 2);
 
-        let work = shim.call("event_list", serde_json::json!({"tag": "work"})).await.unwrap();
+        let work = shim
+            .call("event_list", serde_json::json!({"tag": "work"}))
+            .await
+            .unwrap();
         assert_eq!(work["total"], 2);
 
         let page = shim
@@ -642,9 +689,15 @@ mod tests {
             t == "due" && p.get("event_id").and_then(Value::as_str) == Some("1")
         })
         .await;
-        assert!(fired.is_some(), "expected a due event within the scan window");
+        assert!(
+            fired.is_some(),
+            "expected a due event within the scan window"
+        );
 
-        let got = shim.call("event_get", serde_json::json!({"id": id})).await.unwrap();
+        let got = shim
+            .call("event_get", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(got["event"]["reminder_fired"], true);
 
         // Moving the event resets the fired flag; the new time reminds again.
@@ -668,7 +721,13 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("end_ms"), "error was: {err}");
 
-        let err = shim.call("event_update", serde_json::json!({"id": "99", "title": "x"})).await.unwrap_err();
+        let err = shim
+            .call(
+                "event_update",
+                serde_json::json!({"id": "99", "title": "x"}),
+            )
+            .await
+            .unwrap_err();
         assert!(err.contains("event not found"), "error was: {err}");
     }
 
@@ -684,10 +743,16 @@ mod tests {
             .unwrap();
         let id = created["id"].as_str().unwrap().to_string();
 
-        let first = shim.call("event_delete", serde_json::json!({"id": id})).await.unwrap();
+        let first = shim
+            .call("event_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(first["deleted"], true);
 
-        let second = shim.call("event_delete", serde_json::json!({"id": id})).await.unwrap();
+        let second = shim
+            .call("event_delete", serde_json::json!({"id": id}))
+            .await
+            .unwrap();
         assert_eq!(second["deleted"], false);
 
         let deleted = wait_for_published(&shim, |(t, p)| {
@@ -729,7 +794,10 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("end_ms"), "error was: {err}");
 
-        let err = shim.call("event_update", serde_json::json!({"id": "1"})).await.unwrap_err();
+        let err = shim
+            .call("event_update", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap_err();
         assert!(err.contains("at least one of"), "error was: {err}");
 
         let err = shim
@@ -742,7 +810,10 @@ mod tests {
     #[tokio::test]
     async fn unknown_action_is_action_error() {
         let shim = start_plugin(Config::default()).await;
-        let err = shim.call("event_frobnicate", serde_json::json!({})).await.unwrap_err();
+        let err = shim
+            .call("event_frobnicate", serde_json::json!({}))
+            .await
+            .unwrap_err();
         assert!(err.contains("unknown action"), "error was: {err}");
     }
 
@@ -778,7 +849,10 @@ mod tests {
             "expected a notify_send delivery mentioning Standup"
         );
 
-        let got = shim.call("event_get", serde_json::json!({"id": "1"})).await.unwrap();
+        let got = shim
+            .call("event_get", serde_json::json!({"id": "1"}))
+            .await
+            .unwrap();
         assert_eq!(got["event"]["reminder_fired"], true);
 
         // Give the scanner more than one extra tick, then confirm at-most-once.
@@ -817,29 +891,46 @@ mod tests {
         let ics_b64 = base64::engine::general_purpose::STANDARD.encode(ics.as_bytes());
 
         let imported = shim
-            .call("calendar_ics_import", serde_json::json!({"ics_base64": ics_b64}))
+            .call(
+                "calendar_ics_import",
+                serde_json::json!({"ics_base64": ics_b64}),
+            )
             .await
             .unwrap();
         assert_eq!(imported["imported"], 1);
         assert_eq!(imported["updated"], 0);
         assert_eq!(imported["parsed"], 1);
 
-        let list = shim.call("event_list", serde_json::json!({})).await.unwrap();
+        let list = shim
+            .call("event_list", serde_json::json!({}))
+            .await
+            .unwrap();
         assert_eq!(list["total"], 1);
         assert_eq!(list["events"][0]["title"], "Team Standup");
         assert_eq!(list["events"][0]["ics_uid"], "roundtrip-1@example.com");
 
-        let exported = shim.call("calendar_ics_export", serde_json::json!({})).await.unwrap();
+        let exported = shim
+            .call("calendar_ics_export", serde_json::json!({}))
+            .await
+            .unwrap();
         let exported_b64 = exported["ics_base64"].as_str().unwrap();
         let exported_ics = String::from_utf8(
-            base64::engine::general_purpose::STANDARD.decode(exported_b64).unwrap(),
+            base64::engine::general_purpose::STANDARD
+                .decode(exported_b64)
+                .unwrap(),
         )
         .unwrap();
 
-        assert!(exported_ics.contains("SUMMARY:Team Standup"), "exported: {exported_ics}");
+        assert!(
+            exported_ics.contains("SUMMARY:Team Standup"),
+            "exported: {exported_ics}"
+        );
         assert!(exported_ics.contains("UID:roundtrip-1@example.com"));
         assert!(exported_ics.contains("Daily sync with the team"));
-        assert!(exported_ics.contains("Room 42"), "location folded into description");
+        assert!(
+            exported_ics.contains("Room 42"),
+            "location folded into description"
+        );
     }
 }
 
@@ -856,12 +947,19 @@ mod manifest_specs_tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

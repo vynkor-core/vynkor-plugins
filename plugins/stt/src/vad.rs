@@ -106,9 +106,7 @@ impl VadConfig {
 pub enum VadTransition {
     None,
     SpeechStarted,
-    SpeechEnded {
-        speech_ms: u32,
-    },
+    SpeechEnded { speech_ms: u32 },
 }
 
 /// Hysteresis state for one listen stream.
@@ -236,7 +234,10 @@ mod tests {
         let mut st = VadState::new();
         let c = cfg();
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
     }
 
     #[test]
@@ -244,7 +245,10 @@ mod tests {
         let mut st = VadState::new();
         let c = cfg();
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
         // 8 more chunks ≈ 800 ms of speech (each 100 ms @16 kHz).
         for _ in 0..8 {
             assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
@@ -279,7 +283,10 @@ mod tests {
         }
         // And the detector re-arms cleanly afterwards.
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
     }
 
     #[test]
@@ -287,7 +294,10 @@ mod tests {
         let mut st = VadState::new();
         let c = cfg();
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
         // Only one quiet chunk (100 ms < 600 ms hangover)…
         assert_eq!(st.feed(&c, &quiet(1600), 16_000), VadTransition::None);
         // …then loud again: must NOT have ended/restarted mid-utterance.
@@ -304,14 +314,20 @@ mod tests {
             "expected the first utterance to end: {last:?}"
         );
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
         for _ in 0..6 {
             st.feed(&c, &quiet(1600), 16_000);
         }
         assert_eq!(st.feed(&c, &quiet(1600), 16_000), VadTransition::None);
         // Re-armed: next burst starts normally.
         assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::None);
-        assert_eq!(st.feed(&c, &loud(1600), 16_000), VadTransition::SpeechStarted);
+        assert_eq!(
+            st.feed(&c, &loud(1600), 16_000),
+            VadTransition::SpeechStarted
+        );
     }
 
     #[test]

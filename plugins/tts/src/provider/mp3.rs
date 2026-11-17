@@ -24,7 +24,9 @@ pub const DEFAULT_BITRATE: Bitrate = Bitrate::Kbps128;
 /// always mono. Returns the MP3 bytes.
 pub fn encode_pcm(pcm: &[i16], sample_rate: u32, channels: u8) -> Result<Vec<u8>, String> {
     if channels != 1 {
-        return Err(format!("mp3 encode supports mono only, got {channels} channels"));
+        return Err(format!(
+            "mp3 encode supports mono only, got {channels} channels"
+        ));
     }
     if pcm.is_empty() {
         return Ok(Vec::new());

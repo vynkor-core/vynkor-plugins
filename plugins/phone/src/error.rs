@@ -58,12 +58,18 @@ mod tests {
 
     #[test]
     fn ssh_exit_255_is_unreachable() {
-        assert!(matches!(classify(255, "ssh: connect to host mi6: No route"), PhoneError::Unreachable(_)));
+        assert!(matches!(
+            classify(255, "ssh: connect to host mi6: No route"),
+            PhoneError::Unreachable(_)
+        ));
     }
 
     #[test]
     fn missing_helper_is_named_and_actionable() {
-        let e = classify(2, "python3: can't open file 'x/hybcam-ab12cd34.py': [Errno 2] No such file or directory");
+        let e = classify(
+            2,
+            "python3: can't open file 'x/hybcam-ab12cd34.py': [Errno 2] No such file or directory",
+        );
         assert!(matches!(e, PhoneError::HelperMissing(_)));
         assert!(e.to_string().contains("run phone_setup"));
     }
@@ -97,7 +103,11 @@ mod tests {
     fn stderr_tail_is_bounded() {
         let long = "x".repeat(10_000);
         let e = classify(1, &long);
-        assert!(e.to_string().len() < 500, "unbounded stderr leaked: {}", e.to_string().len());
+        assert!(
+            e.to_string().len() < 500,
+            "unbounded stderr leaked: {}",
+            e.to_string().len()
+        );
     }
 
     #[test]

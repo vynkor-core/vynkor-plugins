@@ -341,7 +341,10 @@ pub fn parse_request(params_json: &[u8]) -> Result<ChatCompletionParams, String>
         .max_tokens
         .unwrap_or(DEFAULT_MAX_TOKENS)
         .min(MAX_MAX_TOKENS);
-    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw
+        .timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .min(MAX_TIMEOUT_MS);
     let max_retries = raw
         .max_retries
         .unwrap_or(DEFAULT_MAX_RETRIES)
@@ -456,7 +459,10 @@ pub fn parse_embedding_request(params_json: &[u8]) -> Result<EmbeddingParams, St
             }
         }
     }
-    let timeout_ms = raw.timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw
+        .timeout_ms
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
+        .min(MAX_TIMEOUT_MS);
     let max_retries = raw
         .max_retries
         .unwrap_or(DEFAULT_MAX_RETRIES)
@@ -499,7 +505,10 @@ pub fn parse_usage_tags(params_json: &[u8]) -> UsageTags {
             .map(|s| s.chars().take(MAX_USAGE_TAG_CHARS).collect())
             .unwrap_or_default()
     };
-    UsageTags { purpose: tag("purpose"), goal_id: tag("goal_id") }
+    UsageTags {
+        purpose: tag("purpose"),
+        goal_id: tag("goal_id"),
+    }
 }
 
 #[cfg(test)]
@@ -872,7 +881,10 @@ mod tests {
         assert_eq!(t.purpose, "goal_step");
         assert_eq!(t.goal_id, "");
         let long = format!(r#"{{"goal_id":"{}"}}"#, "g".repeat(200));
-        assert_eq!(parse_usage_tags(long.as_bytes()).goal_id.len(), MAX_USAGE_TAG_CHARS);
+        assert_eq!(
+            parse_usage_tags(long.as_bytes()).goal_id.len(),
+            MAX_USAGE_TAG_CHARS
+        );
     }
 
     fn embed_json(input: serde_json::Value) -> Vec<u8> {

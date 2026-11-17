@@ -50,7 +50,10 @@ pub fn detect_session(
     session_type: Option<&str>,
     display: Option<&str>,
 ) -> Result<Session, String> {
-    if wayland_display.map(|s| !s.trim().is_empty()).unwrap_or(false) {
+    if wayland_display
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
         return Ok(Session::Wayland);
     }
     if matches!(session_type.map(str::trim), Some("x11")) {
@@ -59,7 +62,10 @@ pub fn detect_session(
     if display.map(|s| !s.trim().is_empty()).unwrap_or(false) {
         return Ok(Session::X11);
     }
-    Err("ERR_CLIPBOARD_NO_SESSION: no graphical session detected (set WAYLAND_DISPLAY or DISPLAY)".to_string())
+    Err(
+        "ERR_CLIPBOARD_NO_SESSION: no graphical session detected (set WAYLAND_DISPLAY or DISPLAY)"
+            .to_string(),
+    )
 }
 
 pub fn detect_session_from_env() -> Result<Session, String> {
@@ -177,7 +183,11 @@ impl Runner for RealRunner {
     ) -> Result<Vec<u8>, String> {
         let mut cmd = Command::new(bin);
         cmd.args(args)
-            .stdin(if stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
@@ -190,7 +200,8 @@ impl Runner for RealRunner {
             }
         })?;
 
-        let outcome = tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        let outcome =
+            tokio::time::timeout(Duration::from_millis(timeout_ms), async {
                 if let Some(text) = stdin {
                     if let Some(mut handle) = child.stdin.take() {
                         handle.write_all(text.as_bytes()).await.map_err(|e| {
@@ -224,10 +235,9 @@ impl Runner for RealRunner {
                         // A failed writer exits without daemonizing, so its
                         // pipes hit EOF on their own; the bound only guards a
                         // misbehaving provider.
-                        let _ = tokio::time::timeout(
-                            Duration::from_millis(PIPE_GRACE_MS),
-                            async { tokio::join!(drain_stdout, drain_stderr) },
-                        )
+                        let _ = tokio::time::timeout(Duration::from_millis(PIPE_GRACE_MS), async {
+                            tokio::join!(drain_stdout, drain_stderr)
+                        })
                         .await;
                     }
                     Ok((out_buf, err_buf, status))
@@ -253,7 +263,11 @@ impl Runner for RealRunner {
                 let trimmed = stderr.trim();
                 Err(format!(
                     "ERR_CLIPBOARD_READ_FAILED: '{bin}' exited with {status}: {}",
-                    if trimmed.is_empty() { "(no stderr)" } else { trimmed }
+                    if trimmed.is_empty() {
+                        "(no stderr)"
+                    } else {
+                        trimmed
+                    }
                 ))
             }
             Ok(Ok((out_buf, _, _))) => Ok(out_buf),
@@ -271,7 +285,10 @@ pub struct FakeRunner {
 #[cfg(test)]
 impl FakeRunner {
     pub fn new(results: HashMap<String, Result<Vec<u8>, String>>) -> Self {
-        Self { results, calls: Mutex::new(Vec::new()) }
+        Self {
+            results,
+            calls: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -311,10 +328,7 @@ mod tests {
 
     #[test]
     fn detect_session_x11_via_session_type() {
-        assert_eq!(
-            detect_session(None, Some("x11"), None),
-            Ok(Session::X11)
-        );
+        assert_eq!(detect_session(None, Some("x11"), None), Ok(Session::X11));
     }
 
     #[test]
@@ -338,7 +352,10 @@ mod tests {
         assert_eq!(parse_provider_pref(None), Ok(ProviderPref::Auto));
         assert_eq!(parse_provider_pref(Some("")), Ok(ProviderPref::Auto));
         assert_eq!(parse_provider_pref(Some("auto")), Ok(ProviderPref::Auto));
-        assert_eq!(parse_provider_pref(Some("wayland")), Ok(ProviderPref::Wayland));
+        assert_eq!(
+            parse_provider_pref(Some("wayland")),
+            Ok(ProviderPref::Wayland)
+        );
         assert_eq!(parse_provider_pref(Some("x11")), Ok(ProviderPref::X11));
         let err = parse_provider_pref(Some("macos")).unwrap_err();
         assert!(err.contains("ERR_CLIPBOARD_BAD_PARAMS"), "{err}");
@@ -361,11 +378,17 @@ mod tests {
     #[test]
     fn x11_chains_try_xclip_then_xsel() {
         let r = read_chain(Session::X11);
-        assert_eq!(r.iter().map(|i| i.bin).collect::<Vec<_>>(), vec!["xclip", "xsel"]);
+        assert_eq!(
+            r.iter().map(|i| i.bin).collect::<Vec<_>>(),
+            vec!["xclip", "xsel"]
+        );
         assert!(!r.iter().any(|i| i.stdin));
 
         let w = write_chain(Session::X11);
-        assert_eq!(w.iter().map(|i| i.bin).collect::<Vec<_>>(), vec!["xclip", "xsel"]);
+        assert_eq!(
+            w.iter().map(|i| i.bin).collect::<Vec<_>>(),
+            vec!["xclip", "xsel"]
+        );
         assert!(w.iter().all(|i| i.stdin));
         assert!(w[0].args.contains(&"-selection"));
     }

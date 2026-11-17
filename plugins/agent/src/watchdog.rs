@@ -68,9 +68,16 @@ impl Watchdog {
 static TOKENS: Mutex<Option<Watchdog>> = Mutex::new(None);
 static STEPS: Mutex<Option<Watchdog>> = Mutex::new(None);
 
-fn observe_in(slot: &Mutex<Option<Watchdog>>, value: u64, threshold: u64, now_ms: i64) -> Option<u64> {
+fn observe_in(
+    slot: &Mutex<Option<Watchdog>>,
+    value: u64,
+    threshold: u64,
+    now_ms: i64,
+) -> Option<u64> {
     let mut guard = slot.lock().unwrap_or_else(|p| p.into_inner());
-    guard.get_or_insert_with(Watchdog::default).observe(value, threshold, now_ms)
+    guard
+        .get_or_insert_with(Watchdog::default)
+        .observe(value, threshold, now_ms)
 }
 
 /// One goal step's prompt tokens; the alert text, `None` while disabled.
@@ -101,7 +108,10 @@ mod tests {
     fn alerts_once_on_a_sustained_climb_then_cools_down() {
         let mut w = Watchdog::default();
         for _ in 0..20 {
-            assert!(w.observe(4_500, DEFAULT_THRESHOLD, 0).is_none(), "normal steps never alert");
+            assert!(
+                w.observe(4_500, DEFAULT_THRESHOLD, 0).is_none(),
+                "normal steps never alert"
+            );
         }
         let mut alerts = 0;
         for i in 0..WINDOW as i64 {
@@ -109,11 +119,19 @@ mod tests {
         }
         assert_eq!(alerts, 1, "the climb alerts once the window is mostly high");
         for i in 0..(3 * WINDOW as i64) {
-            assert!(w.observe(22_000, DEFAULT_THRESHOLD, 100 + i).is_none(), "cooldown holds");
+            assert!(
+                w.observe(22_000, DEFAULT_THRESHOLD, 100 + i).is_none(),
+                "cooldown holds"
+            );
         }
         let later = COOLDOWN_MS + 1_000;
-        let again = (0..WINDOW as i64).filter_map(|i| w.observe(22_000, DEFAULT_THRESHOLD, later + i)).count();
-        assert_eq!(again, 1, "after the cooldown a still-high average alerts again");
+        let again = (0..WINDOW as i64)
+            .filter_map(|i| w.observe(22_000, DEFAULT_THRESHOLD, later + i))
+            .count();
+        assert_eq!(
+            again, 1,
+            "after the cooldown a still-high average alerts again"
+        );
     }
 
     #[test]
@@ -122,7 +140,10 @@ mod tests {
         for _ in 0..WINDOW - 1 {
             w.observe(4_000, DEFAULT_THRESHOLD, 0);
         }
-        assert!(w.observe(60_000, DEFAULT_THRESHOLD, 0).is_none(), "avg 11k stays under 12k");
+        assert!(
+            w.observe(60_000, DEFAULT_THRESHOLD, 0).is_none(),
+            "avg 11k stays under 12k"
+        );
         assert!(w.observe(0, DEFAULT_THRESHOLD, 0).is_none());
     }
 
@@ -132,7 +153,9 @@ mod tests {
         for _ in 0..WINDOW {
             assert!(w.observe(2, STEPS_THRESHOLD, 0).is_none());
         }
-        let alerts = (0..WINDOW as i64).filter_map(|i| w.observe(7, STEPS_THRESHOLD, i)).count();
+        let alerts = (0..WINDOW as i64)
+            .filter_map(|i| w.observe(7, STEPS_THRESHOLD, i))
+            .count();
         assert_eq!(alerts, 1);
     }
 

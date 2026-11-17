@@ -30,7 +30,9 @@ pub struct RecordState {
 
 impl RecordState {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(None) }
+        Self {
+            inner: Mutex::new(None),
+        }
     }
 }
 
@@ -40,7 +42,11 @@ impl Default for RecordState {
     }
 }
 
-fn record_args(session: SessionType, region: Region, path: &str) -> Option<(&'static str, Vec<String>)> {
+fn record_args(
+    session: SessionType,
+    region: Region,
+    path: &str,
+) -> Option<(&'static str, Vec<String>)> {
     match session {
         SessionType::Wlroots => {
             let mut args = vec![];
@@ -120,7 +126,12 @@ pub async fn start(
     })?;
 
     let id = format!("rec-{}", unix_millis());
-    *guard = Some(ActiveRecording { id: id.clone(), path, process, started_at: std::time::Instant::now() });
+    *guard = Some(ActiveRecording {
+        id: id.clone(),
+        path,
+        process,
+        started_at: std::time::Instant::now(),
+    });
     drop(guard);
 
     let timeout_state = Arc::clone(&state);
@@ -146,11 +157,15 @@ pub async fn stop(state: &RecordState, params: &Value) -> Result<Value, CaptureE
 
     let mut guard = state.inner.lock().await;
     let Some(active) = guard.take() else {
-        return Err(CaptureError::BadParams(format!("no active recording with id '{recording_id}'")));
+        return Err(CaptureError::BadParams(format!(
+            "no active recording with id '{recording_id}'"
+        )));
     };
     if active.id != recording_id {
         *guard = Some(active);
-        return Err(CaptureError::BadParams(format!("no active recording with id '{recording_id}'")));
+        return Err(CaptureError::BadParams(format!(
+            "no active recording with id '{recording_id}'"
+        )));
     }
     drop(guard);
 
@@ -216,7 +231,12 @@ mod tests {
         std::env::set_var("DISPLAY", ":0");
         let (bin, args) = record_args(
             SessionType::X11,
-            Region::Rect { x: 10, y: 20, w: 300, h: 400 },
+            Region::Rect {
+                x: 10,
+                y: 20,
+                w: 300,
+                h: 400,
+            },
             "/o.mp4",
         )
         .unwrap();
@@ -257,7 +277,9 @@ mod tests {
     #[tokio::test]
     async fn stop_with_unknown_id_is_bad_params() {
         let state = Arc::new(RecordState::new());
-        let err = stop(&state, &serde_json::json!({"recording_id": "nope"})).await.unwrap_err();
+        let err = stop(&state, &serde_json::json!({"recording_id": "nope"}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, CaptureError::BadParams(_)));
     }
 
@@ -270,9 +292,13 @@ mod tests {
         fake.allow_detached("wf-recorder");
         let sp: Arc<dyn Spawner> = Arc::new(fake);
         let state = Arc::new(RecordState::new());
-        let started = start(Arc::clone(&state), sp, &serde_json::json!({})).await.unwrap();
+        let started = start(Arc::clone(&state), sp, &serde_json::json!({}))
+            .await
+            .unwrap();
         let id = started["recording_id"].as_str().unwrap().to_string();
-        let stopped = stop(&state, &serde_json::json!({"recording_id": id})).await.unwrap();
+        let stopped = stop(&state, &serde_json::json!({"recording_id": id}))
+            .await
+            .unwrap();
         assert!(stopped["path"].as_str().unwrap().ends_with(".mp4"));
         assert!(stopped["duration_ms"].as_u64().is_some());
         std::env::remove_var("WAYLAND_DISPLAY");

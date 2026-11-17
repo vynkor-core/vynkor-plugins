@@ -18,7 +18,12 @@ pub struct Defaults {
 
 impl Default for Defaults {
     fn default() -> Self {
-        Self { lat: None, lon: None, timezone: "auto".into(), timeout_ms: DEFAULT_TIMEOUT_MS }
+        Self {
+            lat: None,
+            lon: None,
+            timezone: "auto".into(),
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+        }
     }
 }
 
@@ -30,7 +35,11 @@ impl Defaults {
     /// Unparseable or empty values fall back to the built-in default rather
     /// than failing startup — the per-call validation still applies.
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
-        let num = |k: &str| get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
+        let num = |k: &str| {
+            get(k)
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|v| v.is_finite())
+        };
         let base = Self::default();
         Self {
             lat: num("WEATHER_PLUGIN_DEFAULT_LAT"),
@@ -114,7 +123,10 @@ pub fn parse_now(params_json: &[u8], defaults: &Defaults) -> Result<WeatherNowPa
     if timezone.trim().is_empty() {
         return Err("timezone must not be empty".into());
     }
-    let timeout_ms = raw.timeout_ms.unwrap_or(defaults.timeout_ms).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw
+        .timeout_ms
+        .unwrap_or(defaults.timeout_ms)
+        .min(MAX_TIMEOUT_MS);
     if timeout_ms == 0 {
         return Err("timeout_ms must be > 0".into());
     }
@@ -126,7 +138,10 @@ pub fn parse_now(params_json: &[u8], defaults: &Defaults) -> Result<WeatherNowPa
     })
 }
 
-pub fn parse_forecast(params_json: &[u8], defaults: &Defaults) -> Result<WeatherForecastParams, String> {
+pub fn parse_forecast(
+    params_json: &[u8],
+    defaults: &Defaults,
+) -> Result<WeatherForecastParams, String> {
     #[derive(serde::Deserialize)]
     struct Raw {
         lat: Option<serde_json::Value>,
@@ -145,7 +160,10 @@ pub fn parse_forecast(params_json: &[u8], defaults: &Defaults) -> Result<Weather
     if timezone.trim().is_empty() {
         return Err("timezone must not be empty".into());
     }
-    let timeout_ms = raw.timeout_ms.unwrap_or(defaults.timeout_ms).min(MAX_TIMEOUT_MS);
+    let timeout_ms = raw
+        .timeout_ms
+        .unwrap_or(defaults.timeout_ms)
+        .min(MAX_TIMEOUT_MS);
     if timeout_ms == 0 {
         return Err("timeout_ms must be > 0".into());
     }
@@ -177,13 +195,15 @@ mod tests {
 
     #[test]
     fn forecast_clamps_days() {
-        let p = parse_forecast(br#"{"lat": 0, "lon": 0, "days": 5}"#, &Defaults::default()).unwrap();
+        let p =
+            parse_forecast(br#"{"lat": 0, "lon": 0, "days": 5}"#, &Defaults::default()).unwrap();
         assert_eq!(p.days, 5);
     }
 
     #[test]
     fn forecast_rejects_days_oob() {
-        let e = parse_forecast(br#"{"lat": 0, "lon": 0, "days": 20}"#, &Defaults::default()).unwrap_err();
+        let e = parse_forecast(br#"{"lat": 0, "lon": 0, "days": 20}"#, &Defaults::default())
+            .unwrap_err();
         assert!(e.contains("days"), "{e}");
     }
 
@@ -194,7 +214,12 @@ mod tests {
     }
 
     fn home() -> Defaults {
-        Defaults { lat: Some(41.3), lon: Some(69.24), timezone: "Asia/Tashkent".into(), timeout_ms: 4000 }
+        Defaults {
+            lat: Some(41.3),
+            lon: Some(69.24),
+            timezone: "Asia/Tashkent".into(),
+            timeout_ms: 4000,
+        }
     }
 
     #[test]
@@ -209,8 +234,15 @@ mod tests {
 
     #[test]
     fn explicit_params_beat_defaults() {
-        let p = parse_now(br#"{"lat": 1, "lon": 2, "timezone": "UTC", "timeout_ms": 500}"#, &home()).unwrap();
-        assert_eq!((p.lat, p.lon, p.timezone.as_str(), p.timeout_ms), (1.0, 2.0, "UTC", 500));
+        let p = parse_now(
+            br#"{"lat": 1, "lon": 2, "timezone": "UTC", "timeout_ms": 500}"#,
+            &home(),
+        )
+        .unwrap();
+        assert_eq!(
+            (p.lat, p.lon, p.timezone.as_str(), p.timeout_ms),
+            (1.0, 2.0, "UTC", 500)
+        );
     }
 
     #[test]
@@ -237,6 +269,9 @@ mod tests {
         let d = Defaults::from_lookup(env);
         assert_eq!((d.lat, d.lon), (Some(41.3), Some(69.24)));
         assert_eq!(d.timezone, "auto");
-        assert_eq!(d.timeout_ms, MAX_TIMEOUT_MS, "clamped like the per-call value");
+        assert_eq!(
+            d.timeout_ms, MAX_TIMEOUT_MS,
+            "clamped like the per-call value"
+        );
     }
 }

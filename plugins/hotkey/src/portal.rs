@@ -51,7 +51,9 @@ pub struct PortalHandle {
 /// plugin startup; a failure means "no desktop portal" and the caller
 /// falls back to manual mode.
 pub async fn connect() -> Result<Connection, String> {
-    let conn = Connection::session().await.map_err(|e| format!("session bus: {e}"))?;
+    let conn = Connection::session()
+        .await
+        .map_err(|e| format!("session bus: {e}"))?;
     let proxy = Proxy::new(&conn, PORTAL_SERVICE, PORTAL_PATH, SHORTCUTS_INTERFACE)
         .await
         .map_err(|e| format!("portal proxy: {e}"))?;
@@ -60,16 +62,15 @@ pub async fn connect() -> Result<Connection, String> {
         .await
         .map_err(|e| format!("GlobalShortcuts portal unavailable: {e}"))?;
     if version < 1 {
-        return Err(format!("GlobalShortcuts portal version {version} is too old"));
+        return Err(format!(
+            "GlobalShortcuts portal version {version} is too old"
+        ));
     }
     Ok(conn)
 }
 
 /// Spawn the worker task for an established connection.
-pub fn spawn_worker(
-    conn: Connection,
-    app_session_token_prefix: impl Into<String>,
-) -> PortalHandle {
+pub fn spawn_worker(conn: Connection, app_session_token_prefix: impl Into<String>) -> PortalHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel::<Rebind>(8);
     let (events_tx, events_rx) = mpsc::channel::<PortalEvent>(64);
     let prefix = app_session_token_prefix.into();
@@ -138,16 +139,21 @@ async fn forward_key(
     pressed: bool,
     events: &mpsc::Sender<PortalEvent>,
 ) {
-    let Ok((signal_session, shortcut_id, _ts, _opts)) = msg
-        .body()
-        .deserialize::<(OwnedObjectPath, String, u64, HashMap<String, OwnedValue>)>()
+    let Ok((signal_session, shortcut_id, _ts, _opts)) =
+        msg.body()
+            .deserialize::<(OwnedObjectPath, String, u64, HashMap<String, OwnedValue>)>()
     else {
         return;
     };
     if session.as_ref() != Some(&signal_session) {
         return;
     }
-    let _ = events.send(PortalEvent { binding: shortcut_id, pressed }).await;
+    let _ = events
+        .send(PortalEvent {
+            binding: shortcut_id,
+            pressed,
+        })
+        .await;
 }
 
 /// Close the old session (if any), create a fresh one, and bind the full
@@ -189,8 +195,8 @@ async fn apply_bindings(
         .call("BindShortcuts", &(session_handle, shortcuts, "", options))
         .await
         .map_err(|e| format!("BindShortcuts failed: {e}"))?;
-    let (code, results) = await_portal_response(conn, handle, &request_path, &mut response_stream)
-        .await?;
+    let (code, results) =
+        await_portal_response(conn, handle, &request_path, &mut response_stream).await?;
     if code != 0 {
         return Err(format!(
             "shortcuts were denied by the desktop (response code {code})"
@@ -218,10 +224,7 @@ async fn create_session(
     let (request_path, mut response_stream) =
         portal_request_stream(conn, token_prefix, nonce).await?;
     let mut options: HashMap<&str, Value<'_>> = HashMap::new();
-    options.insert(
-        "handle_token",
-        Value::from(last_component(&request_path)),
-    );
+    options.insert("handle_token", Value::from(last_component(&request_path)));
     options.insert(
         "session_handle_token",
         Value::from(format!("{token_prefix}_session_{nonce}")),
@@ -231,8 +234,8 @@ async fn create_session(
         .call("CreateSession", &(options))
         .await
         .map_err(|e| format!("CreateSession failed: {e}"))?;
-    let (code, results) = await_portal_response(conn, handle, &request_path, &mut response_stream)
-        .await?;
+    let (code, results) =
+        await_portal_response(conn, handle, &request_path, &mut response_stream).await?;
     if code != 0 {
         return Err(format!(
             "shortcut session was denied by the desktop (response code {code})"
@@ -253,7 +256,9 @@ async fn portal_request_stream<'a>(
     token_prefix: &str,
     nonce: u64,
 ) -> Result<(String, zbus::proxy::SignalStream<'a>), String> {
-    let unique = conn.unique_name().ok_or_else(|| "no unique bus name".to_string())?;
+    let unique = conn
+        .unique_name()
+        .ok_or_else(|| "no unique bus name".to_string())?;
     let path = request_path(unique, &format!("{token_prefix}_req_{nonce}"));
     let request_proxy = Proxy::new(conn, PORTAL_SERVICE, path.as_str(), REQUEST_INTERFACE)
         .await
@@ -293,7 +298,14 @@ async fn await_portal_response(
 /// Politely release a session the desktop granted us (rebinds and worker
 /// shutdown); portals also clean up on disconnect, this just isn't lazy.
 async fn close_session(conn: &Connection, session: &OwnedObjectPath) {
-    if let Ok(proxy) = Proxy::new(conn, PORTAL_SERVICE, session.as_str(), "org.freedesktop.portal.Session").await {
+    if let Ok(proxy) = Proxy::new(
+        conn,
+        PORTAL_SERVICE,
+        session.as_str(),
+        "org.freedesktop.portal.Session",
+    )
+    .await
+    {
         let _: Result<(), _> = proxy.call("Close", &()).await;
     }
 }

@@ -302,7 +302,8 @@ impl VecCache {
 
     fn existing_slot(&self, caller: &str, collection: &str) -> Option<Arc<Slot>> {
         let g = self.inner.slots.lock().unwrap();
-        g.get(&(caller.to_string(), collection.to_string())).cloned()
+        g.get(&(caller.to_string(), collection.to_string()))
+            .cloned()
     }
 
     /// Slot for a collection that must already exist in SQLite; never creates
@@ -348,12 +349,12 @@ impl VecCache {
 
     fn release(&self, n: usize) {
         // Saturating: the counter must never wrap even if accounting drifts.
-        let _ = self
-            .inner
-            .total
-            .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |t| {
-                Some(t.saturating_sub(n))
-            });
+        let _ =
+            self.inner
+                .total
+                .fetch_update(AtomicOrdering::SeqCst, AtomicOrdering::SeqCst, |t| {
+                    Some(t.saturating_sub(n))
+                });
     }
 
     /// Re-account a loaded slot whose size changed to `new` bytes (caller holds
@@ -383,7 +384,9 @@ impl VecCache {
     #[cfg(test)]
     fn held_bytes(&self) -> usize {
         let g = self.inner.slots.lock().unwrap();
-        g.values().map(|s| s.bytes.load(AtomicOrdering::SeqCst)).sum()
+        g.values()
+            .map(|s| s.bytes.load(AtomicOrdering::SeqCst))
+            .sum()
     }
 
     #[cfg(test)]
@@ -728,11 +731,9 @@ impl VecCache {
     ) -> Result<bool, String> {
         let (this, pool) = (self.clone(), pool.clone());
         let (caller, collection, id) = (caller.to_string(), collection.to_string(), id.to_string());
-        tokio::spawn(async move {
-            this.delete_inner(&pool, &caller, &collection, &id).await
-        })
-        .await
-        .map_err(|e| format!("delete task failed: {e}"))?
+        tokio::spawn(async move { this.delete_inner(&pool, &caller, &collection, &id).await })
+            .await
+            .map_err(|e| format!("delete task failed: {e}"))?
     }
 
     async fn delete_inner(
@@ -783,12 +784,14 @@ impl VecCache {
         model: &str,
     ) -> Result<SwapOutcome, String> {
         let (this, pool) = (self.clone(), pool.clone());
-        let (caller, collection, model) = (caller.to_string(), collection.to_string(), model.to_string());
-        tokio::spawn(async move {
-            this.swap_inner(&pool, &caller, &collection, &model).await
-        })
-        .await
-        .map_err(|e| format!("swap task failed: {e}"))?
+        let (caller, collection, model) = (
+            caller.to_string(),
+            collection.to_string(),
+            model.to_string(),
+        );
+        tokio::spawn(async move { this.swap_inner(&pool, &caller, &collection, &model).await })
+            .await
+            .map_err(|e| format!("swap task failed: {e}"))?
     }
 
     async fn swap_inner(
@@ -1008,13 +1011,28 @@ mod tests {
 
     /// At quiescence the global counter must equal what loaded slots hold.
     fn assert_accounting(cache: &VecCache) {
-        assert_eq!(cache.total_bytes(), cache.held_bytes(), "global total drifted from slot bytes");
+        assert_eq!(
+            cache.total_bytes(),
+            cache.held_bytes(),
+            "global total drifted from slot bytes"
+        );
         // every slot's accounted bytes match what it really holds
-        let slots: Vec<Arc<Slot>> = cache.inner.slots.lock().unwrap().values().cloned().collect();
+        let slots: Vec<Arc<Slot>> = cache
+            .inner
+            .slots
+            .lock()
+            .unwrap()
+            .values()
+            .cloned()
+            .collect();
         for sl in slots {
             let st = sl.state.try_read().expect("quiescent");
             let want = st.as_ref().map(|l| l.bytes()).unwrap_or(0);
-            assert_eq!(sl.bytes.load(AtomicOrdering::SeqCst), want, "slot bytes out of sync with its state");
+            assert_eq!(
+                sl.bytes.load(AtomicOrdering::SeqCst),
+                want,
+                "slot bytes out of sync with its state"
+            );
         }
     }
 
@@ -1379,7 +1397,10 @@ mod tests {
         let cache = VecCache::new(cfg(150_000));
         let mut rng = Rng(77);
         for c in ["a", "b"] {
-            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+            cache
+                .upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c))
+                .await
+                .unwrap();
         }
         let q = rng.unit(256);
         cache.query(&pool, "t", "a", &q, 1, None).await.unwrap();
@@ -1388,9 +1409,19 @@ mod tests {
         let guard = cache.slot("t", "a").state.clone().read_owned().await;
         let hit = cache.query(&pool, "t", "b", &q, 3, None).await.unwrap();
         let want = scan_sqlite(&pool, "b", &q, 3, None).await.unwrap();
-        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
-        assert!(cache.total_bytes() <= 150_000, "total {}", cache.total_bytes());
-        assert!(!cache.is_loaded("t", "b").await, "b served by scan, not cached");
+        assert_eq!(
+            hit.iter().map(|h| &h.0).collect::<Vec<_>>(),
+            want.iter().map(|h| &h.0).collect::<Vec<_>>()
+        );
+        assert!(
+            cache.total_bytes() <= 150_000,
+            "total {}",
+            cache.total_bytes()
+        );
+        assert!(
+            !cache.is_loaded("t", "b").await,
+            "b served by scan, not cached"
+        );
         drop(guard);
         // once the reader is gone, b can displace a
         cache.query(&pool, "t", "b", &q, 1, None).await.unwrap();
@@ -1407,7 +1438,10 @@ mod tests {
         let mut rng = Rng(5);
         let names: Vec<String> = (0..8).map(|i| format!("c{i}")).collect();
         for c in &names {
-            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+            cache
+                .upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c))
+                .await
+                .unwrap();
         }
         let peak = Arc::new(AtomicUsize::new(0));
         let mut tasks = Vec::new();
@@ -1428,7 +1462,11 @@ mod tests {
             t.await.unwrap();
         }
         peak.fetch_max(cache.held_bytes(), AtomicOrdering::SeqCst);
-        assert!(peak.load(AtomicOrdering::SeqCst) <= cap, "peak {}", peak.load(AtomicOrdering::SeqCst));
+        assert!(
+            peak.load(AtomicOrdering::SeqCst) <= cap,
+            "peak {}",
+            peak.load(AtomicOrdering::SeqCst)
+        );
         assert!(cache.total_bytes() <= cap);
     }
 
@@ -1439,37 +1477,73 @@ mod tests {
         let cache = VecCache::new(cfg(260_000));
         let mut rng = Rng(31);
         for c in ["a", "b"] {
-            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+            cache
+                .upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c))
+                .await
+                .unwrap();
         }
         let q = rng.unit(256);
         cache.query(&pool, "t", "a", &q, 1, None).await.unwrap();
         cache.query(&pool, "t", "b", &q, 1, None).await.unwrap();
         assert!(cache.is_loaded("t", "a").await && cache.is_loaded("t", "b").await);
         // grow "b": alone far below the cap, but the global total would exceed it
-        cache.upsert(&pool, "t", "b", 256, None, rows(&mut rng, 40, 256, "more")).await.unwrap();
-        assert!(cache.total_bytes() <= 260_000, "total {}", cache.total_bytes());
+        cache
+            .upsert(&pool, "t", "b", 256, None, rows(&mut rng, 40, 256, "more"))
+            .await
+            .unwrap();
+        assert!(
+            cache.total_bytes() <= 260_000,
+            "total {}",
+            cache.total_bytes()
+        );
         // results stay correct whichever of them got unloaded
         let hit = cache.query(&pool, "t", "b", &q, 5, None).await.unwrap();
         let want = scan_sqlite(&pool, "b", &q, 5, None).await.unwrap();
-        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
+        assert_eq!(
+            hit.iter().map(|h| &h.0).collect::<Vec<_>>(),
+            want.iter().map(|h| &h.0).collect::<Vec<_>>()
+        );
         assert!(cache.total_bytes() <= 260_000);
         // pinned neighbour cannot be evicted: the growing collection unloads itself
         let cache = VecCache::new(cfg(260_000));
         for c in ["x", "y"] {
-            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+            cache
+                .upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c))
+                .await
+                .unwrap();
         }
         cache.query(&pool, "t", "x", &q, 1, None).await.unwrap();
         cache.query(&pool, "t", "y", &q, 1, None).await.unwrap();
         assert!(cache.is_loaded("t", "x").await && cache.is_loaded("t", "y").await);
         let guard = cache.slot("t", "x").state.clone().read_owned().await;
-        cache.upsert(&pool, "t", "y", 256, None, rows(&mut rng, 40, 256, "evenmore")).await.unwrap();
+        cache
+            .upsert(
+                &pool,
+                "t",
+                "y",
+                256,
+                None,
+                rows(&mut rng, 40, 256, "evenmore"),
+            )
+            .await
+            .unwrap();
         drop(guard);
-        assert!(cache.total_bytes() <= 260_000, "total {}", cache.total_bytes());
-        assert!(!cache.is_loaded("t", "y").await, "y unloaded instead of overcommitting");
+        assert!(
+            cache.total_bytes() <= 260_000,
+            "total {}",
+            cache.total_bytes()
+        );
+        assert!(
+            !cache.is_loaded("t", "y").await,
+            "y unloaded instead of overcommitting"
+        );
         assert!(cache.is_loaded("t", "x").await);
         let hit = cache.query(&pool, "t", "y", &q, 5, None).await.unwrap();
         let want = scan_sqlite(&pool, "y", &q, 5, None).await.unwrap();
-        assert_eq!(hit.iter().map(|h| &h.0).collect::<Vec<_>>(), want.iter().map(|h| &h.0).collect::<Vec<_>>());
+        assert_eq!(
+            hit.iter().map(|h| &h.0).collect::<Vec<_>>(),
+            want.iter().map(|h| &h.0).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1480,7 +1554,10 @@ mod tests {
         let mut rng = Rng(8);
         let names = ["a", "b", "c", "d", "e", "f"];
         for c in names {
-            cache.upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c)).await.unwrap();
+            cache
+                .upsert(&pool, "t", c, 256, None, rows(&mut rng, 100, 256, c))
+                .await
+                .unwrap();
         }
         let mut tasks = Vec::new();
         for t in 0..16usize {
@@ -1490,7 +1567,10 @@ mod tests {
                 for i in 0..40 {
                     let c = names[(t * 5 + i) % names.len()];
                     let q = rng.unit(256);
-                    assert_eq!(cache.query(&pool, "t", c, &q, 2, None).await.unwrap().len(), 2);
+                    assert_eq!(
+                        cache.query(&pool, "t", c, &q, 2, None).await.unwrap().len(),
+                        2
+                    );
                     if i % 7 == 0 {
                         let row = rows(&mut rng, 1, 256, &format!("x{t}-{i}-"));
                         cache.upsert(&pool, "t", c, 256, None, row).await.unwrap();
@@ -1536,14 +1616,24 @@ mod tests {
         let cache = VecCache::new(CacheConfig::default());
         for i in 0..50 {
             let name = format!("nope{i}");
-            assert!(cache.query(&pool, "t", &name, &[1.0, 0.0], 3, None).await.unwrap().is_empty());
+            assert!(cache
+                .query(&pool, "t", &name, &[1.0, 0.0], 3, None)
+                .await
+                .unwrap()
+                .is_empty());
             assert!(!cache.delete(&pool, "t", &name, "x").await.unwrap());
         }
         assert_eq!(cache.slot_count(), 0);
         // a real collection does get one
         let mut rng = Rng(2);
-        cache.upsert(&pool, "t", "real", 8, None, rows(&mut rng, 2, 8, "r")).await.unwrap();
-        cache.query(&pool, "t", "real", &rng.unit(8), 1, None).await.unwrap();
+        cache
+            .upsert(&pool, "t", "real", 8, None, rows(&mut rng, 2, 8, "r"))
+            .await
+            .unwrap();
+        cache
+            .query(&pool, "t", "real", &rng.unit(8), 1, None)
+            .await
+            .unwrap();
         assert_eq!(cache.slot_count(), 1);
     }
 
@@ -1552,7 +1642,10 @@ mod tests {
         let (_d, pool) = setup().await;
         let cache = VecCache::new(CacheConfig::default());
         let mut rng = Rng(4);
-        cache.upsert(&pool, "t", "c", 64, None, rows(&mut rng, 50, 64, "d")).await.unwrap();
+        cache
+            .upsert(&pool, "t", "c", 64, None, rows(&mut rng, 50, 64, "d"))
+            .await
+            .unwrap();
         assert_eq!(cache.total_bytes(), 0);
         // A reader inside the (still unloaded) slot makes the loader's final
         // `state.write()` wait: the load future is parked mid-way, reservation held.
@@ -1562,10 +1655,21 @@ mod tests {
         let timed_out = tokio::time::timeout(std::time::Duration::from_millis(200), fut).await;
         assert!(timed_out.is_err(), "load must still be pending");
         drop(guard);
-        assert_eq!(cache.total_bytes(), 0, "reservation released when the future was dropped");
+        assert_eq!(
+            cache.total_bytes(),
+            0,
+            "reservation released when the future was dropped"
+        );
         assert_accounting(&cache);
         // and the collection loads normally afterwards
-        assert_eq!(cache.query(&pool, "t", "c", &q, 3, None).await.unwrap().len(), 3);
+        assert_eq!(
+            cache
+                .query(&pool, "t", "c", &q, 3, None)
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
         assert!(cache.total_bytes() > 0);
         assert_accounting(&cache);
     }
@@ -1575,19 +1679,33 @@ mod tests {
         let (_d, pool) = setup().await;
         let cache = VecCache::new(CacheConfig::default());
         let mut rng = Rng(6);
-        cache.upsert(&pool, "t", "c", 16, None, rows(&mut rng, 5, 16, "d")).await.unwrap();
-        cache.query(&pool, "t", "c", &rng.unit(16), 1, None).await.unwrap();
+        cache
+            .upsert(&pool, "t", "c", 16, None, rows(&mut rng, 5, 16, "d"))
+            .await
+            .unwrap();
+        cache
+            .query(&pool, "t", "c", &rng.unit(16), 1, None)
+            .await
+            .unwrap();
         assert!(cache.is_loaded("t", "c").await);
         let probe = rng.unit(16);
         // a reader parks the post-commit cache update; the caller gives up waiting
         let guard = cache.slot("t", "c").state.clone().read_owned().await;
-        let row = UpsertRow { id: "late".into(), text: String::new(), vector: probe.clone(), metadata_json: "{}".into() };
+        let row = UpsertRow {
+            id: "late".into(),
+            text: String::new(),
+            vector: probe.clone(),
+            metadata_json: "{}".into(),
+        };
         let r = tokio::time::timeout(
             std::time::Duration::from_millis(150),
             cache.upsert(&pool, "t", "c", 16, None, vec![row]),
         )
         .await;
-        assert!(r.is_err(), "caller future dropped while the update was parked");
+        assert!(
+            r.is_err(),
+            "caller future dropped while the update was parked"
+        );
         drop(guard);
         // the committed row must show up in the cache anyway
         let mut found = false;
@@ -1599,7 +1717,10 @@ mod tests {
             }
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        assert!(found, "cache fell behind the database after a cancelled upsert");
+        assert!(
+            found,
+            "cache fell behind the database after a cancelled upsert"
+        );
         assert_accounting(&cache);
     }
 
@@ -1633,10 +1754,11 @@ mod tests {
             .unwrap();
         let out = cache.swap_reembedded(&pool, "t", "c", "m2").await.unwrap();
         assert_eq!(out, SwapOutcome::Stale(1));
-        let (model, dim): (String, i64) = sqlx::query_as("select model, dim from collections where name = 'c'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (model, dim): (String, i64) =
+            sqlx::query_as("select model, dim from collections where name = 'c'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!((model.as_str(), dim), ("", 8), "nothing swapped");
         let lens: Vec<i64> = sqlx::query_scalar("select distinct length(vector)/4 from vectors")
             .fetch_all(&pool)

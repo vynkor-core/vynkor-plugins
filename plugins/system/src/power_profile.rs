@@ -44,7 +44,10 @@ impl PpdProfiles {
     /// Try both registered name/path pairs; `Err` when neither answers.
     pub async fn connect(conn: &Connection) -> Result<Self, SystemError> {
         for (service, path) in [
-            ("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles"),
+            (
+                "org.freedesktop.UPower.PowerProfiles",
+                "/org/freedesktop/UPower/PowerProfiles",
+            ),
             ("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"),
         ] {
             let built = PowerProfilesProxy::builder(conn)
@@ -96,7 +99,11 @@ mod tests {
     fn profile_state_serializes_wire_shape() {
         let s = ProfileState {
             profile: "balanced".into(),
-            available: vec!["performance".into(), "balanced".into(), "power-saver".into()],
+            available: vec![
+                "performance".into(),
+                "balanced".into(),
+                "power-saver".into(),
+            ],
         };
         let v = serde_json::to_value(&s).expect("serialize");
         assert_eq!(v["profile"], "balanced");

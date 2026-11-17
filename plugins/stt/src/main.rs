@@ -219,21 +219,32 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
     Ok(())
 }
 
-async fn publish_vad(client: &mut VynkorClient, stream_id: u32, outcome: stt_plugin::listen::ChunkVad) {
+async fn publish_vad(
+    client: &mut VynkorClient,
+    stream_id: u32,
+    outcome: stt_plugin::listen::ChunkVad,
+) {
     if outcome.speech_started {
         let payload = serde_json::json!({ "stream_id": stream_id });
         if let Err(e) = client
-            .publish_event(SPEECH_STARTED_EVENT_TYPE, payload.to_string().as_bytes(), 5000)
+            .publish_event(
+                SPEECH_STARTED_EVENT_TYPE,
+                payload.to_string().as_bytes(),
+                5000,
+            )
             .await
         {
             eprintln!("[{PLUGIN_ID}] failed to publish {SPEECH_STARTED_EVENT_TYPE}: {e}");
         }
     }
     if let Some(speech_ms) = outcome.speech_ended_ms {
-        let payload =
-            serde_json::json!({ "stream_id": stream_id, "speech_ms": speech_ms });
+        let payload = serde_json::json!({ "stream_id": stream_id, "speech_ms": speech_ms });
         if let Err(e) = client
-            .publish_event(SPEECH_ENDED_EVENT_TYPE, payload.to_string().as_bytes(), 5000)
+            .publish_event(
+                SPEECH_ENDED_EVENT_TYPE,
+                payload.to_string().as_bytes(),
+                5000,
+            )
             .await
         {
             eprintln!("[{PLUGIN_ID}] failed to publish {SPEECH_ENDED_EVENT_TYPE}: {e}");
@@ -277,14 +288,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

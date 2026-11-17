@@ -18,12 +18,19 @@ mod tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

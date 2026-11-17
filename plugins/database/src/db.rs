@@ -58,9 +58,7 @@ pub fn sanitize_caller_id(caller_plugin_id: &str) -> Result<&str, String> {
         .bytes()
         .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        return Err(format!(
-            "invalid caller_plugin_id: {caller_plugin_id:?}"
-        ));
+        return Err(format!("invalid caller_plugin_id: {caller_plugin_id:?}"));
     }
     Ok(caller_plugin_id)
 }
@@ -86,10 +84,11 @@ pub fn rejects_attach(sql: &str) -> bool {
     let needle = b"attach";
     let mut i = 0;
     while let Some(pos) = find_from(bytes, needle, i) {
-        let before_ok = pos == 0 || (!bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_');
+        let before_ok =
+            pos == 0 || (!bytes[pos - 1].is_ascii_alphanumeric() && bytes[pos - 1] != b'_');
         let after = pos + needle.len();
-        let after_ok = after == bytes.len()
-            || (!bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_');
+        let after_ok =
+            after == bytes.len() || (!bytes[after].is_ascii_alphanumeric() && bytes[after] != b'_');
 
         let quote_before = (pos > 0 && (bytes[pos - 1] == b'\'' || bytes[pos - 1] == b'"'))
             .then(|| bytes[pos - 1]);
@@ -141,12 +140,15 @@ impl DbPools {
             .map_err(|e| format!("failed to create data_dir: {e}"))?;
         let db_path = self.config.data_dir.join(format!("{caller_id}.db"));
 
-        let mut options = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
-            .map_err(|e| format!("invalid sqlite path: {e}"))?
-            .create_if_missing(true)
-            .busy_timeout(std::time::Duration::from_millis(self.config.busy_timeout_ms))
-            .page_size(PAGE_SIZE)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        let mut options =
+            SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+                .map_err(|e| format!("invalid sqlite path: {e}"))?
+                .create_if_missing(true)
+                .busy_timeout(std::time::Duration::from_millis(
+                    self.config.busy_timeout_ms,
+                ))
+                .page_size(PAGE_SIZE)
+                .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
 
         // Hard per-caller storage cap (bug #1). `PRAGMA max_page_count` is
         // enforced by SQLite itself — a write that would grow the file past
@@ -180,11 +182,12 @@ impl DbPools {
         // `expires_at` column): add the column when it's missing. Idempotent —
         // the pragma check makes this a no-op on files already migrated or
         // freshly created by the DDL above.
-        let has_expires: (i64,) =
-            sqlx::query_as("select count(*) from pragma_table_info('kv') where name = 'expires_at'")
-                .fetch_one(&pool)
-                .await
-                .map_err(|e| format!("failed to check kv schema for {caller_id}: {e}"))?;
+        let has_expires: (i64,) = sqlx::query_as(
+            "select count(*) from pragma_table_info('kv') where name = 'expires_at'",
+        )
+        .fetch_one(&pool)
+        .await
+        .map_err(|e| format!("failed to check kv schema for {caller_id}: {e}"))?;
         if has_expires.0 == 0 {
             sqlx::query("alter table kv add column expires_at INTEGER")
                 .execute(&pool)
@@ -224,7 +227,10 @@ mod tests {
 
     #[test]
     fn sanitize_accepts_normal_id() {
-        assert_eq!(sanitize_caller_id("notes_plugin-v2").unwrap(), "notes_plugin-v2");
+        assert_eq!(
+            sanitize_caller_id("notes_plugin-v2").unwrap(),
+            "notes_plugin-v2"
+        );
     }
 
     #[test]

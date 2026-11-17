@@ -231,7 +231,12 @@ mod tests {
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Cmd>(16);
         let secret_gets: SecretGets = Arc::new(Mutex::new(Vec::new()));
-        tokio::spawn(run_shim(kernel_client, rx, secret_gets.clone(), secret_data));
+        tokio::spawn(run_shim(
+            kernel_client,
+            rx,
+            secret_gets.clone(),
+            secret_data,
+        ));
         Shim { tx, secret_gets }
     }
 
@@ -430,7 +435,10 @@ mod tests {
             .unwrap_err();
 
         assert!(err.contains("allowlist"), "error was: {err}");
-        assert!(!err.contains(VAULT_PASS), "password leaked into error: {err}");
+        assert!(
+            !err.contains(VAULT_PASS),
+            "password leaked into error: {err}"
+        );
         // Rejected before any vault/env resolution: no secret_get hop fired.
         assert!(shim.secret_gets().await.is_empty());
     }
@@ -457,7 +465,10 @@ mod tests {
             err.contains("neither in the secrets vault"),
             "error was: {err}"
         );
-        assert!(!err.contains(VAULT_PASS), "password leaked into error: {err}");
+        assert!(
+            !err.contains(VAULT_PASS),
+            "password leaked into error: {err}"
+        );
     }
 
     #[tokio::test]
@@ -609,14 +620,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

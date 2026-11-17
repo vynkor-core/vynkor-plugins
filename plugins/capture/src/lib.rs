@@ -3,13 +3,13 @@
 //! never a shell. See README.md for the full backend-chain table.
 
 pub mod error;
+pub mod ocr;
 pub mod paths;
+pub mod portal;
+pub mod record;
+pub mod screenshot;
 pub mod session;
 pub mod spawner;
-pub mod screenshot;
-pub mod portal;
-pub mod ocr;
-pub mod record;
 
 /// Single crate-wide lock serializing every test that mutates process env
 /// vars (`WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP`, `DISPLAY`,

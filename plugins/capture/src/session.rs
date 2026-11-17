@@ -28,9 +28,11 @@ impl SessionType {
 }
 
 pub fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionType {
-    let is_wayland = env("WAYLAND_DISPLAY").is_some()
-        || env("XDG_SESSION_TYPE").as_deref() == Some("wayland");
-    let desktop = env("XDG_CURRENT_DESKTOP").unwrap_or_default().to_lowercase();
+    let is_wayland =
+        env("WAYLAND_DISPLAY").is_some() || env("XDG_SESSION_TYPE").as_deref() == Some("wayland");
+    let desktop = env("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_lowercase();
 
     if is_wayland {
         if desktop.contains("gnome") {
@@ -54,9 +56,7 @@ pub fn detect_session(env: &dyn Fn(&str) -> Option<String>) -> SessionType {
 /// Pure `$PATH` scan — does not spawn anything.
 pub fn binary_on_path(name: &str) -> bool {
     std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(name).is_file())
-        })
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
         .unwrap_or(false)
 }
 
@@ -100,26 +100,37 @@ mod tests {
     use std::collections::HashMap;
 
     fn env_map(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
-        let map: HashMap<String, String> =
-            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let map: HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         move |k: &str| map.get(k).cloned()
     }
 
     #[test]
     fn detects_wlroots_on_hyprland() {
-        let env = env_map(&[("WAYLAND_DISPLAY", "wayland-1"), ("XDG_CURRENT_DESKTOP", "Hyprland")]);
+        let env = env_map(&[
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("XDG_CURRENT_DESKTOP", "Hyprland"),
+        ]);
         assert_eq!(detect_session(&env), SessionType::Wlroots);
     }
 
     #[test]
     fn detects_gnome_wayland() {
-        let env = env_map(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", "GNOME")]);
+        let env = env_map(&[
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("XDG_CURRENT_DESKTOP", "GNOME"),
+        ]);
         assert_eq!(detect_session(&env), SessionType::Gnome);
     }
 
     #[test]
     fn detects_kde_wayland() {
-        let env = env_map(&[("WAYLAND_DISPLAY", "wayland-0"), ("XDG_CURRENT_DESKTOP", "KDE")]);
+        let env = env_map(&[
+            ("WAYLAND_DISPLAY", "wayland-0"),
+            ("XDG_CURRENT_DESKTOP", "KDE"),
+        ]);
         assert_eq!(detect_session(&env), SessionType::Kde);
     }
 

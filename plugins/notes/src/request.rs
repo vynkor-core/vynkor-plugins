@@ -19,16 +19,28 @@ pub const MAX_LIMIT: usize = 500;
 
 #[derive(Debug)]
 pub enum NotesRequest {
-    Create { title: String, body: String, tags: Vec<String> },
-    Get { id: String },
-    List { tag: Option<String>, limit: usize, offset: usize },
+    Create {
+        title: String,
+        body: String,
+        tags: Vec<String>,
+    },
+    Get {
+        id: String,
+    },
+    List {
+        tag: Option<String>,
+        limit: usize,
+        offset: usize,
+    },
     Update {
         id: String,
         title: Option<String>,
         body: Option<String>,
         tags: Option<Vec<String>>,
     },
-    Delete { id: String },
+    Delete {
+        id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -132,7 +144,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<NotesRequest, S
         "note_get" => {
             let p: IdParams = serde_json::from_slice(params_json)
                 .map_err(|e| format!("invalid params for note_get, expected {{id}}: {e}"))?;
-            Ok(NotesRequest::Get { id: require_nonempty_id(p.id)? })
+            Ok(NotesRequest::Get {
+                id: require_nonempty_id(p.id)?,
+            })
         }
         "note_list" => {
             let p: ListParams = serde_json::from_slice(params_json).map_err(|e| {
@@ -164,9 +178,7 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<NotesRequest, S
             })?;
             let id = require_nonempty_id(p.id)?;
             if p.title.is_none() && p.body.is_none() && p.tags.is_none() {
-                return Err(
-                    "note_update requires at least one of title, body, tags".to_string()
-                );
+                return Err("note_update requires at least one of title, body, tags".to_string());
             }
             if let Some(title) = &p.title {
                 check_size("title", title, MAX_TITLE_BYTES)?;
@@ -178,12 +190,19 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<NotesRequest, S
                 Some(raw) => Some(sanitize_tags(&raw)?),
                 None => None,
             };
-            Ok(NotesRequest::Update { id, title: p.title, body: p.body, tags })
+            Ok(NotesRequest::Update {
+                id,
+                title: p.title,
+                body: p.body,
+                tags,
+            })
         }
         "note_delete" => {
             let p: IdParams = serde_json::from_slice(params_json)
                 .map_err(|e| format!("invalid params for note_delete, expected {{id}}: {e}"))?;
-            Ok(NotesRequest::Delete { id: require_nonempty_id(p.id)? })
+            Ok(NotesRequest::Delete {
+                id: require_nonempty_id(p.id)?,
+            })
         }
         other => Err(format!("unknown action: {other}")),
     }
@@ -218,7 +237,10 @@ mod tests {
         let err = parse_request("note_create", big_title.as_bytes()).unwrap_err();
         assert!(err.contains("params.title exceeds"), "error was: {err}");
 
-        let big_body = format!(r#"{{"title": "t", "body": "{}"}}"#, "x".repeat(MAX_BODY_BYTES + 1));
+        let big_body = format!(
+            r#"{{"title": "t", "body": "{}"}}"#,
+            "x".repeat(MAX_BODY_BYTES + 1)
+        );
         let err = parse_request("note_create", big_body.as_bytes()).unwrap_err();
         assert!(err.contains("params.body exceeds"), "error was: {err}");
     }
@@ -243,16 +265,20 @@ mod tests {
     fn tags_reject_oversized_entry_and_too_many_unique() {
         let long_tag = "x".repeat(MAX_TAG_BYTES + 1);
         let params = serde_json::json!({"body": "b", "tags": [long_tag]});
-        let err =
-            parse_request("note_create", serde_json::to_vec(&params).unwrap().as_slice())
-                .unwrap_err();
+        let err = parse_request(
+            "note_create",
+            serde_json::to_vec(&params).unwrap().as_slice(),
+        )
+        .unwrap_err();
         assert!(err.contains("longer than"), "error was: {err}");
 
         let many: Vec<String> = (0..=MAX_TAGS).map(|i| format!("t{i}")).collect();
         let params = serde_json::json!({"body": "b", "tags": many});
-        let err =
-            parse_request("note_create", serde_json::to_vec(&params).unwrap().as_slice())
-                .unwrap_err();
+        let err = parse_request(
+            "note_create",
+            serde_json::to_vec(&params).unwrap().as_slice(),
+        )
+        .unwrap_err();
         assert!(err.contains("exceeds"), "error was: {err}");
     }
 
@@ -286,11 +312,8 @@ mod tests {
     fn list_rejects_bad_limit_and_trims_tag() {
         for bad in [0, MAX_LIMIT + 1] {
             let params = serde_json::json!({"limit": bad});
-            let err = parse_request(
-                "note_list",
-                serde_json::to_vec(&params).unwrap().as_slice(),
-            )
-            .unwrap_err();
+            let err = parse_request("note_list", serde_json::to_vec(&params).unwrap().as_slice())
+                .unwrap_err();
             assert!(err.contains("limit"), "error was: {err}");
         }
         match parse_request("note_list", br#"{"tag": " work "}"#).unwrap() {
@@ -304,7 +327,12 @@ mod tests {
         let err = parse_request("note_update", br#"{"id": "1"}"#).unwrap_err();
         assert!(err.contains("at least one of"), "error was: {err}");
         match parse_request("note_update", br#"{"id": "1", "tags": ["a"]}"#).unwrap() {
-            NotesRequest::Update { id, title, body, tags } => {
+            NotesRequest::Update {
+                id,
+                title,
+                body,
+                tags,
+            } => {
                 assert_eq!(id, "1");
                 assert_eq!(title, None);
                 assert_eq!(body, None);

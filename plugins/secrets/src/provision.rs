@@ -45,14 +45,7 @@ mod tests {
     #[tokio::test]
     async fn provisioned_secret_is_what_that_plugin_reads() {
         let dir = tempfile::tempdir().unwrap();
-        provision(
-            dir.path(),
-            &KEY,
-            "mqtt",
-            "broker_password",
-            "pw".into(),
-        )
-        .unwrap();
+        provision(dir.path(), &KEY, "mqtt", "broker_password", "pw".into()).unwrap();
 
         let h = Handler::new(
             dir.path().to_path_buf(),

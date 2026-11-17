@@ -1,7 +1,6 @@
 /// Deterministic fake embedder for v0.1 — hash-based, L2-normalized.
 /// Replaced by real fastembed ONNX in v0.2. Keeps cosine meaningful for tests
 /// without native deps or model files.
-
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -55,7 +54,10 @@ pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
-pub fn validate_and_normalize_vector(mut v: Vec<f32>, expected_dim: Option<usize>) -> Result<Vec<f32>, String> {
+pub fn validate_and_normalize_vector(
+    mut v: Vec<f32>,
+    expected_dim: Option<usize>,
+) -> Result<Vec<f32>, String> {
     if v.is_empty() {
         return Err("vector must be non-empty".to_string());
     }

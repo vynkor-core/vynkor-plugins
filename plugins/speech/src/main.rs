@@ -70,7 +70,9 @@ fn unix_millis() -> u64 {
 }
 
 static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-fn start_instant() -> std::time::Instant { *START.get_or_init(std::time::Instant::now) }
+fn start_instant() -> std::time::Instant {
+    *START.get_or_init(std::time::Instant::now)
+}
 fn status_payload() -> Vec<u8> {
     let uptime_ms = start_instant().elapsed().as_millis() as u64;
     serde_json::to_vec(&serde_json::json!({
@@ -79,33 +81,44 @@ fn status_payload() -> Vec<u8> {
         "engine_ready": true,
         "last_error": null,
         "counters": {}
-    })).unwrap()
+    }))
+    .unwrap()
 }
 
 fn ok(action_id: String, data_json: Vec<u8>) -> ActionResponse {
-    ActionResponse { action_id, status: ActionStatus::ActionOk as i32, data_json, error: String::new() }
+    ActionResponse {
+        action_id,
+        status: ActionStatus::ActionOk as i32,
+        data_json,
+        error: String::new(),
+    }
 }
 
 fn err(action_id: String, error: String) -> ActionResponse {
-    ActionResponse { action_id, status: ActionStatus::ActionError as i32, data_json: Vec::new(), error }
+    ActionResponse {
+        action_id,
+        status: ActionStatus::ActionError as i32,
+        data_json: Vec::new(),
+        error,
+    }
 }
 
 async fn dispatch(client: &mut VynkorClient, req: vynkor_sdk::proto::ActionRequest) -> Envelope {
-    eprintln!("[speech] dispatch {} ({} bytes params)", req.action, req.params_json.len());
+    eprintln!(
+        "[speech] dispatch {} ({} bytes params)",
+        req.action,
+        req.params_json.len()
+    );
     let reply = match req.action.as_str() {
         // ---- synthesis (the old `tts`) ---------------------------------
-        "tts_synthesize" => {
-            synth::handler::handle_tts_synthesize(client, &req.params_json).await
-        }
+        "tts_synthesize" => synth::handler::handle_tts_synthesize(client, &req.params_json).await,
         "tts_voices" => synth::handler::handle_tts_voices(client, &req.params_json).await,
         "tts_speak" => synth::handler::handle_tts_speak(client, &req.params_json).await,
         "tts_speak_stream" => {
             synth::handler::handle_tts_speak_stream(client, &req.params_json).await
         }
         // ---- listening (the old `stt`) ---------------------------------
-        "stt_transcribe" => {
-            listen::handler::handle_stt_transcribe(client, &req.params_json).await
-        }
+        "stt_transcribe" => listen::handler::handle_stt_transcribe(client, &req.params_json).await,
         "stt_models" => listen::handler::handle_stt_models(client, &req.params_json).await,
         "stt_listen_start" => {
             listen::handler::handle_stt_listen_start(client, &req.params_json).await
@@ -114,19 +127,30 @@ async fn dispatch(client: &mut VynkorClient, req: vynkor_sdk::proto::ActionReque
             listen::handler::handle_stt_listen_stop(client, &req.params_json).await
         }
         "speech_status" => Ok(status_payload()),
-        other => return Envelope {
-            payload: Some(envelope::Payload::ActionResponse(err(
-                req.action_id,
-                format!("unknown action: {other}"),
-            ))),
-            ..Default::default()
-        },
+        other => {
+            return Envelope {
+                payload: Some(envelope::Payload::ActionResponse(err(
+                    req.action_id,
+                    format!("unknown action: {other}"),
+                ))),
+                ..Default::default()
+            }
+        }
     };
     let reply = match reply {
-        Ok(data_json) => { eprintln!("[speech] dispatch done ok"); ok(req.action_id, data_json) }
-        Err(error) => { eprintln!("[speech] dispatch err: {error}"); err(req.action_id, error) }
+        Ok(data_json) => {
+            eprintln!("[speech] dispatch done ok");
+            ok(req.action_id, data_json)
+        }
+        Err(error) => {
+            eprintln!("[speech] dispatch err: {error}");
+            err(req.action_id, error)
+        }
     };
-    Envelope { payload: Some(envelope::Payload::ActionResponse(reply)), ..Default::default() }
+    Envelope {
+        payload: Some(envelope::Payload::ActionResponse(reply)),
+        ..Default::default()
+    }
 }
 
 async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
@@ -202,16 +226,16 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
     Ok(())
 }
 
-async fn publish_vad(
-    client: &mut VynkorClient,
-    stream_id: u32,
-    outcome: listen::listen::ChunkVad,
-) {
+async fn publish_vad(client: &mut VynkorClient, stream_id: u32, outcome: listen::listen::ChunkVad) {
     use listen::vad::{SPEECH_ENDED_EVENT_TYPE, SPEECH_STARTED_EVENT_TYPE};
     if outcome.speech_started {
         let payload = serde_json::json!({ "stream_id": stream_id });
         if let Err(e) = client
-            .publish_event(SPEECH_STARTED_EVENT_TYPE, payload.to_string().as_bytes(), 5000)
+            .publish_event(
+                SPEECH_STARTED_EVENT_TYPE,
+                payload.to_string().as_bytes(),
+                5000,
+            )
             .await
         {
             eprintln!("[{PLUGIN_ID}] failed to publish {SPEECH_STARTED_EVENT_TYPE}: {e}");
@@ -220,7 +244,11 @@ async fn publish_vad(
     if let Some(speech_ms) = outcome.speech_ended_ms {
         let payload = serde_json::json!({ "stream_id": stream_id, "speech_ms": speech_ms });
         if let Err(e) = client
-            .publish_event(SPEECH_ENDED_EVENT_TYPE, payload.to_string().as_bytes(), 5000)
+            .publish_event(
+                SPEECH_ENDED_EVENT_TYPE,
+                payload.to_string().as_bytes(),
+                5000,
+            )
             .await
         {
             eprintln!("[{PLUGIN_ID}] failed to publish {SPEECH_ENDED_EVENT_TYPE}: {e}");
@@ -233,7 +261,9 @@ async fn main() -> Result<(), VynkorError> {
     start_instant(); // anchor uptime_ms at process start, not the first status call
     let socket_path = std::env::var("VYN_SOCKET_PATH")
         .unwrap_or_else(|_| vynkor_wire::socket::default_socket_path());
-    let secret = std::env::var("VYN_JWT_SECRET").ok().filter(|s| !s.is_empty());
+    let secret = std::env::var("VYN_JWT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
     let client = match secret {
         Some(s) => VynkorClient::connect_with_secret(&socket_path, s.as_bytes()).await?,
         None => VynkorClient::connect(&socket_path).await?,
@@ -278,14 +308,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

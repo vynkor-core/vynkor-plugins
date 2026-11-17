@@ -71,16 +71,18 @@ impl RuleDoc {
     /// All conditions hold against the decoded event payload?
     pub fn conditions_hold(&self, payload: &Value) -> bool {
         self.conditions.iter().all(|c| {
-            let actual =
-                if c.path.is_empty() { Some(payload) } else { payload.pointer(&c.path) };
+            let actual = if c.path.is_empty() {
+                Some(payload)
+            } else {
+                payload.pointer(&c.path)
+            };
             actual.map(|v| v == &c.equals).unwrap_or(false)
         })
     }
 
     /// Cooldown satisfied relative to `now_ms`?
     pub fn cooldown_ok(&self, now_ms: i64) -> bool {
-        self.cooldown_ms == 0
-            || now_ms - self.last_fired_ms >= self.cooldown_ms as i64
+        self.cooldown_ms == 0 || now_ms - self.last_fired_ms >= self.cooldown_ms as i64
     }
 }
 
@@ -95,13 +97,15 @@ impl Db {
     }
 
     async fn call(&self, action: &str, params: Value) -> Result<Value, String> {
-        let params_json =
-            serde_json::to_vec(&params).map_err(|e| format!("failed to encode {action} params: {e}"))?;
+        let params_json = serde_json::to_vec(&params)
+            .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         self.rpc.call(action, params_json, self.timeout_ms).await
     }
 
     pub async fn next_id(&self) -> Result<u64, String> {
-        let v = self.call("db_incr", serde_json::json!({"key": NEXT_ID_KEY})).await?;
+        let v = self
+            .call("db_incr", serde_json::json!({"key": NEXT_ID_KEY}))
+            .await?;
         v.get("value")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("database.db_incr returned unexpected payload: {v}"))
@@ -109,7 +113,9 @@ impl Db {
 
     pub async fn put(&self, rule: &RuleDoc) -> Result<(), String> {
         let key = format!("{KEY_PREFIX}{}", rule.id);
-        let v = self.call("db_set", serde_json::json!({"key": key, "value": rule})).await?;
+        let v = self
+            .call("db_set", serde_json::json!({"key": key, "value": rule}))
+            .await?;
         if v.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(format!("database.db_set returned unexpected payload: {v}"));
         }
@@ -118,7 +124,10 @@ impl Db {
 
     pub async fn get(&self, id: &str) -> Result<Option<RuleDoc>, String> {
         let v = self
-            .call("db_get", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}))
+            .call(
+                "db_get",
+                serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+            )
             .await?;
         if v.get("found").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
@@ -129,7 +138,9 @@ impl Db {
     }
 
     pub async fn list(&self) -> Result<Vec<RuleDoc>, String> {
-        let v = self.call("db_keys", serde_json::json!({"prefix": KEY_PREFIX})).await?;
+        let v = self
+            .call("db_keys", serde_json::json!({"prefix": KEY_PREFIX}))
+            .await?;
         let keys: Vec<String> = v
             .get("keys")
             .and_then(Value::as_array)
@@ -141,7 +152,9 @@ impl Db {
         if keys.is_empty() {
             return Ok(Vec::new());
         }
-        let v = self.call("db_batch_get", serde_json::json!({"keys": keys})).await?;
+        let v = self
+            .call("db_batch_get", serde_json::json!({"keys": keys}))
+            .await?;
         let values = v
             .get("values")
             .and_then(Value::as_object)
@@ -154,7 +167,10 @@ impl Db {
 
     pub async fn delete(&self, id: &str) -> Result<bool, String> {
         let v = self
-            .call("db_delete", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}))
+            .call(
+                "db_delete",
+                serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+            )
             .await?;
         v.get("deleted")
             .and_then(Value::as_bool)
@@ -179,7 +195,9 @@ mod tests {
             id: "1".to_string(),
             name: "test".to_string(),
             enabled: true,
-            trigger: Trigger { event_type: "plugin.test.fired".to_string() },
+            trigger: Trigger {
+                event_type: "plugin.test.fired".to_string(),
+            },
             conditions,
             action: ActionSpec {
                 target_action: "noop".to_string(),
@@ -206,14 +224,20 @@ mod tests {
     fn empty_path_matches_whole_payload() {
         let payload = serde_json::json!({"a": 1});
         let matching = rule_with(
-            vec![Condition { path: String::new(), equals: payload.clone() }],
+            vec![Condition {
+                path: String::new(),
+                equals: payload.clone(),
+            }],
             0,
             0,
         );
         assert!(matching.conditions_hold(&payload));
 
         let mismatching = rule_with(
-            vec![Condition { path: String::new(), equals: serde_json::json!({"a": 2}) }],
+            vec![Condition {
+                path: String::new(),
+                equals: serde_json::json!({"a": 2}),
+            }],
             0,
             0,
         );
@@ -223,7 +247,10 @@ mod tests {
     #[test]
     fn missing_pointer_path_does_not_hold() {
         let rule = rule_with(
-            vec![Condition { path: "/nope".to_string(), equals: serde_json::json!(1) }],
+            vec![Condition {
+                path: "/nope".to_string(),
+                equals: serde_json::json!(1),
+            }],
             0,
             0,
         );
@@ -233,7 +260,10 @@ mod tests {
     #[test]
     fn type_mismatch_does_not_hold() {
         let rule = rule_with(
-            vec![Condition { path: "/a".to_string(), equals: serde_json::json!("1") }],
+            vec![Condition {
+                path: "/a".to_string(),
+                equals: serde_json::json!("1"),
+            }],
             0,
             0,
         );
@@ -245,8 +275,14 @@ mod tests {
     fn multiple_conditions_are_and_combined() {
         let rule = rule_with(
             vec![
-                Condition { path: "/a".to_string(), equals: serde_json::json!(1) },
-                Condition { path: "/b".to_string(), equals: serde_json::json!(2) },
+                Condition {
+                    path: "/a".to_string(),
+                    equals: serde_json::json!(1),
+                },
+                Condition {
+                    path: "/b".to_string(),
+                    equals: serde_json::json!(2),
+                },
             ],
             0,
             0,

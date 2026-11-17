@@ -66,18 +66,36 @@ mod tests {
 
     #[test]
     fn codes_are_stable_per_variant() {
-        assert_eq!(CaptureError::BadParams("x".into()).code().as_str(), "ERR_CAPTURE_BAD_PARAMS");
-        assert_eq!(CaptureError::NotSupported("record").code().as_str(), "ERR_CAPTURE_NOT_SUPPORTED");
+        assert_eq!(
+            CaptureError::BadParams("x".into()).code().as_str(),
+            "ERR_CAPTURE_BAD_PARAMS"
+        );
+        assert_eq!(
+            CaptureError::NotSupported("record").code().as_str(),
+            "ERR_CAPTURE_NOT_SUPPORTED"
+        );
         assert_eq!(CaptureError::Busy.code().as_str(), "ERR_CAPTURE_BUSY");
-        assert_eq!(CaptureError::Cancelled("slurp").code().as_str(), "ERR_CAPTURE_CANCELLED");
-        assert_eq!(CaptureError::Backend("boom".into()).code().as_str(), "ERR_CAPTURE_BACKEND");
+        assert_eq!(
+            CaptureError::Cancelled("slurp").code().as_str(),
+            "ERR_CAPTURE_CANCELLED"
+        );
+        assert_eq!(
+            CaptureError::Backend("boom".into()).code().as_str(),
+            "ERR_CAPTURE_BACKEND"
+        );
     }
 
     #[test]
     fn display_carries_code_and_detail() {
         let e = CaptureError::NotSupported("record");
-        assert_eq!(e.to_string(), "ERR_CAPTURE_NOT_SUPPORTED: record is not available on this system");
+        assert_eq!(
+            e.to_string(),
+            "ERR_CAPTURE_NOT_SUPPORTED: record is not available on this system"
+        );
         let e = CaptureError::Cancelled("slurp");
-        assert_eq!(e.to_string(), "ERR_CAPTURE_CANCELLED: slurp selection was cancelled");
+        assert_eq!(
+            e.to_string(),
+            "ERR_CAPTURE_CANCELLED: slurp selection was cancelled"
+        );
     }
 }

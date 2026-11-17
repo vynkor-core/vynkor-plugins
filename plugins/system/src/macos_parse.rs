@@ -45,7 +45,12 @@ pub fn parse_pmset_batt(stdout: &str) -> Option<BatteryStatus> {
         _ => (None, None),
     };
 
-    Some(BatteryStatus { percent, state, time_to_empty_s: to_empty, time_to_full_s: to_full })
+    Some(BatteryStatus {
+        percent,
+        state,
+        time_to_empty_s: to_empty,
+        time_to_full_s: to_full,
+    })
 }
 
 fn normalize_state(raw: &str) -> BatteryState {
@@ -155,11 +160,17 @@ mod tests {
     fn parses_volume_settings_both_mute_states() {
         assert_eq!(
             parse_volume_settings(VOLUME),
-            Some(VolumeStatus { percent: 42, muted: false })
+            Some(VolumeStatus {
+                percent: 42,
+                muted: false
+            })
         );
         assert_eq!(
             parse_volume_settings(MUTED),
-            Some(VolumeStatus { percent: 0, muted: true })
+            Some(VolumeStatus {
+                percent: 0,
+                muted: true
+            })
         );
     }
 
@@ -167,7 +178,10 @@ mod tests {
     fn volume_garbage_is_none() {
         assert_eq!(parse_volume_settings(""), None);
         assert_eq!(parse_volume_settings("output volume:abc"), None);
-        assert_eq!(parse_volume_settings("output volume:142, output muted:false"), None);
+        assert_eq!(
+            parse_volume_settings("output volume:142, output muted:false"),
+            None
+        );
         assert_eq!(parse_volume_settings("input volume:10"), None);
     }
 }

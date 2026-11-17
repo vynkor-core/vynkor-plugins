@@ -20,7 +20,10 @@ async fn spawn_plugin(sandbox: Sandbox, config: Config, plugin_side: tokio::net:
 
 async fn handshake(client: &mut VynkorClient) {
     let reg = client.recv().await.expect("register frame");
-    assert!(matches!(reg.payload, Some(envelope::Payload::PluginRegister(_))));
+    assert!(matches!(
+        reg.payload,
+        Some(envelope::Payload::PluginRegister(_))
+    ));
     let ack = Envelope {
         payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
             accepted: true,
@@ -62,7 +65,10 @@ async fn fs_list_on_allowed_root_returns_entries() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("hello.txt"), b"hi").unwrap();
     let sandbox = Sandbox::from_raw_roots(&[dir.path().to_str().unwrap().to_string()]);
-    let config = Config { max_list_entries: 100, max_read_bytes: 1024 * 1024 };
+    let config = Config {
+        max_list_entries: 100,
+        max_read_bytes: 1024 * 1024,
+    };
 
     let (plugin_side, kernel_side) = tokio::net::UnixStream::pair().unwrap();
     spawn_plugin(sandbox, config, plugin_side).await;
@@ -81,7 +87,10 @@ async fn fs_list_on_allowed_root_returns_entries() {
 async fn unknown_action_is_not_found() {
     let dir = tempfile::tempdir().unwrap();
     let sandbox = Sandbox::from_raw_roots(&[dir.path().to_str().unwrap().to_string()]);
-    let config = Config { max_list_entries: 100, max_read_bytes: 1024 * 1024 };
+    let config = Config {
+        max_list_entries: 100,
+        max_read_bytes: 1024 * 1024,
+    };
 
     let (plugin_side, kernel_side) = tokio::net::UnixStream::pair().unwrap();
     spawn_plugin(sandbox, config, plugin_side).await;

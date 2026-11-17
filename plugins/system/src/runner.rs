@@ -63,7 +63,10 @@ impl CommandRunner for RealRunner {
         .map_err(|_| RunnerError::Timeout(program.to_string()))?
         .map_err(|source| match source.kind() {
             std::io::ErrorKind::NotFound => RunnerError::NotFound(program.to_string()),
-            _ => RunnerError::Io { program: program.to_string(), source },
+            _ => RunnerError::Io {
+                program: program.to_string(),
+                source,
+            },
         })?;
 
         Ok(RunOutcome {

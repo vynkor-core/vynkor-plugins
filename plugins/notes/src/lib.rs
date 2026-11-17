@@ -31,7 +31,9 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { db_timeout_ms: 5000 }
+        Self {
+            db_timeout_ms: 5000,
+        }
     }
 }
 
@@ -80,15 +82,20 @@ impl Rpc {
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(RpcCall { action: action.to_string(), params_json, timeout_ms, reply })
+            .send(RpcCall {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                reply,
+            })
             .await
             .map_err(|_| format!("database.{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
         match tokio::time::timeout(std::time::Duration::from_millis(effective as u64), rx).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                Err(format!("database.{action} aborted: serve loop is shutting down"))
-            }
+            Ok(Err(_)) => Err(format!(
+                "database.{action} aborted: serve loop is shutting down"
+            )),
             Err(_) => Err(format!("database.{action} timed out after {effective} ms")),
         }
     }
@@ -125,10 +132,19 @@ pub async fn handle_action(
         request::NotesRequest::Create { title, body, tags } => {
             let id = db.next_id().await?.to_string();
             let now = store::now_ms();
-            let note =
-                Note { id: id.clone(), title, body, tags, created_at_ms: now, updated_at_ms: now };
+            let note = Note {
+                id: id.clone(),
+                title,
+                body,
+                tags,
+                created_at_ms: now,
+                updated_at_ms: now,
+            };
             db.put(&note).await?;
-            ok(json!({"id": id, "note": note}), Some(changed("created", &note.id)))
+            ok(
+                json!({"id": id, "note": note}),
+                Some(changed("created", &note.id)),
+            )
         }
         request::NotesRequest::Get { id } => match db.get(&id).await? {
             Some(note) => ok(json!({"found": true, "note": note}), None),
@@ -150,9 +166,16 @@ pub async fn handle_action(
             let page: Vec<&Note> = notes.iter().skip(offset).take(limit).collect();
             ok(json!({"notes": page, "total": total}), None)
         }
-        request::NotesRequest::Update { id, title, body, tags } => {
-            let mut note =
-                db.get(&id).await?.ok_or_else(|| format!("note not found: {id}"))?;
+        request::NotesRequest::Update {
+            id,
+            title,
+            body,
+            tags,
+        } => {
+            let mut note = db
+                .get(&id)
+                .await?
+                .ok_or_else(|| format!("note not found: {id}"))?;
             if let Some(t) = title {
                 note.title = t;
             }
@@ -185,11 +208,13 @@ fn id_num(n: &Note) -> u64 {
 }
 
 fn ok(data: Value, event: Option<ChangeEvent>) -> Result<ActionResult, String> {
-    let data =
-        serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
+    let data = serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
     Ok(ActionResult { data, event })
 }
 
 fn changed(op: &'static str, id: &str) -> ChangeEvent {
-    ChangeEvent { event_type: "changed", payload: json!({"op": op, "id": id}) }
+    ChangeEvent {
+        event_type: "changed",
+        payload: json!({"op": op, "id": id}),
+    }
 }

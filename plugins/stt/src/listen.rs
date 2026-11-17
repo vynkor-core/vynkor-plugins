@@ -31,10 +31,14 @@ impl ChunkVad {
     fn from_transition(t: VadTransition) -> Self {
         match t {
             VadTransition::None => Self::default(),
-            VadTransition::SpeechStarted => Self { speech_started: true, speech_ended_ms: None },
-            VadTransition::SpeechEnded { speech_ms } => {
-                Self { speech_started: false, speech_ended_ms: Some(speech_ms) }
-            }
+            VadTransition::SpeechStarted => Self {
+                speech_started: true,
+                speech_ended_ms: None,
+            },
+            VadTransition::SpeechEnded { speech_ms } => Self {
+                speech_started: false,
+                speech_ended_ms: Some(speech_ms),
+            },
         }
     }
 }

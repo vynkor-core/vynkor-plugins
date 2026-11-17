@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use system_plugin::backends::SystemBackends;
 use system_plugin::{SystemPlugin, PLUGIN_ID};
-use vynkor_sdk::proto::{
-    envelope, ActionRequest, ActionStatus, Envelope, PluginRegisterAck,
-};
+use vynkor_sdk::proto::{envelope, ActionRequest, ActionStatus, Envelope, PluginRegisterAck};
 use vynkor_sdk::{Plugin, VynkorClient};
 
 async fn spawn_plugin(kernel_side: tokio::net::UnixStream) {
@@ -23,7 +21,10 @@ async fn spawn_plugin(kernel_side: tokio::net::UnixStream) {
 /// `register_full` treats the very next inbound frame as the ack.
 async fn handshake(client: &mut VynkorClient) {
     let reg = client.recv().await.expect("register frame");
-    assert!(matches!(reg.payload, Some(envelope::Payload::PluginRegister(_))));
+    assert!(matches!(
+        reg.payload,
+        Some(envelope::Payload::PluginRegister(_))
+    ));
 
     let ack = Envelope {
         payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
@@ -75,7 +76,10 @@ async fn registration_then_action_roundtrip() {
     assert_eq!(resp.status, ActionStatus::ActionOk as i32);
     let data: serde_json::Value =
         serde_json::from_slice(&resp.data_json).expect("data_json is json");
-    assert!(data.get("arch").is_some(), "sys_info must carry arch: {data}");
+    assert!(
+        data.get("arch").is_some(),
+        "sys_info must carry arch: {data}"
+    );
 }
 
 #[tokio::test]

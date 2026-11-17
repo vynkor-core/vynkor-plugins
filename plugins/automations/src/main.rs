@@ -28,8 +28,8 @@ use automations_plugin::{request, store, template, Rpc, RpcCall};
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use vynkor_sdk::proto::{
-    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish,
-    PluginManifest, Pong,
+    envelope, ActionRequest, ActionResponse, ActionStatus, Envelope, EventPublish, PluginManifest,
+    Pong,
 };
 use vynkor_sdk::{VynkorClient, VynkorError};
 
@@ -172,10 +172,17 @@ async fn on_event(
         } else {
             rule.action.params_json.clone()
         };
-        let dispatched = if serde_json::to_vec(&params).map(|v| v.len()).unwrap_or(0) > MAX_RENDERED_PARAMS_BYTES {
-            Err(format!("rendered params exceed {} KiB", MAX_RENDERED_PARAMS_BYTES / 1024))
+        let dispatched = if serde_json::to_vec(&params).map(|v| v.len()).unwrap_or(0)
+            > MAX_RENDERED_PARAMS_BYTES
+        {
+            Err(format!(
+                "rendered params exceed {} KiB",
+                MAX_RENDERED_PARAMS_BYTES / 1024
+            ))
         } else {
-            rpc.call_action(&rule.action.target_action, params, DISPATCH_TIMEOUT_MS).await.map(|_| ())
+            rpc.call_action(&rule.action.target_action, params, DISPATCH_TIMEOUT_MS)
+                .await
+                .map(|_| ())
         };
         match dispatched {
             Ok(()) => rule.last_error.clear(),
@@ -188,7 +195,10 @@ async fn on_event(
             }
         }
         if let Err(e) = db.put(&rule).await {
-            eprintln!("[{PLUGIN_ID}] persisting fire state for rule {} failed: {e}", rule.id);
+            eprintln!(
+                "[{PLUGIN_ID}] persisting fire state for rule {} failed: {e}",
+                rule.id
+            );
         }
         let _ = out
             .send(Outbound::Publish(
@@ -358,7 +368,9 @@ async fn serve(mut client: VynkorClient) -> Result<(), VynkorError> {
 async fn main() -> Result<(), VynkorError> {
     let socket_path = std::env::var("VYN_SOCKET_PATH")
         .unwrap_or_else(|_| vynkor_wire::socket::default_socket_path());
-    let secret = std::env::var("VYN_JWT_SECRET").ok().filter(|s| !s.is_empty());
+    let secret = std::env::var("VYN_JWT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty());
     let client = match secret {
         Some(s) => VynkorClient::connect_with_secret(&socket_path, s.as_bytes()).await?,
         None => VynkorClient::connect(&socket_path).await?,
@@ -388,14 +400,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

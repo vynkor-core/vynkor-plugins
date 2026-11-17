@@ -42,7 +42,10 @@ impl Provider for ElevenLabsProvider {
 
         HttpRequestJson {
             method: "POST",
-            url: format!("{base_url}/v1/text-to-speech/{}?output_format={output_format}", params.voice),
+            url: format!(
+                "{base_url}/v1/text-to-speech/{}?output_format={output_format}",
+                params.voice
+            ),
             headers,
             body,
             timeout_ms: params.timeout_ms.min(NETWORK_MAX_TIMEOUT_MS),
@@ -52,11 +55,7 @@ impl Provider for ElevenLabsProvider {
     fn parse_response(&self, body: &[u8], format: AudioFormat) -> Result<AudioResult, String> {
         let (sample_rate_hz, num_channels, duration_seconds) = match format {
             // pcm_24000: 24 kHz, 16-bit, mono.
-            AudioFormat::Pcm => (
-                24000,
-                1,
-                body.len() as f32 / (24000 * 2) as f32,
-            ),
+            AudioFormat::Pcm => (24000, 1, body.len() as f32 / (24000 * 2) as f32),
             // ulaw_8000: 8 kHz, 8-bit mu-law, mono (1 byte per sample).
             AudioFormat::Ulaw => (8000, 1, body.len() as f32 / 8000.0),
             _ => (0, 0, 0.0),
@@ -123,7 +122,9 @@ mod tests {
     #[test]
     fn parse_mp3_passthrough() {
         let body = vec![0x49, 0x44, 0x33, 0x00];
-        let result = ElevenLabsProvider.parse_response(&body, AudioFormat::Mp3).unwrap();
+        let result = ElevenLabsProvider
+            .parse_response(&body, AudioFormat::Mp3)
+            .unwrap();
         assert_eq!(result.format, "mp3");
         assert_eq!(result.sample_rate_hz, 0);
         assert_eq!(result.duration_seconds, 0.0);
@@ -132,7 +133,9 @@ mod tests {
     #[test]
     fn parse_pcm_known_rate_and_duration() {
         let body = vec![0u8; 48_000];
-        let result = ElevenLabsProvider.parse_response(&body, AudioFormat::Pcm).unwrap();
+        let result = ElevenLabsProvider
+            .parse_response(&body, AudioFormat::Pcm)
+            .unwrap();
         assert_eq!(result.format, "pcm");
         assert_eq!(result.sample_rate_hz, 24000);
         assert_eq!(result.num_channels, 1);
@@ -151,7 +154,9 @@ mod tests {
     fn parse_ulaw_reports_8khz_rate() {
         // 8000 Hz mono 8-bit mu-law -> 8000 bytes = 1.0 s
         let body = vec![0xFFu8; 8000];
-        let result = ElevenLabsProvider.parse_response(&body, AudioFormat::Ulaw).unwrap();
+        let result = ElevenLabsProvider
+            .parse_response(&body, AudioFormat::Ulaw)
+            .unwrap();
         assert_eq!(result.format, "ulaw");
         assert_eq!(result.sample_rate_hz, 8000);
         assert_eq!(result.num_channels, 1);

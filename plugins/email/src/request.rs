@@ -245,11 +245,12 @@ pub fn parse_request(params_json: &[u8]) -> Result<EmailSendParams, String> {
             .filename
             .filter(|f| !f.trim().is_empty())
             .ok_or("attachment missing required field: filename")?;
-        let content_base64 = a
-            .content_base64
-            .ok_or_else(|| format!("attachment '{filename}' missing required field: content_base64"))?;
-        let data = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64)
-            .map_err(|e| format!("attachment '{filename}' has invalid base64: {e}"))?;
+        let content_base64 = a.content_base64.ok_or_else(|| {
+            format!("attachment '{filename}' missing required field: content_base64")
+        })?;
+        let data =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &content_base64)
+                .map_err(|e| format!("attachment '{filename}' has invalid base64: {e}"))?;
         if data.len() > MAX_ATTACHMENT_BYTES {
             return Err(format!(
                 "attachment '{filename}' exceeds max size of {MAX_ATTACHMENT_BYTES} bytes (got {})",
@@ -314,8 +315,7 @@ pub fn parse_email_list_request(params_json: &[u8]) -> Result<EmailListParams, S
         timeout_ms: Option<u64>,
     }
 
-    let raw: Raw =
-        serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
+    let raw: Raw = serde_json::from_slice(params_json).map_err(|e| format!("invalid JSON: {e}"))?;
 
     let credentials_env = raw
         .credentials_env
@@ -324,9 +324,7 @@ pub fn parse_email_list_request(params_json: &[u8]) -> Result<EmailListParams, S
         return Err("credentials_env must not be empty".to_string());
     }
 
-    let imap_user = raw
-        .imap_user
-        .ok_or("missing required field: imap_user")?;
+    let imap_user = raw.imap_user.ok_or("missing required field: imap_user")?;
     let imap_user = imap_user.trim().to_string();
     if imap_user.is_empty() {
         return Err("imap_user must not be empty".to_string());
@@ -358,9 +356,7 @@ pub fn parse_email_list_request(params_json: &[u8]) -> Result<EmailListParams, S
 
     let limit = raw.limit.unwrap_or(DEFAULT_LIST_LIMIT);
     if limit == 0 || limit > MAX_LIST_LIMIT {
-        return Err(format!(
-            "limit must be 1-{MAX_LIST_LIMIT} (got {limit})"
-        ));
+        return Err(format!("limit must be 1-{MAX_LIST_LIMIT} (got {limit})"));
     }
 
     let timeout_ms = raw.timeout_ms.unwrap_or(MAX_TIMEOUT_MS).min(MAX_TIMEOUT_MS);
@@ -598,10 +594,12 @@ mod tests {
         use base64::Engine;
         let mut body = valid_json();
         let encoded = base64::engine::general_purpose::STANDARD.encode(b"data");
-        body["attachments"] =
-            serde_json::json!([{"filename": "f.bin", "content_base64": encoded}]);
+        body["attachments"] = serde_json::json!([{"filename": "f.bin", "content_base64": encoded}]);
         let params = parse_request(body.to_string().as_bytes()).unwrap();
-        assert_eq!(params.attachments[0].content_type, DEFAULT_ATTACHMENT_CONTENT_TYPE);
+        assert_eq!(
+            params.attachments[0].content_type,
+            DEFAULT_ATTACHMENT_CONTENT_TYPE
+        );
     }
 
     #[test]
@@ -664,7 +662,9 @@ mod tests {
         let mut body = valid_json();
         let encoded = base64::engine::general_purpose::STANDARD.encode(b"x");
         let atts: Vec<_> = (0..=MAX_ATTACHMENTS)
-            .map(|i| serde_json::json!({"filename": format!("f{i}.bin"), "content_base64": encoded}))
+            .map(
+                |i| serde_json::json!({"filename": format!("f{i}.bin"), "content_base64": encoded}),
+            )
             .collect();
         body["attachments"] = serde_json::json!(atts);
         let err = parse_request(body.to_string().as_bytes()).unwrap_err();

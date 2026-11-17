@@ -2,10 +2,10 @@ pub mod request;
 pub mod scan;
 pub mod store;
 
-use serde_json::{json, Value};
-use tokio::sync::{mpsc, oneshot};
 use rand::seq::SliceRandom;
-use store::{Entry, Db};
+use serde_json::{json, Value};
+use store::{Db, Entry};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -14,7 +14,9 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { db_timeout_ms: 5000 }
+        Self {
+            db_timeout_ms: 5000,
+        }
     }
 }
 
@@ -45,7 +47,12 @@ impl Rpc {
         Self { tx }
     }
 
-    pub async fn call(&self, action: &str, params: Value, timeout_ms: u32) -> Result<Value, String> {
+    pub async fn call(
+        &self,
+        action: &str,
+        params: Value,
+        timeout_ms: u32,
+    ) -> Result<Value, String> {
         let params_json = serde_json::to_vec(&params)
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
@@ -97,7 +104,9 @@ pub async fn handle_action(
             let mut indexed = 0;
             for entry in scan.entries {
                 let needs_update = match existing_by_path.get(&entry.path) {
-                    Some(old) => old.mtime_ms != entry.mtime_ms || old.size_bytes != entry.size_bytes,
+                    Some(old) => {
+                        old.mtime_ms != entry.mtime_ms || old.size_bytes != entry.size_bytes
+                    }
                     None => true,
                 };
                 if needs_update {
@@ -135,7 +144,12 @@ pub async fn handle_action(
                 event,
             )
         }
-        request::LibraryRequest::Search { query, kind, limit, offset } => {
+        request::LibraryRequest::Search {
+            query,
+            kind,
+            limit,
+            offset,
+        } => {
             let mut entries = db.list_entries().await?;
             if kind != "all" {
                 entries.retain(|e| e.kind == kind);
@@ -146,7 +160,11 @@ pub async fn handle_action(
                     e.name.to_lowercase().contains(&ql) || e.path.to_lowercase().contains(&ql)
                 });
             }
-            entries.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then_with(|| a.name.cmp(&b.name)));
+            entries.sort_by(|a, b| {
+                b.mtime_ms
+                    .cmp(&a.mtime_ms)
+                    .then_with(|| a.name.cmp(&b.name))
+            });
             let total = entries.len();
             let page: Vec<&Entry> = entries.iter().skip(offset).take(limit).collect();
             ok(json!({"results": page, "total": total}), None)

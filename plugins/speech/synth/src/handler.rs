@@ -40,8 +40,8 @@ pub async fn handle_tts_synthesize(
         ProviderKind::Sherpa => {
             let p = params.clone();
             eprintln!("[tts] entering sherpa synthesize (blocking)");
-            let r = tokio::task::spawn_blocking(move || crate::provider::sherpa::synthesize(&p))
-                .await;
+            let r =
+                tokio::task::spawn_blocking(move || crate::provider::sherpa::synthesize(&p)).await;
             eprintln!("[tts] sherpa synthesize returned");
             r.map_err(|e| format!("sherpa synthesize task failed: {e}"))??
         }
@@ -204,7 +204,10 @@ pub async fn handle_tts_speak(
     let started = std::time::Instant::now();
     for (idx, packet) in packets.into_iter().enumerate() {
         if idx == 0 {
-            eprintln!("[tts] time-to-first-audio: {} ms", started.elapsed().as_millis());
+            eprintln!(
+                "[tts] time-to-first-audio: {} ms",
+                started.elapsed().as_millis()
+            );
         }
         let chunk = AudioStreamChunk {
             stream_id: params.stream_id,
@@ -250,7 +253,11 @@ pub async fn handle_tts_speak_stream(
         sentences
     };
 
-    let config = opus::OpusConfig { sample_rate_hz: 0, channels: 1, bitrate: params.bitrate };
+    let config = opus::OpusConfig {
+        sample_rate_hz: 0,
+        channels: 1,
+        bitrate: params.bitrate,
+    };
     let _ = config; // rebuilt per sentence with the resolved rate
 
     let total_sentences = sentences.len();
@@ -263,13 +270,16 @@ pub async fn handle_tts_speak_stream(
         let text = sentence.clone();
         let voice = params.voice.clone();
         let speed = params.speed;
-        let (samples, model_rate) =
-            tokio::task::spawn_blocking(move || {
-                crate::provider::sherpa::synthesize_samples(&text, &voice, speed)
-            })
-            .await
-            .map_err(|e| format!("sherpa synthesize task failed: {e}"))??;
-        sample_rate = if params.sample_rate_hz == 0 { model_rate } else { params.sample_rate_hz };
+        let (samples, model_rate) = tokio::task::spawn_blocking(move || {
+            crate::provider::sherpa::synthesize_samples(&text, &voice, speed)
+        })
+        .await
+        .map_err(|e| format!("sherpa synthesize task failed: {e}"))??;
+        sample_rate = if params.sample_rate_hz == 0 {
+            model_rate
+        } else {
+            params.sample_rate_hz
+        };
         let opus_config = opus::OpusConfig {
             sample_rate_hz: sample_rate,
             channels: 1,
@@ -280,7 +290,10 @@ pub async fn handle_tts_speak_stream(
         } else {
             samples
         };
-        let pcm: Vec<i16> = resampled.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16).collect();
+        let pcm: Vec<i16> = resampled
+            .iter()
+            .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
+            .collect();
         let packets = opus::encode_pcm(&pcm, &opus_config)?;
         duration_seconds += resampled.len() as f32 / sample_rate.max(1) as f32;
 
@@ -304,9 +317,7 @@ pub async fn handle_tts_speak_stream(
             client
                 .send_audio_chunk(&params.target, chunk)
                 .await
-                .map_err(|e| {
-                    format!("failed to stream audio chunk to '{}': {e}", params.target)
-                })?;
+                .map_err(|e| format!("failed to stream audio chunk to '{}': {e}", params.target))?;
         }
         packets_sent += count;
     }

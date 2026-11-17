@@ -46,9 +46,15 @@ pub fn build_push_http(params: &PushParams, server: &str, token: &str) -> PushRe
                 "topic".into(),
                 serde_json::Value::String(params.topic.clone().unwrap_or_default()),
             );
-            body.insert("message".into(), serde_json::Value::String(params.message.clone()));
+            body.insert(
+                "message".into(),
+                serde_json::Value::String(params.message.clone()),
+            );
             if !params.title.is_empty() {
-                body.insert("title".into(), serde_json::Value::String(params.title.clone()));
+                body.insert(
+                    "title".into(),
+                    serde_json::Value::String(params.title.clone()),
+                );
             }
             if let Some(priority) = params.priority {
                 body.insert("priority".into(), serde_json::json!(priority));
@@ -71,12 +77,21 @@ pub fn build_push_http(params: &PushParams, server: &str, token: &str) -> PushRe
         }
         PushProvider::Gotify => {
             if !token.is_empty() {
-                headers.insert("X-Gotify-Token".into(), serde_json::Value::String(token.into()));
+                headers.insert(
+                    "X-Gotify-Token".into(),
+                    serde_json::Value::String(token.into()),
+                );
             }
             let mut body = serde_json::Map::new();
-            body.insert("message".into(), serde_json::Value::String(params.message.clone()));
+            body.insert(
+                "message".into(),
+                serde_json::Value::String(params.message.clone()),
+            );
             if !params.title.is_empty() {
-                body.insert("title".into(), serde_json::Value::String(params.title.clone()));
+                body.insert(
+                    "title".into(),
+                    serde_json::Value::String(params.title.clone()),
+                );
             }
             if let Some(priority) = params.priority {
                 body.insert("priority".into(), serde_json::json!(priority as i64));
@@ -112,10 +127,7 @@ pub async fn handle_push_send(
     );
     let params = crate::request::parse_push_params(params_json, &allowed)?;
 
-    let server = params
-        .server
-        .clone()
-        .unwrap_or_else(|| allowed[0].clone());
+    let server = params.server.clone().unwrap_or_else(|| allowed[0].clone());
     let provider = match params.provider.as_deref() {
         Some("gotify") => PushProvider::Gotify,
         _ => PushProvider::Ntfy,
@@ -141,7 +153,10 @@ pub async fn handle_push_send(
         .map_err(|e| format!("malformed network response: {e}"))?;
     if !(200..300).contains(&net.status) {
         let snippet: String = net.body.chars().take(200).collect();
-        return Err(format!("push server returned HTTP {}: {snippet}", net.status));
+        return Err(format!(
+            "push server returned HTTP {}: {snippet}",
+            net.status
+        ));
     }
 
     serde_json::to_vec(&serde_json::json!({
@@ -157,8 +172,7 @@ pub async fn handle_push_send(
 mod tests {
     use super::*;
     use crate::request::{
-        parse_push_params, parse_push_servers, GOTIFY_TOKEN_ENV, NTFY_TOKEN_ENV,
-        PUSH_SERVERS_ENV,
+        parse_push_params, parse_push_servers, GOTIFY_TOKEN_ENV, NTFY_TOKEN_ENV, PUSH_SERVERS_ENV,
     };
     use serde_json::json;
 
@@ -175,8 +189,14 @@ mod tests {
         let allowed = servers();
         assert_eq!(allowed, vec!["ntfy.sh", "push.self.example:8443"]);
         assert!(crate::request::is_allowed_push_server("NTFY.SH", &allowed));
-        assert!(crate::request::is_allowed_push_server("push.self.example:8443", &allowed));
-        assert!(!crate::request::is_allowed_push_server("evil.example", &allowed));
+        assert!(crate::request::is_allowed_push_server(
+            "push.self.example:8443",
+            &allowed
+        ));
+        assert!(!crate::request::is_allowed_push_server(
+            "evil.example",
+            &allowed
+        ));
         assert_eq!(
             parse_push_servers(""),
             vec!["ntfy.sh"],
@@ -192,14 +212,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.topic.as_deref(), Some("vyn"));
-        assert!(p.server.is_none(), "server defaults to allowlist[0] at send time");
+        assert!(
+            p.server.is_none(),
+            "server defaults to allowlist[0] at send time"
+        );
 
-        let err = parse_push_params(&base_params(json!({"message": "hi"})), &servers())
-            .unwrap_err();
+        let err =
+            parse_push_params(&base_params(json!({"message": "hi"})), &servers()).unwrap_err();
         assert!(err.contains("topic"), "ntfy requires a topic: {err}");
 
-        let err = parse_push_params(&base_params(json!({"message": ""})), &servers())
-            .unwrap_err();
+        let err = parse_push_params(&base_params(json!({"message": ""})), &servers()).unwrap_err();
         assert!(err.contains("non-empty message"), "{err}");
 
         let err = parse_push_params(
@@ -248,7 +270,10 @@ mod tests {
         assert_eq!(req.http["url"], "https://ntfy.sh/");
         assert_eq!(req.http["method"], "POST");
         assert_eq!(req.http["headers"]["Authorization"], "Bearer tk-123");
-        assert!(req.http["body"].is_string(), "body must be a JSON-encoded string for network");
+        assert!(
+            req.http["body"].is_string(),
+            "body must be a JSON-encoded string for network"
+        );
         let decoded: serde_json::Value =
             serde_json::from_str(req.http["body"].as_str().unwrap()).unwrap();
         assert_eq!(decoded["topic"], "vyn");
@@ -274,7 +299,7 @@ mod tests {
         let req = build_push_http(&params, "push.self.example:8443", "app-token");
         assert_eq!(req.http["url"], "https://push.self.example:8443/message");
         assert_eq!(req.http["headers"]["X-Gotify-Token"], "app-token");
-                let decoded: serde_json::Value =
+        let decoded: serde_json::Value =
             serde_json::from_str(req.http["body"].as_str().unwrap()).unwrap();
         assert!(decoded.get("topic").is_none());
         assert!(decoded.get("priority").is_none());
@@ -283,9 +308,11 @@ mod tests {
 
     #[test]
     fn omits_auth_headers_when_tokens_unset() {
-        let params =
-            parse_push_params(&base_params(json!({"message": "m", "topic": "t"})), &servers())
-                .unwrap();
+        let params = parse_push_params(
+            &base_params(json!({"message": "m", "topic": "t"})),
+            &servers(),
+        )
+        .unwrap();
         let req = build_push_http(&params, "ntfy.sh", "");
         assert!(req.http["headers"].get("Authorization").is_none());
         assert_eq!(

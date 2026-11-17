@@ -55,8 +55,7 @@ impl Handler {
         }
 
         let mut entries: Vec<Entry> = Vec::new();
-        let read_dir =
-            fs::read_dir(&resolved.path).map_err(|e| list_io(&p.path, e))?;
+        let read_dir = fs::read_dir(&resolved.path).map_err(|e| list_io(&p.path, e))?;
         for item in read_dir {
             let item = match item {
                 Ok(i) => i,
@@ -70,7 +69,11 @@ impl Handler {
             entries.push(Entry::from_lstat(name, lstat.as_ref()));
         }
 
-        entries.sort_by(|a, b| rank(a.kind).cmp(&rank(b.kind)).then_with(|| a.name.cmp(&b.name)));
+        entries.sort_by(|a, b| {
+            rank(a.kind)
+                .cmp(&rank(b.kind))
+                .then_with(|| a.name.cmp(&b.name))
+        });
         let truncated = entries.len() > self.config.max_list_entries;
         entries.truncate(self.config.max_list_entries);
         let entries_json: Vec<Value> = entries.iter().map(Entry::to_json).collect();
@@ -97,10 +100,10 @@ impl Handler {
             None => clamp_max_read(self.config.max_read_bytes),
         };
 
-        let mut file =
-            File::open(&resolved.path).map_err(|e| open_io(&p.path, e))?;
+        let mut file = File::open(&resolved.path).map_err(|e| open_io(&p.path, e))?;
         if p.offset > 0 {
-            file.seek(SeekFrom::Start(p.offset)).map_err(|e| seek_io(&p.path, e))?;
+            file.seek(SeekFrom::Start(p.offset))
+                .map_err(|e| seek_io(&p.path, e))?;
         }
         let mut buf = vec![0u8; window as usize];
         let mut total = 0usize;
@@ -160,7 +163,10 @@ impl Handler {
         }
 
         let parent = resolved.path.parent().ok_or_else(|| {
-            format!("ERR_FILES_PATH_UNRESOLVABLE: `path` ({}) has no parent", p.path)
+            format!(
+                "ERR_FILES_PATH_UNRESOLVABLE: `path` ({}) has no parent",
+                p.path
+            )
         })?;
         if p.create_parents {
             fs::create_dir_all(parent).map_err(|e| create_parents_io(&p.path, e))?;
@@ -181,31 +187,42 @@ impl Handler {
     pub fn fs_delete(&self, p: &DeleteParams) -> Result<Value, String> {
         let resolved = self.sandbox.resolve(Path::new(&p.path))?;
         if resolved.is_root {
-            return Err(format!("ERR_FILES_IS_A_DIRECTORY: refusing to delete allowed root {}", p.path));
+            return Err(format!(
+                "ERR_FILES_IS_A_DIRECTORY: refusing to delete allowed root {}",
+                p.path
+            ));
         }
         let meta = fs::symlink_metadata(&resolved.path).map_err(|e| not_found_or_io(&p.path, e))?;
         // Do not follow symlink dir escapes - we already resolved via sandbox, but deleting symlink itself is fine
         if p.to_trash {
             trash_move(&resolved.path, &meta)?;
-            Ok(json!({"deleted": true, "trashed": true, "path": resolved.path.display().to_string()}))
+            Ok(
+                json!({"deleted": true, "trashed": true, "path": resolved.path.display().to_string()}),
+            )
         } else {
             if meta.is_dir() && !meta.file_type().is_symlink() {
                 fs::remove_dir_all(&resolved.path).map_err(|e| write_io(&p.path, e))?;
             } else {
                 fs::remove_file(&resolved.path).map_err(|e| write_io(&p.path, e))?;
             }
-            Ok(json!({"deleted": true, "trashed": false, "path": resolved.path.display().to_string()}))
+            Ok(
+                json!({"deleted": true, "trashed": false, "path": resolved.path.display().to_string()}),
+            )
         }
     }
 
     pub fn fs_mkdir(&self, p: &MkdirParams) -> Result<Value, String> {
         let resolved = self.sandbox.resolve(Path::new(&p.path))?;
         if resolved.path.exists() {
-            let m = fs::symlink_metadata(&resolved.path).map_err(|e| not_found_or_io(&p.path, e))?;
+            let m =
+                fs::symlink_metadata(&resolved.path).map_err(|e| not_found_or_io(&p.path, e))?;
             if m.is_dir() {
                 return Ok(json!({"created": false, "path": resolved.path.display().to_string()}));
             } else {
-                return Err(format!("ERR_FILES_EXISTS: path {} exists and is not a directory", p.path));
+                return Err(format!(
+                    "ERR_FILES_EXISTS: path {} exists and is not a directory",
+                    p.path
+                ));
             }
         }
         if p.parents {
@@ -222,27 +239,38 @@ impl Handler {
         if from_resolved.is_root || to_resolved.is_root {
             return Err("ERR_FILES_IS_A_DIRECTORY: refusing to rename allowed root".into());
         }
-        let from_meta = fs::symlink_metadata(&from_resolved.path).map_err(|e| not_found_or_io(&p.from, e))?;
+        let from_meta =
+            fs::symlink_metadata(&from_resolved.path).map_err(|e| not_found_or_io(&p.from, e))?;
         let _ = from_meta;
         if to_resolved.path.exists() && !p.overwrite {
-            return Err(format!("ERR_FILES_EXISTS: destination {} already exists (set overwrite=true)", p.to));
+            return Err(format!(
+                "ERR_FILES_EXISTS: destination {} already exists (set overwrite=true)",
+                p.to
+            ));
         }
         if let Some(parent) = to_resolved.path.parent() {
             if !parent.is_dir() {
-                return Err(format!("ERR_FILES_NOT_FOUND: destination parent {} does not exist", parent.display()));
+                return Err(format!(
+                    "ERR_FILES_NOT_FOUND: destination parent {} does not exist",
+                    parent.display()
+                ));
             }
         }
         // If overwrite and destination exists, remove it first (file or dir)
         if p.overwrite && to_resolved.path.exists() {
-            let m = fs::symlink_metadata(&to_resolved.path).map_err(|e| not_found_or_io(&p.to, e))?;
+            let m =
+                fs::symlink_metadata(&to_resolved.path).map_err(|e| not_found_or_io(&p.to, e))?;
             if m.is_dir() && !m.file_type().is_symlink() {
                 fs::remove_dir_all(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
             } else {
                 fs::remove_file(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
             }
         }
-        fs::rename(&from_resolved.path, &to_resolved.path).map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
-        Ok(json!({"renamed": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}))
+        fs::rename(&from_resolved.path, &to_resolved.path)
+            .map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
+        Ok(
+            json!({"renamed": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}),
+        )
     }
 
     pub fn fs_move(&self, p: &MoveParams) -> Result<Value, String> {
@@ -251,27 +279,38 @@ impl Handler {
         if from_resolved.is_root || to_resolved.is_root {
             return Err("ERR_FILES_IS_A_DIRECTORY: refusing to move allowed root".into());
         }
-        let from_meta = fs::symlink_metadata(&from_resolved.path).map_err(|e| not_found_or_io(&p.from, e))?;
+        let from_meta =
+            fs::symlink_metadata(&from_resolved.path).map_err(|e| not_found_or_io(&p.from, e))?;
         let _ = from_meta;
         if to_resolved.path.exists() && !p.overwrite {
-            return Err(format!("ERR_FILES_EXISTS: destination {} already exists (set overwrite=true)", p.to));
+            return Err(format!(
+                "ERR_FILES_EXISTS: destination {} already exists (set overwrite=true)",
+                p.to
+            ));
         }
         if let Some(parent) = to_resolved.path.parent() {
             if !parent.is_dir() {
-                return Err(format!("ERR_FILES_NOT_FOUND: destination parent {} does not exist", parent.display()));
+                return Err(format!(
+                    "ERR_FILES_NOT_FOUND: destination parent {} does not exist",
+                    parent.display()
+                ));
             }
         }
         // If overwrite and destination exists, remove it first (file or dir)
         if p.overwrite && to_resolved.path.exists() {
-            let m = fs::symlink_metadata(&to_resolved.path).map_err(|e| not_found_or_io(&p.to, e))?;
+            let m =
+                fs::symlink_metadata(&to_resolved.path).map_err(|e| not_found_or_io(&p.to, e))?;
             if m.is_dir() && !m.file_type().is_symlink() {
                 fs::remove_dir_all(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
             } else {
                 fs::remove_file(&to_resolved.path).map_err(|e| write_io(&p.to, e))?;
             }
         }
-        fs::rename(&from_resolved.path, &to_resolved.path).map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
-        Ok(json!({"moved": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}))
+        fs::rename(&from_resolved.path, &to_resolved.path)
+            .map_err(|e| write_io(&format!("{} -> {}", p.from, p.to), e))?;
+        Ok(
+            json!({"moved": true, "from": from_resolved.path.display().to_string(), "to": to_resolved.path.display().to_string()}),
+        )
     }
 }
 
@@ -401,9 +440,14 @@ fn trash_move(original: &Path, _meta: &Metadata) -> Result<(), String> {
         });
     let files_dir = trash_base.join("files");
     let info_dir = trash_base.join("info");
-    fs::create_dir_all(&files_dir).map_err(|e| format!("ERR_FILES_IO: cannot create trash files dir: {e}"))?;
-    fs::create_dir_all(&info_dir).map_err(|e| format!("ERR_FILES_IO: cannot create trash info dir: {e}"))?;
-    let file_name = original.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+    fs::create_dir_all(&files_dir)
+        .map_err(|e| format!("ERR_FILES_IO: cannot create trash files dir: {e}"))?;
+    fs::create_dir_all(&info_dir)
+        .map_err(|e| format!("ERR_FILES_IO: cannot create trash info dir: {e}"))?;
+    let file_name = original
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
     let mut dest = files_dir.join(file_name);
     let mut counter = 0;
     while dest.exists() {
@@ -412,12 +456,16 @@ fn trash_move(original: &Path, _meta: &Metadata) -> Result<(), String> {
         dest = files_dir.join(new_name);
     }
     fs::rename(original, &dest).map_err(|e| format!("ERR_FILES_IO: trash move failed: {e}"))?;
-    let info_name = dest.file_name().and_then(|n| n.to_str()).unwrap_or(file_name);
+    let info_name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file_name);
     let info_path = info_dir.join(format!("{info_name}.trashinfo"));
     let deletion_date = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S").to_string();
     let original_str = original.display().to_string();
     let info_content = format!("[Trash Info]\nPath={original_str}\nDeletionDate={deletion_date}\n");
-    fs::write(&info_path, info_content).map_err(|e| format!("ERR_FILES_IO: cannot write trashinfo: {e}"))?;
+    fs::write(&info_path, info_content)
+        .map_err(|e| format!("ERR_FILES_IO: cannot write trashinfo: {e}"))?;
     Ok(())
 }
 
@@ -452,7 +500,6 @@ mod tests {
             .map(|e| e["name"].as_str().unwrap())
             .collect()
     }
-
 
     #[test]
     fn list_sorts_dirs_first_and_hides_dotfiles_by_default() {
@@ -518,7 +565,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("ERR_FILES_NOT_A_DIRECTORY"), "{err}");
     }
-
 
     #[test]
     fn read_returns_utf8_when_whole_file_fits_from_zero() {
@@ -625,7 +671,10 @@ mod tests {
                 max_bytes: None,
             })
             .unwrap_err();
-        assert!(err.contains("ERR_FILES_NOT_FOUND") && err.contains("`path`"), "{err}");
+        assert!(
+            err.contains("ERR_FILES_NOT_FOUND") && err.contains("`path`"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -641,7 +690,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("ERR_FILES_IS_A_DIRECTORY"), "{err}");
     }
-
 
     #[test]
     fn write_text_creates_and_overwrites() {
@@ -727,7 +775,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("targets files only"), "{err}");
     }
-
 
     #[test]
     fn read_through_file_symlink_outside_root_is_rejected() {
@@ -829,14 +876,16 @@ mod tests {
         assert_eq!(out["data"], "t");
     }
 
-
     #[test]
     fn delete_existing_file_to_trash_moves_it_out() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("victim.txt");
         std::fs::write(&file, b"bye").unwrap();
         // Confine freedesktop Trash to the tempdir so tests never touch $HOME.
-        std::env::set_var("XDG_DATA_HOME", dir.path().join("xdg").display().to_string());
+        std::env::set_var(
+            "XDG_DATA_HOME",
+            dir.path().join("xdg").display().to_string(),
+        );
 
         let h = handler_with_root(dir.path(), 1000);
         let out = h
@@ -893,7 +942,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("refusing to delete allowed root"), "{err}");
     }
-
 
     #[test]
     fn mkdir_creates_directory() {
@@ -952,7 +1000,6 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("ERR_FILES_EXISTS"), "{err}");
     }
-
 
     #[test]
     fn rename_moves_file_within_root() {
@@ -1022,7 +1069,6 @@ mod tests {
         assert!(!src.exists());
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "new");
     }
-
 
     #[test]
     fn move_file_across_directories() {

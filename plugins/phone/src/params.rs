@@ -41,7 +41,13 @@ impl Af {
 }
 
 /// Preview sizes the device enumerates and we allow.
-pub const SIZES: [(u32, u32); 5] = [(1920, 1080), (1280, 720), (800, 600), (640, 480), (320, 240)];
+pub const SIZES: [(u32, u32); 5] = [
+    (1920, 1080),
+    (1280, 720),
+    (800, 600),
+    (640, 480),
+    (320, 240),
+];
 pub const DEFAULT_SIZE: (u32, u32) = (1280, 720);
 pub const MAX_DURATION_CAP_MS: u64 = 1_800_000;
 pub const DEFAULT_DURATION_MS: u64 = 300_000;
@@ -118,11 +124,19 @@ fn boolean(m: &Map<String, Value>, key: &str) -> Result<bool, PhoneError> {
     }
 }
 
-fn int_in(m: &Map<String, Value>, key: &str, min: u64, max: u64, default: u64) -> Result<u64, PhoneError> {
+fn int_in(
+    m: &Map<String, Value>,
+    key: &str,
+    min: u64,
+    max: u64,
+    default: u64,
+) -> Result<u64, PhoneError> {
     match m.get(key) {
         None => Ok(default),
         Some(v) => {
-            let n = v.as_u64().ok_or_else(|| bad(format!("{key} must be a non-negative integer")))?;
+            let n = v
+                .as_u64()
+                .ok_or_else(|| bad(format!("{key} must be a non-negative integer")))?;
             if n < min || n > max {
                 return Err(bad(format!("{key} must be within {min}..={max}")));
             }
@@ -166,7 +180,17 @@ impl StreamParams {
     pub fn parse(v: &Value) -> Result<Self, PhoneError> {
         let m = object(
             v,
-            &["camera", "width", "height", "fps", "quality", "af", "flash", "record", "max_duration_ms"],
+            &[
+                "camera",
+                "width",
+                "height",
+                "fps",
+                "quality",
+                "af",
+                "flash",
+                "record",
+                "max_duration_ms",
+            ],
         )?;
         let (width, height) = size(&m)?;
         Ok(Self {
@@ -178,7 +202,13 @@ impl StreamParams {
             af: af(&m)?,
             flash: boolean(&m, "flash")?,
             record: boolean(&m, "record")?,
-            max_duration_ms: int_in(&m, "max_duration_ms", 1000, MAX_DURATION_CAP_MS, DEFAULT_DURATION_MS)?,
+            max_duration_ms: int_in(
+                &m,
+                "max_duration_ms",
+                1000,
+                MAX_DURATION_CAP_MS,
+                DEFAULT_DURATION_MS,
+            )?,
         })
     }
 }
@@ -203,7 +233,14 @@ mod tests {
         let p = PhotoParams::parse(&json!({})).unwrap();
         assert_eq!(
             p,
-            PhotoParams { camera: Camera::Back, width: 1280, height: 720, af: Af::Video, flash: false, quality: 80 }
+            PhotoParams {
+                camera: Camera::Back,
+                width: 1280,
+                height: 720,
+                af: Af::Video,
+                flash: false,
+                quality: 80
+            }
         );
         assert_eq!(PhotoParams::parse(&Value::Null).unwrap(), p);
     }
@@ -267,7 +304,10 @@ mod tests {
     #[test]
     fn stream_id_parsing() {
         assert_eq!(parse_stream_id(&json!({})).unwrap(), None);
-        assert_eq!(parse_stream_id(&json!({"stream_id":"s-1"})).unwrap(), Some("s-1".into()));
+        assert_eq!(
+            parse_stream_id(&json!({"stream_id":"s-1"})).unwrap(),
+            Some("s-1".into())
+        );
         assert!(parse_stream_id(&json!({"stream_id":""})).is_err());
         assert!(parse_stream_id(&json!({"stream_id":5})).is_err());
         assert!(parse_stream_id(&json!({"stream_id":"x".repeat(65)})).is_err());

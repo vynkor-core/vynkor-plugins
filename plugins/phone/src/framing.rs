@@ -44,7 +44,9 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<Vec<u8
         return Err(PhoneError::Camera("zero-length frame".into()));
     }
     if len > MAX_FRAME {
-        return Err(PhoneError::Camera(format!("frame length {len} exceeds cap {MAX_FRAME}")));
+        return Err(PhoneError::Camera(format!(
+            "frame length {len} exceeds cap {MAX_FRAME}"
+        )));
     }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body)
@@ -62,7 +64,10 @@ mod tests {
         let mut data = encode_frame(&[0xFF, 0xD8, 1, 0xFF, 0xD9]);
         data.extend(encode_frame(&[9, 9]));
         let mut r = &data[..];
-        assert_eq!(read_frame(&mut r).await.unwrap().unwrap(), vec![0xFF, 0xD8, 1, 0xFF, 0xD9]);
+        assert_eq!(
+            read_frame(&mut r).await.unwrap().unwrap(),
+            vec![0xFF, 0xD8, 1, 0xFF, 0xD9]
+        );
         assert_eq!(read_frame(&mut r).await.unwrap().unwrap(), vec![9, 9]);
         assert_eq!(read_frame(&mut r).await.unwrap(), None);
     }
@@ -85,17 +90,29 @@ mod tests {
     #[tokio::test]
     async fn rejects_zero_oversized_and_truncated() {
         let mut zero = &[0u8, 0, 0, 0][..];
-        assert!(matches!(read_frame(&mut zero).await, Err(PhoneError::Camera(_))));
+        assert!(matches!(
+            read_frame(&mut zero).await,
+            Err(PhoneError::Camera(_))
+        ));
 
         let huge = ((MAX_FRAME + 1) as u32).to_be_bytes();
         let mut r = &huge[..];
-        assert!(matches!(read_frame(&mut r).await, Err(PhoneError::Camera(_))));
+        assert!(matches!(
+            read_frame(&mut r).await,
+            Err(PhoneError::Camera(_))
+        ));
 
         let mut half_hdr = &[0u8, 0][..];
-        assert!(matches!(read_frame(&mut half_hdr).await, Err(PhoneError::Camera(_))));
+        assert!(matches!(
+            read_frame(&mut half_hdr).await,
+            Err(PhoneError::Camera(_))
+        ));
 
         let mut short = &[0u8, 0, 0, 10, 1, 2, 3][..];
-        assert!(matches!(read_frame(&mut short).await, Err(PhoneError::Camera(_))));
+        assert!(matches!(
+            read_frame(&mut short).await,
+            Err(PhoneError::Camera(_))
+        ));
     }
 
     #[test]

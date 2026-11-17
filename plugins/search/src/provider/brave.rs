@@ -60,8 +60,8 @@ impl Provider for BraveProvider {
             web: Option<Web>,
         }
 
-        let resp: Response = serde_json::from_slice(body)
-            .map_err(|e| format!("malformed brave response: {e}"))?;
+        let resp: Response =
+            serde_json::from_slice(body).map_err(|e| format!("malformed brave response: {e}"))?;
 
         // `web` is nullable: a query returning only non-web verticals (news,
         // videos, ...) carries `web: null` — an empty list, not an error.

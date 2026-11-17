@@ -10,7 +10,9 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { fetch_timeout_ms: 10000 }
+        Self {
+            fetch_timeout_ms: 10000,
+        }
     }
 }
 
@@ -41,7 +43,12 @@ impl Rpc {
         Self { tx }
     }
 
-    pub async fn call(&self, action: &str, params: Value, timeout_ms: u32) -> Result<Value, String> {
+    pub async fn call(
+        &self,
+        action: &str,
+        params: Value,
+        timeout_ms: u32,
+    ) -> Result<Value, String> {
         let params_json = serde_json::to_vec(&params)
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
@@ -101,11 +108,7 @@ async fn resolve_pat(rpc: &Rpc, pat_env: Option<String>) -> Result<String, Strin
     }
     // vault-first: try secrets plugin
     let vault = rpc
-        .call(
-            "secret_get",
-            json!({"name": env_name}),
-            5000,
-        )
+        .call("secret_get", json!({"name": env_name}), 5000)
         .await;
     if let Ok(v) = vault {
         if let Some(val) = v.get("value").and_then(|x| x.as_str()) {
@@ -143,29 +146,50 @@ pub async fn handle_action(
 ) -> Result<ActionResult, String> {
     let req = request::parse_request(action, params_json)?;
     match req {
-        request::GithubRequest::ListIssues { repo, state, limit, pat_env } => {
+        request::GithubRequest::ListIssues {
+            repo,
+            state,
+            limit,
+            pat_env,
+        } => {
             let pat = resolve_pat(&rpc, pat_env).await?;
             let url = format!("{GITHUB_API}/repos/{repo}/issues?state={state}&per_page={limit}");
             let body = github_get(&rpc, &url, &pat, config.fetch_timeout_ms).await?;
             let arr = parse_github_array(&body, "issues")?;
             ok(json!({"issues": arr}), None)
         }
-        request::GithubRequest::ListPrs { repo, state, limit, pat_env } => {
+        request::GithubRequest::ListPrs {
+            repo,
+            state,
+            limit,
+            pat_env,
+        } => {
             let pat = resolve_pat(&rpc, pat_env).await?;
             let url = format!("{GITHUB_API}/repos/{repo}/pulls?state={state}&per_page={limit}");
             let body = github_get(&rpc, &url, &pat, config.fetch_timeout_ms).await?;
             let arr = parse_github_array(&body, "pulls")?;
             ok(json!({"prs": arr}), None)
         }
-        request::GithubRequest::CreateIssue { repo, title, body, pat_env } => {
+        request::GithubRequest::CreateIssue {
+            repo,
+            title,
+            body,
+            pat_env,
+        } => {
             let pat = resolve_pat(&rpc, pat_env).await?;
             let url = format!("{GITHUB_API}/repos/{repo}/issues");
             let payload = json!({"title": title, "body": body.unwrap_or_default()});
             let body_str = github_post(&rpc, &url, &pat, payload, config.fetch_timeout_ms).await?;
-            let obj: Value = serde_json::from_str(&body_str).map_err(|e| format!("GitHub create issue returned invalid JSON: {e}"))?;
+            let obj: Value = serde_json::from_str(&body_str)
+                .map_err(|e| format!("GitHub create issue returned invalid JSON: {e}"))?;
             ok(json!({"issue": obj}), None)
         }
-        request::GithubRequest::ListRuns { repo, branch, limit, pat_env } => {
+        request::GithubRequest::ListRuns {
+            repo,
+            branch,
+            limit,
+            pat_env,
+        } => {
             let pat = resolve_pat(&rpc, pat_env).await?;
             let mut url = format!("{GITHUB_API}/repos/{repo}/actions/runs?per_page={limit}");
             if let Some(b) = branch {
@@ -173,7 +197,8 @@ pub async fn handle_action(
             }
             let body = github_get(&rpc, &url, &pat, config.fetch_timeout_ms).await?;
             // GitHub returns {workflow_runs: [...]}
-            let v: Value = serde_json::from_str(&body).map_err(|e| format!("GitHub runs returned invalid JSON: {e}"))?;
+            let v: Value = serde_json::from_str(&body)
+                .map_err(|e| format!("GitHub runs returned invalid JSON: {e}"))?;
             let runs = v.get("workflow_runs").cloned().unwrap_or_else(|| v.clone());
             let arr = if runs.is_array() { runs } else { json!([]) };
             let final_runs = if arr.is_array() { arr } else { json!([]) };
@@ -206,7 +231,13 @@ async fn github_get(rpc: &Rpc, url: &str, pat: &str, timeout_ms: u32) -> Result<
     extract_body(res)
 }
 
-async fn github_post(rpc: &Rpc, url: &str, pat: &str, payload: Value, timeout_ms: u32) -> Result<String, String> {
+async fn github_post(
+    rpc: &Rpc,
+    url: &str,
+    pat: &str,
+    payload: Value,
+    timeout_ms: u32,
+) -> Result<String, String> {
     let headers = json!({
         "Authorization": format!("Bearer {pat}"),
         "Accept": "application/vnd.github+json",
@@ -227,8 +258,15 @@ async fn github_post(rpc: &Rpc, url: &str, pat: &str, payload: Value, timeout_ms
 
 fn extract_body(v: Value) -> Result<String, String> {
     let status = v.get("status").and_then(|s| s.as_i64()).unwrap_or(0);
-    let body = v.get("body").and_then(|b| b.as_str()).unwrap_or("").to_string();
-    let encoding = v.get("body_encoding").and_then(|e| e.as_str()).unwrap_or("utf8");
+    let body = v
+        .get("body")
+        .and_then(|b| b.as_str())
+        .unwrap_or("")
+        .to_string();
+    let encoding = v
+        .get("body_encoding")
+        .and_then(|e| e.as_str())
+        .unwrap_or("utf8");
     let decoded = if encoding == "base64" {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD
@@ -245,10 +283,15 @@ fn extract_body(v: Value) -> Result<String, String> {
 }
 
 fn parse_github_array(body: &str, label: &str) -> Result<Value, String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("GitHub {label} returned invalid JSON: {e}"))?;
+    let v: Value = serde_json::from_str(body)
+        .map_err(|e| format!("GitHub {label} returned invalid JSON: {e}"))?;
     if v.is_array() {
         Ok(v)
-    } else if let Some(arr) = v.get("issues").or_else(|| v.get("pulls")).or_else(|| v.get("workflow_runs")) {
+    } else if let Some(arr) = v
+        .get("issues")
+        .or_else(|| v.get("pulls"))
+        .or_else(|| v.get("workflow_runs"))
+    {
         Ok(arr.clone())
     } else {
         // wrap object as single-item array for consistency, or return empty
@@ -268,6 +311,6 @@ mod tests {
     fn vault_allowlist() {
         assert!(is_allowed_pat_env("GITHUB_TOKEN", &["GITHUB_TOKEN".into()]));
         assert!(!is_allowed_pat_env("SECRET", &["GITHUB_TOKEN".into()]));
-        assert!(is_allowed_pat_env("ANY", &[] ) == false); // empty allowlist means deny? Actually resolve checks if allowed.is_empty then deny? For test, we treat empty as deny in is_allowed, but resolve treats empty as allow-all? Keep simple.
+        assert!(is_allowed_pat_env("ANY", &[]) == false); // empty allowlist means deny? Actually resolve checks if allowed.is_empty then deny? For test, we treat empty as deny in is_allowed, but resolve treats empty as allow-all? Keep simple.
     }
 }

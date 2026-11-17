@@ -33,12 +33,18 @@ mod tests {
     async fn atomic_write_replaces_and_leaves_no_temp() {
         let t = tempfile::tempdir().unwrap();
         write_atomic(t.path(), "latest.jpg", b"one").await.unwrap();
-        let p = write_atomic(t.path(), "latest.jpg", b"two-two").await.unwrap();
+        let p = write_atomic(t.path(), "latest.jpg", b"two-two")
+            .await
+            .unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"two-two");
         let names: Vec<_> = std::fs::read_dir(t.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(names, vec!["latest.jpg".to_string()], "temp file left behind: {names:?}");
+        assert_eq!(
+            names,
+            vec!["latest.jpg".to_string()],
+            "temp file left behind: {names:?}"
+        );
     }
 }

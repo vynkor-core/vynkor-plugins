@@ -18,9 +18,12 @@ use vynkor_sdk::concurrent::serve_concurrent;
 use vynkor_sdk::{VynkorClient, VynkorError};
 
 fn load_config() -> DbConfig {
-    let data_dir = std::env::var("SYNC_PLUGIN_DATA_DIR").unwrap_or_else(|_| {
-        panic!("SYNC_PLUGIN_DATA_DIR must be set (see config.example.yaml's data_dir)")
-    });
+    // the kernel grants every plugin its own dir as VYN_DATA_DIR
+    let data_dir = std::env::var("SYNC_PLUGIN_DATA_DIR")
+        .or_else(|_| std::env::var("VYN_DATA_DIR"))
+        .unwrap_or_else(|_| {
+            panic!("SYNC_PLUGIN_DATA_DIR (or the kernel's VYN_DATA_DIR) must be set")
+        });
     let pool_size = std::env::var("SYNC_PLUGIN_POOL_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())

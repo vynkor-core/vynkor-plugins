@@ -185,7 +185,8 @@ pub fn parse_request(params_json: &[u8]) -> Result<TranscribeParams, String> {
             if p.is_empty() {
                 return Err("file_path must not be empty".to_string());
             }
-            let bytes = std::fs::read(p).map_err(|e| format!("failed to read file_path '{}': {e}", p))?;
+            let bytes =
+                std::fs::read(p).map_err(|e| format!("failed to read file_path '{}': {e}", p))?;
             if bytes.is_empty() {
                 return Err(format!("file_path '{}' is empty", p));
             }

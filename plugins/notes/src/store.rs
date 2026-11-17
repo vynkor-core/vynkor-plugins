@@ -44,7 +44,9 @@ impl Db {
 
     /// Next monotonic note id (atomic counter in our own namespace).
     pub async fn next_id(&self) -> Result<u64, String> {
-        let v = self.call("db_incr", serde_json::json!({"key": NEXT_ID_KEY})).await?;
+        let v = self
+            .call("db_incr", serde_json::json!({"key": NEXT_ID_KEY}))
+            .await?;
         v.get("value")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("database.db_incr returned unexpected payload: {v}"))
@@ -52,8 +54,9 @@ impl Db {
 
     pub async fn put(&self, note: &Note) -> Result<(), String> {
         let key = format!("{KEY_PREFIX}{}", note.id);
-        let v =
-            self.call("db_set", serde_json::json!({"key": key, "value": note})).await?;
+        let v = self
+            .call("db_set", serde_json::json!({"key": key, "value": note}))
+            .await?;
         if v.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(format!("database.db_set returned unexpected payload: {v}"));
         }
@@ -64,7 +67,10 @@ impl Db {
     /// error (loudness over silent data loss on single-doc reads).
     pub async fn get(&self, id: &str) -> Result<Option<Note>, String> {
         let v = self
-            .call("db_get", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}))
+            .call(
+                "db_get",
+                serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+            )
             .await?;
         if v.get("found").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
@@ -79,7 +85,9 @@ impl Db {
     /// rather than failing the whole listing — one bad doc must not hide the
     /// rest (single-doc reads stay loud via [`Db::get`]).
     pub async fn list(&self) -> Result<Vec<Note>, String> {
-        let v = self.call("db_keys", serde_json::json!({"prefix": KEY_PREFIX})).await?;
+        let v = self
+            .call("db_keys", serde_json::json!({"prefix": KEY_PREFIX}))
+            .await?;
         let keys: Vec<String> = v
             .get("keys")
             .and_then(Value::as_array)
@@ -113,7 +121,10 @@ impl Db {
 
     pub async fn delete(&self, id: &str) -> Result<bool, String> {
         let v = self
-            .call("db_delete", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}))
+            .call(
+                "db_delete",
+                serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+            )
             .await?;
         v.get("deleted")
             .and_then(Value::as_bool)

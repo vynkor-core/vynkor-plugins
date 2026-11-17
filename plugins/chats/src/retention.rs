@@ -65,7 +65,12 @@ pub fn junk_sessions(conn: &Connection, now: i64, cfg: &Config) -> Result<Vec<St
 /// Delete `id` only if it is still junk, re-checked in the same IMMEDIATE
 /// transaction as the delete: the owner may pin a session, or an `ok` turn
 /// may land, between [`junk_sessions`] and this call.
-pub fn delete_if_junk(conn: &mut Connection, id: &str, now: i64, cfg: &Config) -> Result<bool, String> {
+pub fn delete_if_junk(
+    conn: &mut Connection,
+    id: &str,
+    now: i64,
+    cfg: &Config,
+) -> Result<bool, String> {
     let before = now - cfg.junk_age_secs.saturating_mul(1000);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)

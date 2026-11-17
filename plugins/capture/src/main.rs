@@ -32,7 +32,10 @@ struct App {
 
 impl App {
     fn new() -> Self {
-        Self { spawner: Arc::new(RealSpawner), record_state: Arc::new(RecordState::new()) }
+        Self {
+            spawner: Arc::new(RealSpawner),
+            record_state: Arc::new(RecordState::new()),
+        }
     }
 }
 
@@ -68,13 +71,25 @@ impl ConcurrentHandler for App {
         let params: Value = match serde_json::from_slice(&req.params_json) {
             Ok(v) => v,
             Err(e) => {
-                return vec![response_envelope(req.action_id, Err(format!("invalid params_json: {e}")))];
+                return vec![response_envelope(
+                    req.action_id,
+                    Err(format!("invalid params_json: {e}")),
+                )];
             }
         };
 
         let result: Result<Value, CaptureError> = match req.action.as_str() {
-            "capture_screenshot" => screenshot::capture_screenshot(self.spawner.as_ref(), &params).await,
-            "capture_record_start" => record::start(Arc::clone(&self.record_state), Arc::clone(&self.spawner), &params).await,
+            "capture_screenshot" => {
+                screenshot::capture_screenshot(self.spawner.as_ref(), &params).await
+            }
+            "capture_record_start" => {
+                record::start(
+                    Arc::clone(&self.record_state),
+                    Arc::clone(&self.spawner),
+                    &params,
+                )
+                .await
+            }
             "capture_record_stop" => record::stop(&self.record_state, &params).await,
             "capture_ocr" => ocr::capture_ocr(self.spawner.as_ref(), &params).await,
             "capture_status" => {
@@ -88,7 +103,10 @@ impl ConcurrentHandler for App {
                 }))
             }
             other => {
-                return vec![response_envelope(req.action_id, Err(format!("unknown action: {other}")))];
+                return vec![response_envelope(
+                    req.action_id,
+                    Err(format!("unknown action: {other}")),
+                )];
             }
         };
 
@@ -159,7 +177,10 @@ mod tests {
         }
     }
 
-    async fn shutdown(kernel: &mut VynkorClient, loop_task: tokio::task::JoinHandle<Result<(), VynkorError>>) {
+    async fn shutdown(
+        kernel: &mut VynkorClient,
+        loop_task: tokio::task::JoinHandle<Result<(), VynkorError>>,
+    ) {
         let shutdown_env = Envelope {
             payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {
                 reason: "test done".into(),
@@ -237,14 +258,23 @@ mod manifest_specs_tests {
             parsed["actions"].as_array().unwrap().len(),
             "every declared action must produce a spec"
         );
-        let undocumented: Vec<&str> =
-            specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         let unrisked: Vec<&str> = specs
             .iter()
             .filter(|s| s.risk == vynkor_sdk::proto::ActionRisk::Unknown as i32)
             .map(|s| s.name.as_str())
             .collect();
-        assert!(unrisked.is_empty(), "actions missing a risk label: {unrisked:?}");
+        assert!(
+            unrisked.is_empty(),
+            "actions missing a risk label: {unrisked:?}"
+        );
     }
 }

@@ -36,9 +36,11 @@ fn unix_millis() -> u64 {
 /// present. Unset → error (the caller decides whether that is fatal — for
 /// delivered notifications it is not).
 pub fn data_dir() -> Result<PathBuf, String> {
-    let raw = std::env::var(DATA_DIR_ENV).map_err(|_| {
-        format!("{DATA_DIR_ENV} is not set — required for silent notifications / the inbox")
-    })?;
+    let raw = std::env::var(DATA_DIR_ENV)
+        .or_else(|_| std::env::var("VYN_DATA_DIR"))
+        .map_err(|_| {
+            format!("{DATA_DIR_ENV} is not set — required for silent notifications / the inbox")
+        })?;
     let dir = PathBuf::from(raw);
     fs::create_dir_all(&dir)
         .map_err(|e| format!("failed to create data dir {}: {e}", dir.display()))?;
@@ -99,9 +101,8 @@ impl Inbox {
     /// the ambient environment.
     pub(crate) fn open_at(path: PathBuf) -> Result<Inbox, String> {
         let entries: Vec<InboxEntry> = match fs::read(&path) {
-            Ok(raw) => serde_json::from_slice(&raw).map_err(|e| {
-                format!("inbox file {} is corrupt: {e}", path.display())
-            })?,
+            Ok(raw) => serde_json::from_slice(&raw)
+                .map_err(|e| format!("inbox file {} is corrupt: {e}", path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(format!("failed to read inbox {}: {e}", path.display())),
         };
@@ -315,10 +316,7 @@ mod tests {
         let all = inbox.list(true);
         assert_eq!(all.len(), MAX_ENTRIES);
         assert_eq!(all[0].id, ids[MAX_ENTRIES + 4], "newest kept");
-        assert!(
-            !all.iter().any(|e| e.id == ids[0]),
-            "oldest entries pruned"
-        );
+        assert!(!all.iter().any(|e| e.id == ids[0]), "oldest entries pruned");
 
         let inbox2 = open_temp(&dir);
         assert_eq!(inbox2.list(true).len(), MAX_ENTRIES, "prune persisted");

@@ -118,7 +118,9 @@ pub struct Streams {
 
 impl Streams {
     pub fn real() -> Self {
-        Self { runner: Arc::new(RealRunner) }
+        Self {
+            runner: Arc::new(RealRunner),
+        }
     }
 
     #[cfg(test)]
@@ -152,7 +154,9 @@ impl Streams {
                 out.stderr.trim()
             )),
             Err(RunnerError::NotFound(_)) => {
-                let inputs = self.run("pactl", &["-f", "json", "list", "sink-inputs"]).await?;
+                let inputs = self
+                    .run("pactl", &["-f", "json", "list", "sink-inputs"])
+                    .await?;
                 let sinks = self.run("pactl", &["-f", "json", "list", "sinks"]).await?;
                 parse_pactl(&inputs, &sinks)
             }
@@ -160,7 +164,12 @@ impl Streams {
         }
     }
 
-    pub async fn set_volume(&self, backend: BackendKind, id: u32, level: f64) -> Result<(), String> {
+    pub async fn set_volume(
+        &self,
+        backend: BackendKind,
+        id: u32,
+        level: f64,
+    ) -> Result<(), String> {
         let id = id.to_string();
         match backend {
             BackendKind::Pipewire => {
@@ -169,20 +178,28 @@ impl Streams {
             }
             BackendKind::Pulse => {
                 let pct = format!("{}%", (level * 100.0).round() as u32);
-                self.run("pactl", &["set-sink-input-volume", &id, &pct]).await?;
+                self.run("pactl", &["set-sink-input-volume", &id, &pct])
+                    .await?;
             }
         }
         Ok(())
     }
 
-    pub async fn set_mute(&self, backend: BackendKind, id: u32, mode: MuteMode) -> Result<(), String> {
+    pub async fn set_mute(
+        &self,
+        backend: BackendKind,
+        id: u32,
+        mode: MuteMode,
+    ) -> Result<(), String> {
         let id = id.to_string();
         match backend {
             BackendKind::Pipewire => {
-                self.run("wpctl", &["set-mute", &id, mode.tool_arg()]).await?;
+                self.run("wpctl", &["set-mute", &id, mode.tool_arg()])
+                    .await?;
             }
             BackendKind::Pulse => {
-                self.run("pactl", &["set-sink-input-mute", &id, mode.tool_arg()]).await?;
+                self.run("pactl", &["set-sink-input-mute", &id, mode.tool_arg()])
+                    .await?;
             }
         }
         Ok(())
@@ -192,10 +209,12 @@ impl Streams {
         let id = id.to_string();
         match backend {
             BackendKind::Pipewire => {
-                self.run("pw-metadata", &[&id, "target.object", &sink.name]).await?;
+                self.run("pw-metadata", &[&id, "target.object", &sink.name])
+                    .await?;
             }
             BackendKind::Pulse => {
-                self.run("pactl", &["move-sink-input", &id, &sink.name]).await?;
+                self.run("pactl", &["move-sink-input", &id, &sink.name])
+                    .await?;
             }
         }
         Ok(())
@@ -266,7 +285,8 @@ pub fn parse_pw_dump(json: &str) -> Result<Snapshot, String> {
             };
             let pid = as_u32(props.get("application.process.id")).or_else(|| {
                 client.and_then(|c| {
-                    as_u32(c.get("pipewire.sec.pid")).or_else(|| as_u32(c.get("application.process.id")))
+                    as_u32(c.get("pipewire.sec.pid"))
+                        .or_else(|| as_u32(c.get("application.process.id")))
                 })
             });
             let p = &n["info"]["params"]["Props"][0];
@@ -294,12 +314,18 @@ pub fn parse_pw_dump(json: &str) -> Result<Snapshot, String> {
         })
         .collect();
 
-    Ok(Snapshot { backend: BackendKind::Pipewire, streams, sinks })
+    Ok(Snapshot {
+        backend: BackendKind::Pipewire,
+        streams,
+        sinks,
+    })
 }
 
 /// Parse `pactl -f json list sink-inputs` + `pactl -f json list sinks`.
 pub fn parse_pactl(inputs_json: &str, sinks_json: &str) -> Result<Snapshot, String> {
-    let bad = |e: serde_json::Error| format!("ERR_MEDIA_AUDIO_UNAVAILABLE: unparseable pactl output: {e}");
+    let bad = |e: serde_json::Error| {
+        format!("ERR_MEDIA_AUDIO_UNAVAILABLE: unparseable pactl output: {e}")
+    };
     let inputs: Vec<Value> = serde_json::from_str(inputs_json).map_err(bad)?;
     let raw_sinks: Vec<Value> = serde_json::from_str(sinks_json).map_err(bad)?;
 
@@ -334,19 +360,26 @@ pub fn parse_pactl(inputs_json: &str, sinks_json: &str) -> Result<Snapshot, Stri
             let sink_id = as_u32(i.get("sink"));
             Some(AudioStream {
                 id,
-                app: as_string(props.get("application.name")).unwrap_or_else(|| format!("stream {id}")),
+                app: as_string(props.get("application.name"))
+                    .unwrap_or_else(|| format!("stream {id}")),
                 media_name: as_string(props.get("media.name")),
                 pid: as_u32(props.get("application.process.id")),
                 binary: as_string(props.get("application.process.binary")),
                 volume: round3(volume),
                 muted: i["mute"].as_bool().unwrap_or(false),
                 running: !i["corked"].as_bool().unwrap_or(false),
-                sink: sink_id.and_then(|sid| sinks.iter().find(|s| s.id == sid)).map(|s| s.name.clone()),
+                sink: sink_id
+                    .and_then(|sid| sinks.iter().find(|s| s.id == sid))
+                    .map(|s| s.name.clone()),
             })
         })
         .collect();
 
-    Ok(Snapshot { backend: BackendKind::Pulse, streams, sinks })
+    Ok(Snapshot {
+        backend: BackendKind::Pulse,
+        streams,
+        sinks,
+    })
 }
 
 fn round3(v: f64) -> f64 {
@@ -367,8 +400,14 @@ pub fn proc_parent(pid: u32) -> Option<u32> {
 
 /// `org.mpris.MediaPlayer2.firefox.instance_1_424` -> `firefox`.
 pub fn player_short_name(player: &str) -> String {
-    let short = player.strip_prefix("org.mpris.MediaPlayer2.").unwrap_or(player);
-    short.split('.').next().unwrap_or(short).to_ascii_lowercase()
+    let short = player
+        .strip_prefix("org.mpris.MediaPlayer2.")
+        .unwrap_or(player);
+    short
+        .split('.')
+        .next()
+        .unwrap_or(short)
+        .to_ascii_lowercase()
 }
 
 /// Streams belonging to an MPRIS player: PID (or an ancestor of the stream
@@ -408,7 +447,9 @@ pub fn streams_for_player<'a>(
         .iter()
         .filter(|s| {
             s.app.to_ascii_lowercase().contains(&short)
-                || s.binary.as_deref().is_some_and(|b| b.to_ascii_lowercase().contains(&short))
+                || s.binary
+                    .as_deref()
+                    .is_some_and(|b| b.to_ascii_lowercase().contains(&short))
         })
         .collect()
 }
@@ -421,7 +462,9 @@ pub fn streams_for_app<'a>(streams: &'a [AudioStream], query: &str) -> Vec<&'a A
         .iter()
         .filter(|s| {
             s.app.to_ascii_lowercase().contains(&q)
-                || s.binary.as_deref().is_some_and(|b| b.to_ascii_lowercase().contains(&q))
+                || s.binary
+                    .as_deref()
+                    .is_some_and(|b| b.to_ascii_lowercase().contains(&q))
         })
         .collect()
 }
@@ -444,13 +487,18 @@ pub fn find_sink<'a>(sinks: &'a [Sink], query: &str) -> Result<&'a Sink, String>
         .iter()
         .filter(|s| {
             s.name.to_ascii_lowercase().contains(&ql)
-                || s.description.as_deref().is_some_and(|d| d.to_ascii_lowercase().contains(&ql))
+                || s.description
+                    .as_deref()
+                    .is_some_and(|d| d.to_ascii_lowercase().contains(&ql))
         })
         .collect();
     let names = || sinks.iter().map(|s| s.name.as_str()).collect::<Vec<_>>();
     match hits.as_slice() {
         [one] => Ok(one),
-        [] => Err(format!("ERR_MEDIA_SINK_NOT_FOUND: no output device matches '{q}' (have: {:?})", names())),
+        [] => Err(format!(
+            "ERR_MEDIA_SINK_NOT_FOUND: no output device matches '{q}' (have: {:?})",
+            names()
+        )),
         many => Err(format!(
             "ERR_MEDIA_AMBIGUOUS: '{q}' matches several output devices: {:?}",
             many.iter().map(|s| s.name.as_str()).collect::<Vec<_>>()
@@ -502,8 +550,14 @@ mod tests {
     #[test]
     fn pw_dump_resolves_sink_via_links() {
         let s = snap();
-        assert_eq!(stream(&s, 78).sink.as_deref(), Some("alsa_output.pci-0000_00_1b.0.analog-stereo"));
-        assert_eq!(stream(&s, 121).sink.as_deref(), Some("bluez_output.41_42_31_87_87_59.1"));
+        assert_eq!(
+            stream(&s, 78).sink.as_deref(),
+            Some("alsa_output.pci-0000_00_1b.0.analog-stereo")
+        );
+        assert_eq!(
+            stream(&s, 121).sink.as_deref(),
+            Some("bluez_output.41_42_31_87_87_59.1")
+        );
         assert_eq!(s.sinks.len(), 2);
     }
 
@@ -523,7 +577,9 @@ mod tests {
 
     #[test]
     fn pw_dump_garbage_errors() {
-        assert!(parse_pw_dump("not json").unwrap_err().contains("ERR_MEDIA_AUDIO_UNAVAILABLE"));
+        assert!(parse_pw_dump("not json")
+            .unwrap_err()
+            .contains("ERR_MEDIA_AUDIO_UNAVAILABLE"));
     }
 
     const PACTL_INPUTS: &str = r#"[
@@ -551,13 +607,21 @@ mod tests {
         assert_eq!(spotify.volume, 0.6, "loudest channel wins");
         assert!(spotify.muted);
         assert_eq!(spotify.pid, Some(3_499_887), "string pid accepted");
-        assert_eq!(spotify.sink.as_deref(), Some("alsa_output.platform-snd_aloop.0.analog-stereo"));
+        assert_eq!(
+            spotify.sink.as_deref(),
+            Some("alsa_output.platform-snd_aloop.0.analog-stereo")
+        );
     }
 
     #[test]
     fn player_matches_by_exact_pid() {
         let s = snap();
-        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.spotify", Some(3_499_887), &|_| None);
+        let hits = streams_for_player(
+            &s.streams,
+            "org.mpris.MediaPlayer2.spotify",
+            Some(3_499_887),
+            &|_| None,
+        );
         assert_eq!(hits.iter().map(|x| x.id).collect::<Vec<_>>(), vec![78]);
     }
 
@@ -566,14 +630,21 @@ mod tests {
         // Firefox: stream from content process 5002, MPRIS owned by parent 4000.
         let s = snap();
         let parent = |p: u32| if p == 5002 { Some(4000) } else { None };
-        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.firefox.instance_1_424", Some(4000), &parent);
+        let hits = streams_for_player(
+            &s.streams,
+            "org.mpris.MediaPlayer2.firefox.instance_1_424",
+            Some(4000),
+            &parent,
+        );
         assert_eq!(hits.iter().map(|x| x.id).collect::<Vec<_>>(), vec![121]);
     }
 
     #[test]
     fn player_falls_back_to_name_when_pid_unknown() {
         let s = parse_pactl(PACTL_INPUTS, PACTL_SINKS).unwrap();
-        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.spotify", None, &|_| None);
+        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.spotify", None, &|_| {
+            None
+        });
         assert_eq!(hits.iter().map(|x| x.id).collect::<Vec<_>>(), vec![36188]);
     }
 
@@ -581,14 +652,22 @@ mod tests {
     fn player_name_fallback_uses_binary() {
         // "mpd" is not in "Music Player Daemon" but is in binary "mpd (deleted)".
         let s = snap();
-        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.mpd", Some(999), &|_| None);
+        let hits = streams_for_player(&s.streams, "org.mpris.MediaPlayer2.mpd", Some(999), &|_| {
+            None
+        });
         assert_eq!(hits.iter().map(|x| x.id).collect::<Vec<_>>(), vec![73]);
     }
 
     #[test]
     fn short_name_strips_prefix_and_instance() {
-        assert_eq!(player_short_name("org.mpris.MediaPlayer2.firefox.instance_1_424"), "firefox");
-        assert_eq!(player_short_name("org.mpris.MediaPlayer2.spotify"), "spotify");
+        assert_eq!(
+            player_short_name("org.mpris.MediaPlayer2.firefox.instance_1_424"),
+            "firefox"
+        );
+        assert_eq!(
+            player_short_name("org.mpris.MediaPlayer2.spotify"),
+            "spotify"
+        );
     }
 
     #[test]
@@ -602,10 +681,19 @@ mod tests {
     fn find_sink_by_id_name_and_substring() {
         let s = snap();
         assert_eq!(find_sink(&s.sinks, "34").unwrap().id, 34);
-        assert_eq!(find_sink(&s.sinks, "alsa_output.pci-0000_00_1b.0.analog-stereo").unwrap().id, 57);
+        assert_eq!(
+            find_sink(&s.sinks, "alsa_output.pci-0000_00_1b.0.analog-stereo")
+                .unwrap()
+                .id,
+            57
+        );
         assert_eq!(find_sink(&s.sinks, "jbl").unwrap().id, 34);
-        assert!(find_sink(&s.sinks, "hdmi").unwrap_err().starts_with("ERR_MEDIA_SINK_NOT_FOUND"));
-        assert!(find_sink(&s.sinks, "o").unwrap_err().starts_with("ERR_MEDIA_AMBIGUOUS"));
+        assert!(find_sink(&s.sinks, "hdmi")
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_SINK_NOT_FOUND"));
+        assert!(find_sink(&s.sinks, "o")
+            .unwrap_err()
+            .starts_with("ERR_MEDIA_AMBIGUOUS"));
     }
 
     #[test]
@@ -632,7 +720,10 @@ mod tests {
     #[async_trait::async_trait]
     impl CommandRunner for FakeRunner {
         async fn run(&self, program: &str, args: &[&str]) -> Result<RunOutcome, RunnerError> {
-            self.calls.lock().unwrap().push(format!("{program} {}", args.join(" ")));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(format!("{program} {}", args.join(" ")));
             if self.missing.contains(&program) {
                 return Err(RunnerError::NotFound(program.into()));
             }
@@ -642,12 +733,19 @@ mod tests {
                 ("pactl", [_, _, _, "sinks"]) => PACTL_SINKS.to_string(),
                 _ => String::new(),
             };
-            Ok(RunOutcome { ok: true, stdout, stderr: String::new() })
+            Ok(RunOutcome {
+                ok: true,
+                stdout,
+                stderr: String::new(),
+            })
         }
     }
 
     fn fake(missing: Vec<&'static str>) -> Arc<FakeRunner> {
-        Arc::new(FakeRunner { missing, calls: Mutex::new(Vec::new()) })
+        Arc::new(FakeRunner {
+            missing,
+            calls: Mutex::new(Vec::new()),
+        })
     }
 
     #[tokio::test]
@@ -660,13 +758,19 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_falls_back_to_pactl_when_pw_dump_missing() {
-        let s = Streams::with_runner(fake(vec!["pw-dump"])).snapshot().await.unwrap();
+        let s = Streams::with_runner(fake(vec!["pw-dump"]))
+            .snapshot()
+            .await
+            .unwrap();
         assert_eq!(s.backend, BackendKind::Pulse);
     }
 
     #[tokio::test]
     async fn snapshot_errors_when_no_audio_tools() {
-        let err = Streams::with_runner(fake(vec!["pw-dump", "pactl"])).snapshot().await.unwrap_err();
+        let err = Streams::with_runner(fake(vec!["pw-dump", "pactl"]))
+            .snapshot()
+            .await
+            .unwrap_err();
         assert!(err.starts_with("ERR_MEDIA_AUDIO_UNAVAILABLE"), "{err}");
     }
 
@@ -674,9 +778,15 @@ mod tests {
     async fn pipewire_commands_argv() {
         let r = fake(vec![]);
         let st = Streams::with_runner(r.clone());
-        let sink = Sink { id: 34, name: "bluez_output.x".into(), description: None };
+        let sink = Sink {
+            id: 34,
+            name: "bluez_output.x".into(),
+            description: None,
+        };
         st.set_volume(BackendKind::Pipewire, 78, 0.3).await.unwrap();
-        st.set_mute(BackendKind::Pipewire, 78, MuteMode::Toggle).await.unwrap();
+        st.set_mute(BackendKind::Pipewire, 78, MuteMode::Toggle)
+            .await
+            .unwrap();
         st.move_to(BackendKind::Pipewire, 78, &sink).await.unwrap();
         assert_eq!(
             *r.calls.lock().unwrap(),
@@ -692,9 +802,15 @@ mod tests {
     async fn pulse_commands_argv() {
         let r = fake(vec![]);
         let st = Streams::with_runner(r.clone());
-        let sink = Sink { id: 59, name: "alsa_output.x".into(), description: None };
+        let sink = Sink {
+            id: 59,
+            name: "alsa_output.x".into(),
+            description: None,
+        };
         st.set_volume(BackendKind::Pulse, 8597, 0.25).await.unwrap();
-        st.set_mute(BackendKind::Pulse, 8597, MuteMode::On).await.unwrap();
+        st.set_mute(BackendKind::Pulse, 8597, MuteMode::On)
+            .await
+            .unwrap();
         st.move_to(BackendKind::Pulse, 8597, &sink).await.unwrap();
         assert_eq!(
             *r.calls.lock().unwrap(),

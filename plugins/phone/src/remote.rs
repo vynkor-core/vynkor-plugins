@@ -27,7 +27,12 @@ fn valid_env_key(k: &str) -> bool {
 
 impl RemoteCmd {
     pub fn new(program: &str, args: Vec<String>) -> Self {
-        Self { env: Vec::new(), program: program.to_string(), args, in_home: false }
+        Self {
+            env: Vec::new(),
+            program: program.to_string(),
+            args,
+            in_home: false,
+        }
     }
 
     pub fn env(mut self, k: &str, v: &str) -> Self {
@@ -48,7 +53,10 @@ impl RemoteCmd {
     /// Render for a POSIX remote shell: `[cd "$HOME" && ]K='v' … 'prog' 'a' 'b'`.
     pub fn to_shell(&self) -> Result<String, PhoneError> {
         let has_nul = |s: &str| s.contains('\0');
-        if has_nul(&self.program) || self.args.iter().any(|a| has_nul(a)) || self.env.iter().any(|(_, v)| has_nul(v)) {
+        if has_nul(&self.program)
+            || self.args.iter().any(|a| has_nul(a))
+            || self.env.iter().any(|(_, v)| has_nul(v))
+        {
             return Err(PhoneError::BadParams("NUL byte in remote command".into()));
         }
         let mut out = String::new();
@@ -77,7 +85,10 @@ impl RemoteCmd {
 pub fn camera_env(uid: u32) -> Vec<(String, String)> {
     vec![
         ("XDG_RUNTIME_DIR".to_string(), format!("/run/user/{uid}")),
-        ("MIR_SOCKET".to_string(), format!("/run/user/{uid}/mir_socket_trusted")),
+        (
+            "MIR_SOCKET".to_string(),
+            format!("/run/user/{uid}/mir_socket_trusted"),
+        ),
     ]
 }
 
@@ -88,8 +99,13 @@ mod tests {
 
     #[test]
     fn renders_a_plain_command() {
-        let c = RemoteCmd::new("python3", vec!["a b".into(), "-W".into(), "640".into()]).env("K", "v").in_home();
-        assert_eq!(c.to_shell().unwrap(), "cd \"$HOME\" && K='v' 'python3' 'a b' '-W' '640'");
+        let c = RemoteCmd::new("python3", vec!["a b".into(), "-W".into(), "640".into()])
+            .env("K", "v")
+            .in_home();
+        assert_eq!(
+            c.to_shell().unwrap(),
+            "cd \"$HOME\" && K='v' 'python3' 'a b' '-W' '640'"
+        );
     }
 
     #[test]
@@ -119,16 +135,29 @@ mod tests {
         ];
         for h in hostile {
             let cmd = RemoteCmd::new("printf", vec!["%s".into(), h.to_string()]);
-            let out = Command::new("sh").arg("-c").arg(cmd.to_shell().unwrap()).output().unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout), h, "token {h:?} was interpreted");
+            let out = Command::new("sh")
+                .arg("-c")
+                .arg(cmd.to_shell().unwrap())
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout),
+                h,
+                "token {h:?} was interpreted"
+            );
             assert!(out.status.success());
         }
     }
 
     #[test]
     fn hostile_env_values_survive_a_real_shell() {
-        let cmd = RemoteCmd::new("sh", vec!["-c".into(), "printf %s \"$V\"".into()]).env("V", "a'b;$(echo pwned) c");
-        let out = Command::new("sh").arg("-c").arg(cmd.to_shell().unwrap()).output().unwrap();
+        let cmd = RemoteCmd::new("sh", vec!["-c".into(), "printf %s \"$V\"".into()])
+            .env("V", "a'b;$(echo pwned) c");
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(cmd.to_shell().unwrap())
+            .output()
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), "a'b;$(echo pwned) c");
     }
 
@@ -139,13 +168,20 @@ mod tests {
             assert!(c.to_shell().is_err(), "env name {k:?} must be rejected");
         }
         assert!(RemoteCmd::new("t\0rue", vec![]).to_shell().is_err());
-        assert!(RemoteCmd::new("true", vec!["a\0b".into()]).to_shell().is_err());
+        assert!(RemoteCmd::new("true", vec!["a\0b".into()])
+            .to_shell()
+            .is_err());
     }
 
     #[test]
     fn in_home_changes_directory_first() {
         let cmd = RemoteCmd::new("pwd", vec![]).in_home();
-        let out = Command::new("sh").arg("-c").arg(cmd.to_shell().unwrap()).env("HOME", "/tmp").output().unwrap();
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(cmd.to_shell().unwrap())
+            .env("HOME", "/tmp")
+            .output()
+            .unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "/tmp");
     }
 
@@ -153,6 +189,12 @@ mod tests {
     fn camera_env_uses_the_uid() {
         let e = camera_env(32011);
         assert_eq!(e[0], ("XDG_RUNTIME_DIR".into(), "/run/user/32011".into()));
-        assert_eq!(e[1], ("MIR_SOCKET".into(), "/run/user/32011/mir_socket_trusted".into()));
+        assert_eq!(
+            e[1],
+            (
+                "MIR_SOCKET".into(),
+                "/run/user/32011/mir_socket_trusted".into()
+            )
+        );
     }
 }

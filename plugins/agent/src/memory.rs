@@ -48,7 +48,10 @@ pub fn enabled() -> bool {
 /// The plan fact extraction runs on: the goal's own, or the
 /// [`MEMORY_AGENT_ENV`] profile when the operator named one.
 pub fn extraction_plan(goal_plan: &LlmPlan) -> LlmPlan {
-    match std::env::var(MEMORY_AGENT_ENV).ok().map(|s| s.trim().to_string()) {
+    match std::env::var(MEMORY_AGENT_ENV)
+        .ok()
+        .map(|s| s.trim().to_string())
+    {
         Some(id) if !id.is_empty() => llm::fallback_plan(goal_plan, &id),
         _ => goal_plan.clone(),
     }
@@ -66,9 +69,27 @@ fn collection() -> String {
 /// run while the ESP was offline stored "ESP сейчас оффлайн", and the next
 /// goal answered "unavailable" from memory without calling the tool.
 const TRANSIENT_STEMS: &[&str] = &[
-    "оффлайн", "офлайн", "недоступ", "не доступ", "не ответ", "не отвеча", "тайм-аут",
-    "таймаут", "не удалось", "не смог", "не может", "невозможно", "неизвест", "сейчас", "временно",
-    "offline", "timeout", "timed out", "unavailable", "not available", "failed",
+    "оффлайн",
+    "офлайн",
+    "недоступ",
+    "не доступ",
+    "не ответ",
+    "не отвеча",
+    "тайм-аут",
+    "таймаут",
+    "не удалось",
+    "не смог",
+    "не может",
+    "невозможно",
+    "неизвест",
+    "сейчас",
+    "временно",
+    "offline",
+    "timeout",
+    "timed out",
+    "unavailable",
+    "not available",
+    "failed",
 ];
 
 /// A fact about how things are right now goes stale and then misleads.
@@ -107,11 +128,16 @@ pub fn parse_facts(content: &str) -> Vec<String> {
 pub fn format_facts(hits: &[Value]) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     for hit in hits {
-        let Some(score) = hit.get("score").and_then(Value::as_f64) else { continue };
+        let Some(score) = hit.get("score").and_then(Value::as_f64) else {
+            continue;
+        };
         if score < MIN_SCORE {
             continue;
         }
-        let Some(text) = hit.get("metadata").and_then(|m| m.get("fact")).and_then(Value::as_str)
+        let Some(text) = hit
+            .get("metadata")
+            .and_then(|m| m.get("fact"))
+            .and_then(Value::as_str)
         else {
             continue;
         };
@@ -129,7 +155,9 @@ pub fn format_facts(hits: &[Value]) -> Option<String> {
 }
 
 async fn read_index(rpc: &Rpc, db_timeout_ms: u32) -> Result<Vec<Value>, String> {
-    let v = rpc.call("db_get", json!({"key": INDEX_KEY}), db_timeout_ms).await?;
+    let v = rpc
+        .call("db_get", json!({"key": INDEX_KEY}), db_timeout_ms)
+        .await?;
     if v.get("found").and_then(Value::as_bool) != Some(true) {
         return Ok(Vec::new());
     }
@@ -142,12 +170,13 @@ async fn read_index(rpc: &Rpc, db_timeout_ms: u32) -> Result<Vec<Value>, String>
 }
 
 async fn write_index(rpc: &Rpc, db_timeout_ms: u32, ids: &[Value]) -> Result<(), String> {
-    let v = rpc.call(
-        "db_set",
-        json!({"key": INDEX_KEY, "value": ids}),
-        db_timeout_ms,
-    )
-    .await?;
+    let v = rpc
+        .call(
+            "db_set",
+            json!({"key": INDEX_KEY, "value": ids}),
+            db_timeout_ms,
+        )
+        .await?;
     if v.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(format!("database.db_set returned unexpected payload: {v}"));
     }
@@ -215,7 +244,10 @@ pub async fn remember(
         role: "user".to_string(),
         content: extraction_prompt,
     }];
-    let tag = llm::CallTag { purpose: "memory_extract", goal_id };
+    let tag = llm::CallTag {
+        purpose: "memory_extract",
+        goal_id,
+    };
     let outcome = match llm::chat_with_fallback(rpc, plan, &transcript, &[], &tag).await {
         Ok(o) => o.content,
         Err(e) => {
@@ -260,7 +292,10 @@ pub async fn remember(
     if let Err(e) = write_index(rpc, db_timeout_ms, &index).await {
         eprintln!("[agent] memory index write failed: {e}");
     }
-    println!("[agent] remembered {} fact(s) from goal {goal_id}", facts.len());
+    println!(
+        "[agent] remembered {} fact(s) from goal {goal_id}",
+        facts.len()
+    );
 }
 
 /// Delete one stored fact by semantic similarity to `query` (top hit above
@@ -316,7 +351,9 @@ pub async fn clear(rpc: &Rpc) -> Result<usize, String> {
     let index = read_index(rpc, db_timeout_ms).await?;
     let mut deleted = 0usize;
     for entry in &index {
-        let Some(id) = entry.get("id").and_then(Value::as_str) else { continue };
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
         let ok = rpc
             .call(
                 "vec_delete",
@@ -347,9 +384,15 @@ pub async fn forget_session(rpc: &Rpc, session_id: &str) -> Result<usize, String
     let mut gone: Vec<String> = Vec::new();
     let mut failure: Option<String> = None;
     for entry in index.iter().filter(|e| in_session(e)) {
-        let Some(id) = entry.get("id").and_then(Value::as_str) else { continue };
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
         match rpc
-            .call("vec_delete", json!({"collection": collection(), "id": id}), 10_000)
+            .call(
+                "vec_delete",
+                json!({"collection": collection(), "id": id}),
+                10_000,
+            )
             .await
         {
             Ok(v) => {
@@ -369,7 +412,9 @@ pub async fn forget_session(rpc: &Rpc, session_id: &str) -> Result<usize, String
         index.retain(|e| !in_session(e));
     } else {
         index.retain(|e| {
-            e.get("id").and_then(Value::as_str).is_none_or(|id| !gone.iter().any(|g| g == id))
+            e.get("id")
+                .and_then(Value::as_str)
+                .is_none_or(|id| !gone.iter().any(|g| g == id))
         });
     }
     if index.len() != before {
@@ -405,10 +450,16 @@ mod tests {
         ] {
             assert!(is_transient(f), "{f}");
         }
-        for f in ["Бехзод использует фонарик на телефоне", "Светодиод D1 подключён к ESP-12E"] {
+        for f in [
+            "Бехзод использует фонарик на телефоне",
+            "Светодиод D1 подключён к ESP-12E",
+        ] {
             assert!(!is_transient(f), "{f}");
         }
-        assert_eq!(parse_facts(r#"["ESP сейчас оффлайн", "У Бехзода Pixel 6 Pro"]"#), vec!["У Бехзода Pixel 6 Pro"]);
+        assert_eq!(
+            parse_facts(r#"["ESP сейчас оффлайн", "У Бехзода Pixel 6 Pro"]"#),
+            vec!["У Бехзода Pixel 6 Pro"]
+        );
     }
     use crate::ProxyMsg;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -449,12 +500,18 @@ mod tests {
                         let _ = call.reply.send(result);
                     }
                     ProxyMsg::Command(call) => {
-                        let _ = call.reply.send(Err("fake rpc: commands unsupported".into()));
+                        let _ = call
+                            .reply
+                            .send(Err("fake rpc: commands unsupported".into()));
                     }
                 }
             }
         });
-        FakeRpc { rpc: Rpc::new(tx), vec_query_calls, db_get_calls }
+        FakeRpc {
+            rpc: Rpc::new(tx),
+            vec_query_calls,
+            db_get_calls,
+        }
     }
 
     #[tokio::test]
@@ -467,7 +524,11 @@ mod tests {
             0,
             "recall must not round-trip vec_query when memory:index is empty"
         );
-        assert_eq!(fake.db_get_calls.load(Ordering::SeqCst), 1, "index should be checked once");
+        assert_eq!(
+            fake.db_get_calls.load(Ordering::SeqCst),
+            1,
+            "index should be checked once"
+        );
     }
 
     #[tokio::test]
@@ -480,7 +541,11 @@ mod tests {
         })];
         let fake = fake_rpc(index, hits);
         let out = recall(&fake.rpc, "which OS does the user run?", None).await;
-        assert_eq!(fake.vec_query_calls.load(Ordering::SeqCst), 1, "non-empty index must still query");
+        assert_eq!(
+            fake.vec_query_calls.load(Ordering::SeqCst),
+            1,
+            "non-empty index must still query"
+        );
         let block = out.expect("expected a recalled facts block");
         assert!(block.contains("Arch Linux"));
     }
@@ -494,8 +559,15 @@ mod tests {
         let rpc = fake.rpc.clone();
         let clear_all = tokio::spawn(async move { clear(&rpc).await });
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        assert!(!forget.is_finished() && !clear_all.is_finished(), "must wait for the lock");
-        assert_eq!(fake.db_get_calls.load(Ordering::SeqCst), 0, "no index read under the lock");
+        assert!(
+            !forget.is_finished() && !clear_all.is_finished(),
+            "must wait for the lock"
+        );
+        assert_eq!(
+            fake.db_get_calls.load(Ordering::SeqCst),
+            0,
+            "no index read under the lock"
+        );
         drop(guard);
         // fake rpc has no db_set, so the index write fails after the read: that's fine here,
         // the point is that both only proceed once the lock is free.
@@ -512,7 +584,10 @@ mod tests {
         let prose = "Sure! Here are the facts:\n[\"server is at 10.0.0.2\"] hope that helps";
         assert_eq!(parse_facts(prose), vec!["server is at 10.0.0.2"]);
         assert!(parse_facts("no arrays here").is_empty());
-        assert!(parse_facts("[\"a\", 42, null]").len() == 1, "non-strings dropped");
+        assert!(
+            parse_facts("[\"a\", 42, null]").len() == 1,
+            "non-strings dropped"
+        );
     }
 
     #[test]
@@ -538,9 +613,13 @@ mod tests {
         assert!(block.contains("box7"));
         assert!(block.contains("ntfy"));
         assert!(!block.contains("noise"));
-        assert!(!block.contains("(0.99)"), "hit without metadata.fact skipped");
+        assert!(
+            !block.contains("(0.99)"),
+            "hit without metadata.fact skipped"
+        );
         assert!(format_facts(&[]).is_none());
-        assert!(format_facts(&[json!({"id": "x", "score": 0.99, "metadata": {"fact": "y"}})])
-            .is_some());
+        assert!(
+            format_facts(&[json!({"id": "x", "score": 0.99, "metadata": {"fact": "y"}})]).is_some()
+        );
     }
 }

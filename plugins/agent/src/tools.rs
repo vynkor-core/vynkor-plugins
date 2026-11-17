@@ -113,7 +113,9 @@ fn parse_spec(v: &serde_json::Value, index: usize) -> Result<ToolSpec, String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| format!("tools file entry #{index} is missing a non-empty \"name\""))?;
     if name.contains(char::is_whitespace) {
-        return Err(format!("tools file entry #{index}: \"name\" must not contain whitespace"));
+        return Err(format!(
+            "tools file entry #{index}: \"name\" must not contain whitespace"
+        ));
     }
     let description = obj
         .get("description")
@@ -141,21 +143,33 @@ fn parse_spec(v: &serde_json::Value, index: usize) -> Result<ToolSpec, String> {
     let timeout_ms = match obj.get("timeout_ms") {
         None | Some(serde_json::Value::Null) => TOOL_TIMEOUT_DEFAULT_MS,
         Some(n) => {
-            let raw = n
-                .as_u64()
-                .ok_or_else(|| format!("tools file entry \"{name}\": \"timeout_ms\" must be a non-negative integer"))?;
+            let raw = n.as_u64().ok_or_else(|| {
+                format!(
+                    "tools file entry \"{name}\": \"timeout_ms\" must be a non-negative integer"
+                )
+            })?;
             (raw as u32).clamp(TOOL_TIMEOUT_MIN_MS, TOOL_TIMEOUT_MAX_MS)
         }
     };
     let cooldown_ms = match obj.get("cooldown_ms") {
         None | Some(serde_json::Value::Null) => 0,
-        Some(n) => n.as_u64().ok_or_else(|| format!("tools file entry \"{name}\": \"cooldown_ms\" must be a non-negative integer"))?,
+        Some(n) => n.as_u64().ok_or_else(|| {
+            format!("tools file entry \"{name}\": \"cooldown_ms\" must be a non-negative integer")
+        })?,
     };
     let max_per_goal = match obj.get("max_per_goal") {
         None | Some(serde_json::Value::Null) => 16,
         Some(n) => {
-            let raw = n.as_u64().ok_or_else(|| format!("tools file entry \"{name}\": \"max_per_goal\" must be a non-negative integer"))?;
-            if raw > 1000 { return Err(format!("tools file entry \"{name}\": \"max_per_goal\" must be <= 1000")); }
+            let raw = n.as_u64().ok_or_else(|| {
+                format!(
+                    "tools file entry \"{name}\": \"max_per_goal\" must be a non-negative integer"
+                )
+            })?;
+            if raw > 1000 {
+                return Err(format!(
+                    "tools file entry \"{name}\": \"max_per_goal\" must be <= 1000"
+                ));
+            }
             raw as u32
         }
     };
@@ -171,7 +185,6 @@ fn parse_spec(v: &serde_json::Value, index: usize) -> Result<ToolSpec, String> {
         source: Source::File,
     })
 }
-
 
 /// Fill an operator entry's gaps from the owning plugin's manifest spec.
 ///
@@ -216,26 +229,33 @@ fn merge_from_kernel(spec: &mut ToolSpec, kernel: &ToolSpec) {
 }
 
 fn parse_approvals_file(raw: &str) -> Result<std::collections::BTreeMap<String, bool>, String> {
-    let v: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("approvals file is not valid JSON: {e}"))?;
-    let obj = v.as_object().ok_or_else(|| "approvals file must be an object {\"tool\": bool}" .to_string())?;
+    let v: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("approvals file is not valid JSON: {e}"))?;
+    let obj = v
+        .as_object()
+        .ok_or_else(|| "approvals file must be an object {\"tool\": bool}".to_string())?;
     let mut map = std::collections::BTreeMap::new();
     for (k, val) in obj {
-        let b = val.as_bool().ok_or_else(|| format!("approvals entry \"{k}\" must be boolean (true=requires confirmation)"))?;
+        let b = val.as_bool().ok_or_else(|| {
+            format!("approvals entry \"{k}\" must be boolean (true=requires confirmation)")
+        })?;
         map.insert(k.clone(), b);
     }
     Ok(map)
 }
 
 fn parse_tools_file(raw: &str) -> Result<BTreeMap<String, ToolSpec>, String> {
-    let body: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|e| format!("tools file is not valid JSON: {e}"))?;
+    let body: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("tools file is not valid JSON: {e}"))?;
     let list = match body {
         serde_json::Value::Array(items) => items,
         ref other @ serde_json::Value::Object(_) => other
             .get("tools")
             .and_then(serde_json::Value::as_array)
             .cloned()
-            .ok_or_else(|| "tools file must be an array of specs or {\"tools\": [...]}".to_string())?,
+            .ok_or_else(|| {
+                "tools file must be an array of specs or {\"tools\": [...]}".to_string()
+            })?,
         _ => return Err("tools file must be an array of specs or {\"tools\": [...]}".to_string()),
     };
     let mut map = BTreeMap::new();
@@ -296,7 +316,9 @@ impl Catalog {
         allowed.retain(|name| {
             let denied = is_hard_denied(name);
             if denied {
-                eprintln!("[agent] ignoring \"{name}\" in the allowlist: internal or management action");
+                eprintln!(
+                    "[agent] ignoring \"{name}\" in the allowlist: internal or management action"
+                );
             }
             !denied
         });
@@ -310,9 +332,13 @@ impl Catalog {
             None => BTreeMap::new(),
         };
 
-        let approvals = match std::env::var(APPROVALS_FILE_ENV).ok().filter(|s| !s.is_empty()) {
+        let approvals = match std::env::var(APPROVALS_FILE_ENV)
+            .ok()
+            .filter(|s| !s.is_empty())
+        {
             Some(path) => {
-                let raw = std::fs::read_to_string(&path).map_err(|e| format!("cannot read approvals file \"{path}\": {e}"))?;
+                let raw = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("cannot read approvals file \"{path}\": {e}"))?;
                 parse_approvals_file(&raw)?
             }
             None => std::collections::BTreeMap::new(),
@@ -341,7 +367,11 @@ impl Catalog {
             })
             .collect();
 
-        Ok(Catalog { tools, allowed_actions: allowed, tools_file_set: file_path.is_some() })
+        Ok(Catalog {
+            tools,
+            allowed_actions: allowed,
+            tools_file_set: file_path.is_some(),
+        })
     }
 
     /// [`Catalog::load`] plus runtime manifest discovery: for every
@@ -364,7 +394,9 @@ impl Catalog {
             Ok(map) => {
                 drop_offline(&mut cat, &map);
                 for tool in cat.tools.iter_mut() {
-                    let Some(found) = map.get(&tool.name) else { continue };
+                    let Some(found) = map.get(&tool.name) else {
+                        continue;
+                    };
                     match tool.source {
                         Source::Minimal => *tool = found.clone(),
                         Source::File | Source::Merged => merge_from_kernel(tool, found),
@@ -393,7 +425,9 @@ impl Catalog {
 /// any manifest error, so an `Ok` map is the complete live set.
 fn drop_offline(catalog: &mut Catalog, live: &BTreeMap<String, ToolSpec>) {
     let before = catalog.tools.len();
-    catalog.tools.retain(|t| live.contains_key(&t.name) || t.name.contains('.'));
+    catalog
+        .tools
+        .retain(|t| live.contains_key(&t.name) || t.name.contains('.'));
     let dropped = before - catalog.tools.len();
     if dropped > 0 {
         eprintln!("[agent] catalog: {dropped} tools of plugins not running left out");
@@ -488,7 +522,11 @@ fn infer_risk(name: &str) -> &'static str {
     //    less sensitive and is handled by the generic "_stop" rule below).
     if matches!(
         name,
-        "fs_write" | "db_query" | "http_request" | "mic_start" | "stt_listen_start"
+        "fs_write"
+            | "db_query"
+            | "http_request"
+            | "mic_start"
+            | "stt_listen_start"
             | "capture_record_start"
     ) {
         return "high";
@@ -647,7 +685,10 @@ mod tests {
         tool.risk = "low".into();
         let before = tool.clone();
         merge_from_kernel(&mut tool, &kernel_spec("a"));
-        assert_eq!(tool, before, "nothing was empty, so nothing may change — including source");
+        assert_eq!(
+            tool, before,
+            "nothing was empty, so nothing may change — including source"
+        );
     }
 
     #[test]
@@ -670,7 +711,10 @@ mod tests {
         tool.risk = "low".into();
         tool.requires_confirmation = true;
         merge_from_kernel(&mut tool, &kernel_spec("b"));
-        assert!(tool.requires_confirmation, "a kernel `false` must not clear an operator `true`");
+        assert!(
+            tool.requires_confirmation,
+            "a kernel `false` must not clear an operator `true`"
+        );
     }
 
     #[test]
@@ -680,7 +724,10 @@ mod tests {
         tool.cooldown_ms = 500;
         tool.max_per_goal = 2;
         merge_from_kernel(&mut tool, &kernel_spec("a"));
-        assert_eq!((tool.timeout_ms, tool.cooldown_ms, tool.max_per_goal), (90_000, 500, 2));
+        assert_eq!(
+            (tool.timeout_ms, tool.cooldown_ms, tool.max_per_goal),
+            (90_000, 500, 2)
+        );
     }
 
     #[test]
@@ -741,7 +788,11 @@ mod tests {
 
         let cat = Catalog::build("notify_send, fs_read", Some(path.to_str().unwrap())).unwrap();
         let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec!["notify_send", "fs_read"], "allowlist order preserved");
+        assert_eq!(
+            names,
+            vec!["notify_send", "fs_read"],
+            "allowlist order preserved"
+        );
         assert!(cat.tools_file_set);
         // Allowlisted-but-undescribed gets a minimal spec.
         let fs_read = cat.get("fs_read").unwrap();
@@ -766,23 +817,39 @@ mod tests {
 
     #[test]
     fn get_finds_by_name() {
-        let cat = Catalog { tools: vec![spec("x")], allowed_actions: vec!["x".into()], tools_file_set: false };
+        let cat = Catalog {
+            tools: vec![spec("x")],
+            allowed_actions: vec!["x".into()],
+            tools_file_set: false,
+        };
         let mut offline = Catalog {
-            tools: vec![spec("tg_send_message"), spec("launch"), spec("pixel-6pro.battery")],
+            tools: vec![
+                spec("tg_send_message"),
+                spec("launch"),
+                spec("pixel-6pro.battery"),
+            ],
             allowed_actions: vec![],
             tools_file_set: true,
         };
         let live: BTreeMap<String, ToolSpec> = [("launch".to_string(), spec("launch"))].into();
         drop_offline(&mut offline, &live);
         let names: Vec<&str> = offline.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, vec!["launch", "pixel-6pro.battery"], "disabled plugin out, device kept");
+        assert_eq!(
+            names,
+            vec!["launch", "pixel-6pro.battery"],
+            "disabled plugin out, device kept"
+        );
         assert!(cat.get("x").is_some());
         assert!(cat.get("y").is_none());
     }
 
     fn catalog_of(specs: Vec<ToolSpec>) -> Catalog {
         let allowed_actions = specs.iter().map(|s| s.name.clone()).collect();
-        Catalog { tools: specs, allowed_actions, tools_file_set: false }
+        Catalog {
+            tools: specs,
+            allowed_actions,
+            tools_file_set: false,
+        }
     }
 
     #[test]
@@ -791,7 +858,11 @@ mod tests {
         tool.risk = "low".into(); // pretend an operator explicitly vouched for it
         let mut cat = catalog_of(vec![tool]);
         infer_missing_risk(&mut cat);
-        assert_eq!(cat.get("secret_get").unwrap().risk, "low", "explicit risk must survive untouched");
+        assert_eq!(
+            cat.get("secret_get").unwrap().risk,
+            "low",
+            "explicit risk must survive untouched"
+        );
         assert!(
             !cat.get("secret_get").unwrap().requires_confirmation,
             "inference must not run at all once risk is non-empty, so confirmation is untouched too"
@@ -811,8 +882,14 @@ mod tests {
         let mut cat = catalog_of(vec![tool]);
         infer_missing_risk(&mut cat);
         let t = cat.get("tg_send_message").unwrap();
-        assert_eq!(t.risk, "high", "an undeclared risk must be inferred, not preserved");
-        assert!(t.requires_confirmation, "a message sent to a human must be gated");
+        assert_eq!(
+            t.risk, "high",
+            "an undeclared risk must be inferred, not preserved"
+        );
+        assert!(
+            t.requires_confirmation,
+            "a message sent to a human must be gated"
+        );
     }
 
     #[test]
@@ -831,8 +908,14 @@ mod tests {
         let mut cat = catalog_of(vec![tool]);
         infer_missing_risk(&mut cat);
         let t = cat.get("ping").unwrap();
-        assert_eq!(t.risk, "low", "risk was empty, so inference does fill it in");
-        assert!(t.requires_confirmation, "an explicit true must never be cleared by inference");
+        assert_eq!(
+            t.risk, "low",
+            "risk was empty, so inference does fill it in"
+        );
+        assert!(
+            t.requires_confirmation,
+            "an explicit true must never be cleared by inference"
+        );
     }
 
     #[test]
@@ -841,7 +924,10 @@ mod tests {
         infer_missing_risk(&mut cat);
         let t = cat.get("secret_get").unwrap();
         assert_eq!(t.risk, "critical");
-        assert!(t.requires_confirmation, "reading a secret must halt the loop for confirmation");
+        assert!(
+            t.requires_confirmation,
+            "reading a secret must halt the loop for confirmation"
+        );
     }
 
     #[test]
@@ -850,16 +936,24 @@ mod tests {
         infer_missing_risk(&mut cat);
         let t = cat.get("fs_read").unwrap();
         assert_eq!(t.risk, "low");
-        assert!(!t.requires_confirmation, "a pure read must never gain a confirmation requirement");
+        assert!(
+            !t.requires_confirmation,
+            "a pure read must never gain a confirmation requirement"
+        );
     }
 
     #[test]
     fn note_delete_and_secret_delete_land_on_different_tiers() {
         let mut cat = catalog_of(vec![spec("note_delete"), spec("secret_delete")]);
         infer_missing_risk(&mut cat);
-        assert_eq!(cat.get("note_delete").unwrap().risk, "high", "deleting a note is destructive but scoped");
         assert_eq!(
-            cat.get("secret_delete").unwrap().risk, "critical",
+            cat.get("note_delete").unwrap().risk,
+            "high",
+            "deleting a note is destructive but scoped"
+        );
+        assert_eq!(
+            cat.get("secret_delete").unwrap().risk,
+            "critical",
             "deleting a credential is not the same risk as deleting a note, despite the same verb"
         );
         assert!(cat.get("note_delete").unwrap().requires_confirmation);
@@ -879,7 +973,10 @@ mod tests {
         infer_missing_risk(&mut cat);
         let t = cat.get("hotkey_inject").unwrap();
         assert_eq!(t.risk, "medium");
-        assert!(!t.requires_confirmation, "medium risk must not gate the loop on confirmation");
+        assert!(
+            !t.requires_confirmation,
+            "medium risk must not gate the loop on confirmation"
+        );
     }
 
     #[test]
@@ -892,8 +989,14 @@ mod tests {
         let mut cat = catalog_of(vec![tool]);
         infer_missing_risk(&mut cat);
         let t = cat.get("hotkey_inject").unwrap();
-        assert_eq!(t.risk, "medium", "an explicit manifest risk must never be upgraded by inference");
-        assert!(!t.requires_confirmation, "inference did not run, so it must not add confirmation either");
+        assert_eq!(
+            t.risk, "medium",
+            "an explicit manifest risk must never be upgraded by inference"
+        );
+        assert!(
+            !t.requires_confirmation,
+            "inference did not run, so it must not add confirmation either"
+        );
     }
 
     #[test]
@@ -908,7 +1011,10 @@ mod tests {
         let mut cat = catalog_of(vec![tool]);
         infer_missing_risk(&mut cat);
         let t = cat.get("hotkey_inject").unwrap();
-        assert_eq!(t.risk, "critical", "an explicit manifest risk must never be downgraded by inference");
+        assert_eq!(
+            t.risk, "critical",
+            "an explicit manifest risk must never be downgraded by inference"
+        );
         assert!(t.requires_confirmation);
     }
 
@@ -919,47 +1025,175 @@ mod tests {
         // after inference; none may be left blank (which is exactly the
         // fail-open bug this function exists to close).
         let names = [
-            "chat_completion", "clipboard_providers", "clipboard_read", "clipboard_write",
-            "confirm_write", "daemon_ask", "daemon_disable", "daemon_enable", "daemon_say",
-            "daemon_status", "daemon_turn", "db_append", "db_batch_get", "db_delete", "db_get",
-            "db_incr", "db_keys", "db_patch", "db_query", "db_set", "dev-test-single.battery",
-            "dev-test-single.geo", "dev-c5639a.battery", "dev-c5639a.geo", "email_list",
-            "email_send", "embedding", "event_create", "event_delete", "event_get", "event_list",
-            "event_update", "fs_list", "fs_read", "fs_write", "hotkey_bind", "hotkey_inject",
-            "hotkey_list", "hotkey_status", "hotkey_unbind", "http_request", "launch",
-            "launch_command", "launch_list", "launch_providers", "list_agents", "list_models",
-            "media_list_players", "media_loop", "media_next", "media_pause", "media_play",
-            "media_play_pause", "media_prev", "media_seek", "media_seek_relative",
-            "media_shuffle", "media_status", "media_stop", "media_volume", "mic_start",
-            "mic_status", "mic_stop", "network_stats", "note_create", "note_delete", "note_get",
-            "note_list", "note_update", "notify_delete", "notify_list", "notify_mark_read",
-            "notify_providers", "notify_send", "ping", "refresh_models", "request_write",
-            "schedule_delete", "schedule_get", "schedule_list", "schedule_set", "secret_delete",
-            "secret_get", "secret_list", "secret_set", "sound_play", "sound_status",
-            "sound_stop", "stt_listen_start", "stt_listen_stop", "stt_models", "stt_transcribe",
-            "sync_client_get_state", "sync_del", "sync_get", "sync_get_snapshot", "sync_set",
-            "sys_battery", "sys_brightness", "sys_brightness_set", "sys_info", "sys_lock",
-            "sys_power_profile", "sys_power_profile_set", "sys_procs", "sys_volume",
-            "sys_volume_mute", "sys_volume_set", "tg_list_dialogs", "tg_get_history",
-            "tg_get_message", "tg_search", "tg_send_message", "tg_edit_message",
-            "tg_delete_message", "tg_forward_message", "tg_pin_message", "tg_mark_read",
-            "tg_download_media", "tg_add_reaction", "tg_get_unread", "tg_list_unread",
-            "tg_transcribe_voice", "tts_speak", "tts_synthesize", "tts_voices", "usage_stats",
-            "vec_delete", "vec_get", "vec_list", "vec_query", "vec_stats", "vec_upsert",
-            "vec_upsert_batch", "web_search", "capture_screenshot", "capture_record_start",
-            "capture_record_stop", "capture_ocr", "capture_status", "tg_upload_media",
-            "tg_get_chat_info", "tg_mark_all_read",
+            "chat_completion",
+            "clipboard_providers",
+            "clipboard_read",
+            "clipboard_write",
+            "confirm_write",
+            "daemon_ask",
+            "daemon_disable",
+            "daemon_enable",
+            "daemon_say",
+            "daemon_status",
+            "daemon_turn",
+            "db_append",
+            "db_batch_get",
+            "db_delete",
+            "db_get",
+            "db_incr",
+            "db_keys",
+            "db_patch",
+            "db_query",
+            "db_set",
+            "dev-test-single.battery",
+            "dev-test-single.geo",
+            "dev-c5639a.battery",
+            "dev-c5639a.geo",
+            "email_list",
+            "email_send",
+            "embedding",
+            "event_create",
+            "event_delete",
+            "event_get",
+            "event_list",
+            "event_update",
+            "fs_list",
+            "fs_read",
+            "fs_write",
+            "hotkey_bind",
+            "hotkey_inject",
+            "hotkey_list",
+            "hotkey_status",
+            "hotkey_unbind",
+            "http_request",
+            "launch",
+            "launch_command",
+            "launch_list",
+            "launch_providers",
+            "list_agents",
+            "list_models",
+            "media_list_players",
+            "media_loop",
+            "media_next",
+            "media_pause",
+            "media_play",
+            "media_play_pause",
+            "media_prev",
+            "media_seek",
+            "media_seek_relative",
+            "media_shuffle",
+            "media_status",
+            "media_stop",
+            "media_volume",
+            "mic_start",
+            "mic_status",
+            "mic_stop",
+            "network_stats",
+            "note_create",
+            "note_delete",
+            "note_get",
+            "note_list",
+            "note_update",
+            "notify_delete",
+            "notify_list",
+            "notify_mark_read",
+            "notify_providers",
+            "notify_send",
+            "ping",
+            "refresh_models",
+            "request_write",
+            "schedule_delete",
+            "schedule_get",
+            "schedule_list",
+            "schedule_set",
+            "secret_delete",
+            "secret_get",
+            "secret_list",
+            "secret_set",
+            "sound_play",
+            "sound_status",
+            "sound_stop",
+            "stt_listen_start",
+            "stt_listen_stop",
+            "stt_models",
+            "stt_transcribe",
+            "sync_client_get_state",
+            "sync_del",
+            "sync_get",
+            "sync_get_snapshot",
+            "sync_set",
+            "sys_battery",
+            "sys_brightness",
+            "sys_brightness_set",
+            "sys_info",
+            "sys_lock",
+            "sys_power_profile",
+            "sys_power_profile_set",
+            "sys_procs",
+            "sys_volume",
+            "sys_volume_mute",
+            "sys_volume_set",
+            "tg_list_dialogs",
+            "tg_get_history",
+            "tg_get_message",
+            "tg_search",
+            "tg_send_message",
+            "tg_edit_message",
+            "tg_delete_message",
+            "tg_forward_message",
+            "tg_pin_message",
+            "tg_mark_read",
+            "tg_download_media",
+            "tg_add_reaction",
+            "tg_get_unread",
+            "tg_list_unread",
+            "tg_transcribe_voice",
+            "tts_speak",
+            "tts_synthesize",
+            "tts_voices",
+            "usage_stats",
+            "vec_delete",
+            "vec_get",
+            "vec_list",
+            "vec_query",
+            "vec_stats",
+            "vec_upsert",
+            "vec_upsert_batch",
+            "web_search",
+            "capture_screenshot",
+            "capture_record_start",
+            "capture_record_stop",
+            "capture_ocr",
+            "capture_status",
+            "tg_upload_media",
+            "tg_get_chat_info",
+            "tg_mark_all_read",
         ];
-        assert_eq!(names.len(), 143, "the live catalog measured 142 tools, plus launch_command — keep this list in sync");
+        assert_eq!(
+            names.len(),
+            143,
+            "the live catalog measured 142 tools, plus launch_command — keep this list in sync"
+        );
         let mut cat = catalog_of(names.iter().map(|n| spec(n)).collect());
         infer_missing_risk(&mut cat);
         for name in names {
             let t = cat.get(name).unwrap();
-            assert!(!t.risk.trim().is_empty(), "{name} was left with an empty risk");
+            assert!(
+                !t.risk.trim().is_empty(),
+                "{name} was left with an empty risk"
+            );
             if matches!(t.risk.as_str(), "high" | "critical") {
-                assert!(t.requires_confirmation, "{name} inferred {} but was not gated", t.risk);
+                assert!(
+                    t.requires_confirmation,
+                    "{name} inferred {} but was not gated",
+                    t.risk
+                );
             } else {
-                assert!(!t.requires_confirmation, "{name} inferred {} but still requires confirmation", t.risk);
+                assert!(
+                    !t.requires_confirmation,
+                    "{name} inferred {} but still requires confirmation",
+                    t.risk
+                );
             }
         }
     }
@@ -968,7 +1202,11 @@ mod tests {
     fn read_only_lookalikes_of_dangerous_exact_names_stay_low() {
         // Prefix/suffix collisions that must NOT be swept into a higher
         // tier just because they share a stem with a dangerous exact name.
-        let mut cat = catalog_of(vec![spec("launch_list"), spec("launch_providers"), spec("db_get")]);
+        let mut cat = catalog_of(vec![
+            spec("launch_list"),
+            spec("launch_providers"),
+            spec("db_get"),
+        ]);
         infer_missing_risk(&mut cat);
         for name in ["launch_list", "launch_providers", "db_get"] {
             assert_eq!(cat.get(name).unwrap().risk, "low", "{name}");
@@ -985,10 +1223,19 @@ mod tests {
         let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(
             names,
-            ["chat_sessions_list", "chat_session_read", "chat_search", "chat_review", "notify_send"]
+            [
+                "chat_sessions_list",
+                "chat_session_read",
+                "chat_search",
+                "chat_review",
+                "notify_send"
+            ]
         );
         for internal in CHATS_INTERNAL_ACTIONS {
-            assert!(cat.get(internal).is_none(), "{internal} must not be dispatchable");
+            assert!(
+                cat.get(internal).is_none(),
+                "{internal} must not be dispatchable"
+            );
             assert!(!cat.allowed_actions.iter().any(|a| a == internal));
         }
     }
@@ -999,7 +1246,10 @@ mod tests {
                        memory_forget,memory_list,goal_get,notify_send";
         let cat = Catalog::build(allowed, None).unwrap();
         let names: Vec<&str> = cat.tools.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["memory_forget", "memory_list", "goal_get", "notify_send"]);
+        assert_eq!(
+            names,
+            ["memory_forget", "memory_list", "goal_get", "notify_send"]
+        );
         for denied in AGENT_MANAGEMENT_ACTIONS {
             assert!(cat.get(denied).is_none(), "{denied}");
             assert!(!cat.allowed_actions.iter().any(|a| a == denied), "{denied}");

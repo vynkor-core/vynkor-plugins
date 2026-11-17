@@ -105,7 +105,10 @@ pub fn parse_dt(value: &str) -> Result<(i64, bool), String> {
     }
     let date_only = !value.contains('T');
     if date_only {
-        return Ok((days_from_civil(year, month as u32, day as u32) * MS_PER_DAY, true));
+        return Ok((
+            days_from_civil(year, month as u32, day as u32) * MS_PER_DAY,
+            true,
+        ));
     }
     let hour = if digits.len() >= 10 { num(8, 2)? } else { 0 };
     let minute = if digits.len() >= 12 { num(10, 2)? } else { 0 };
@@ -195,8 +198,12 @@ fn split_property(line: &str) -> Option<(String, String)> {
         match ch {
             '"' => in_quotes = !in_quotes,
             ':' if !in_quotes => {
-                let name: String =
-                    line[..idx].split(';').next().unwrap_or("").trim().to_ascii_uppercase();
+                let name: String = line[..idx]
+                    .split(';')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_ascii_uppercase();
                 return Some((name, line[idx + 1..].to_string()));
             }
             _ => {}
@@ -228,7 +235,11 @@ pub fn parse_duration(value: &str) -> Option<i64> {
             number.push(ch);
             continue;
         }
-        let n: i64 = if number.is_empty() { 0 } else { number.parse().ok()? };
+        let n: i64 = if number.is_empty() {
+            0
+        } else {
+            number.parse().ok()?
+        };
         number.clear();
         match ch {
             'D' if !in_time => days = n,
@@ -259,13 +270,22 @@ fn fmt_duration_before(ms: i64) -> String {
 // ---------------------------------------------------------------------------
 
 fn parse_byday(value: &str) -> Vec<u32> {
-    const DAYS: [(&str, u32); 7] =
-        [("MO", 0), ("TU", 1), ("WE", 2), ("TH", 3), ("FR", 4), ("SA", 5), ("SU", 6)];
+    const DAYS: [(&str, u32); 7] = [
+        ("MO", 0),
+        ("TU", 1),
+        ("WE", 2),
+        ("TH", 3),
+        ("FR", 4),
+        ("SA", 5),
+        ("SU", 6),
+    ];
     value
         .split(',')
         .filter_map(|token| {
             let token = token.trim();
-            DAYS.iter().find(|(name, _)| token.ends_with(name)).map(|(_, wd)| *wd)
+            DAYS.iter()
+                .find(|(name, _)| token.ends_with(name))
+                .map(|(_, wd)| *wd)
         })
         .collect()
 }
@@ -287,7 +307,9 @@ pub fn expand_rrule(
     let mut until_ms: Option<i64> = None;
     let mut byday: Vec<u32> = Vec::new();
     for part in rrule.split(';') {
-        let Some((key, value)) = part.split_once('=') else { continue };
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
         match key.trim().to_ascii_uppercase().as_str() {
             "FREQ" => freq = value.trim().to_ascii_uppercase(),
             "INTERVAL" => interval = value.trim().parse().unwrap_or(1).max(1),
@@ -398,7 +420,10 @@ fn collect_events(lines: &[String]) -> Vec<RawEvent> {
         match split_property(line) {
             Some((name, value)) => match (name.as_str(), current.is_some()) {
                 ("BEGIN", _) if value.eq_ignore_ascii_case("VEVENT") => {
-                    current = Some(RawEvent { props: Vec::new(), alarms: Vec::new() });
+                    current = Some(RawEvent {
+                        props: Vec::new(),
+                        alarms: Vec::new(),
+                    });
                 }
                 ("BEGIN", _) if value.eq_ignore_ascii_case("VALARM") && current.is_some() => {
                     in_alarm = true;
@@ -440,7 +465,10 @@ fn alarm_remind_before(alarms: &[Vec<(String, String)>]) -> Option<i64> {
     alarms
         .iter()
         .filter_map(|alarm| {
-            alarm.iter().find(|(name, _)| name == "TRIGGER").map(|(_, value)| value.clone())
+            alarm
+                .iter()
+                .find(|(name, _)| name == "TRIGGER")
+                .map(|(_, value)| value.clone())
         })
         .filter_map(|trigger| parse_duration(&trigger))
         .filter(|ms| *ms < 0)
@@ -461,9 +489,14 @@ pub fn parse_ics(input: &str) -> Result<Vec<ParsedEvent>, String> {
     let mut out = Vec::new();
     for raw in collect_events(&lines) {
         let get = |prop: &str| -> Option<String> {
-            raw.props.iter().find(|(name, _)| name == prop).map(|(_, v)| v.clone())
+            raw.props
+                .iter()
+                .find(|(name, _)| name == prop)
+                .map(|(_, v)| v.clone())
         };
-        let Some(start_value) = get("DTSTART") else { continue };
+        let Some(start_value) = get("DTSTART") else {
+            continue;
+        };
         let (start_ms, all_day) = match parse_dt(&start_value) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -506,7 +539,10 @@ pub fn occurrences(event: &ParsedEvent, window_start_ms: i64, window_end_ms: i64
         return Vec::new();
     }
     if event.rrule.is_none() {
-        return (event.start_ms >= window_start_ms).then_some(event.start_ms).into_iter().collect();
+        return (event.start_ms >= window_start_ms)
+            .then_some(event.start_ms)
+            .into_iter()
+            .collect();
     }
     let rrule = event.rrule.as_deref().unwrap_or_default();
     let count_total = rrule.split(';').find_map(|part| {
@@ -582,7 +618,9 @@ pub fn generate_ics(docs: &[crate::store::EventDoc]) -> String {
         out.push_str("BEGIN:VEVENT\r\n");
         out.push_str(&prop(
             "UID",
-            doc.ics_uid.clone().unwrap_or_else(|| format!("cal-{}@vynkor.calendar", doc.id)),
+            doc.ics_uid
+                .clone()
+                .unwrap_or_else(|| format!("cal-{}@vynkor.calendar", doc.id)),
         ));
         out.push_str(&prop("SUMMARY", escape_text(&doc.title)));
         if !doc.description.is_empty() {
@@ -679,7 +717,11 @@ mod tests {
         assert_eq!(parse_duration("-P1DT30M"), Some(-(MS_PER_DAY + 1_800_000)));
         assert_eq!(parse_duration("-PT90S"), Some(-90_000));
         assert_eq!(parse_duration("PT15M"), Some(900_000));
-        assert_eq!(parse_duration("20260826T100000Z"), None, "absolute trigger ignored");
+        assert_eq!(
+            parse_duration("20260826T100000Z"),
+            None,
+            "absolute trigger ignored"
+        );
     }
 
     fn sample_event(extra: &str) -> String {
@@ -695,13 +737,18 @@ mod tests {
 
     #[test]
     fn parses_simple_event_with_alarm() {
-        let ics = sample_event("BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n");
+        let ics =
+            sample_event("BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT15M\r\nEND:VALARM\r\n");
         let events = parse_ics(&ics).unwrap();
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.title, "Dentist");
         assert_eq!(event.uid, "evt-1@example.com");
-        assert!(event.description.starts_with("Location: Main St 1\n"), "{}", event.description);
+        assert!(
+            event.description.starts_with("Location: Main St 1\n"),
+            "{}",
+            event.description
+        );
         assert!(event.description.ends_with("checkup, bring card"));
         assert_eq!(event.remind_before_ms, Some(900_000));
         assert!(!event.all_day);
@@ -713,7 +760,8 @@ mod tests {
 
     #[test]
     fn skips_event_without_dtstart() {
-        let ics = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:no time\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
+        let ics =
+            "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nSUMMARY:no time\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         assert!(parse_ics(ics).unwrap().is_empty());
     }
 
@@ -740,10 +788,17 @@ mod tests {
         let window_start = parse_dt("20260901T000000Z").unwrap().0;
         let window_end = parse_dt("20261001T000000Z").unwrap().0;
         let starts = occurrences(event, window_start, window_end);
-        assert_eq!(starts.len(), 9, "Sep has Tue/Thu on 1,3,8,10,15,17,22,24,29: {starts:?}");
+        assert_eq!(
+            starts.len(),
+            9,
+            "Sep has Tue/Thu on 1,3,8,10,15,17,22,24,29: {starts:?}"
+        );
         for pair in starts.windows(2) {
             let gap_days = (pair[1] - pair[0]) / MS_PER_DAY;
-            assert!(gap_days == 2 || gap_days == 5, "gap {gap_days} between {pair:?}");
+            assert!(
+                gap_days == 2 || gap_days == 5,
+                "gap {gap_days} between {pair:?}"
+            );
         }
     }
 
@@ -754,7 +809,11 @@ mod tests {
         let window_start = parse_dt("20260901T000000Z").unwrap().0;
         let window_end = parse_dt("20270101T000000Z").unwrap().0;
         let starts = occurrences(&events[0], window_start, window_end);
-        assert_eq!(starts.len(), 4, "COUNT=4 caps expansion including the first: {starts:?}");
+        assert_eq!(
+            starts.len(),
+            4,
+            "COUNT=4 caps expansion including the first: {starts:?}"
+        );
     }
 
     #[test]
@@ -771,7 +830,17 @@ mod tests {
             .map(|ms| civil_from_days(ms.div_euclid(MS_PER_DAY)))
             .map(|(y, m, _)| (y, m))
             .collect();
-        assert_eq!(months, vec![(2026, 1), (2026, 2), (2026, 3), (2026, 4), (2026, 5), (2026, 6)]);
+        assert_eq!(
+            months,
+            vec![
+                (2026, 1),
+                (2026, 2),
+                (2026, 3),
+                (2026, 4),
+                (2026, 5),
+                (2026, 6)
+            ]
+        );
     }
 
     #[test]
@@ -834,10 +903,10 @@ mod tests {
         let ics = generate_ics(&[doc]);
         assert!(ics.contains("DTSTART;VALUE=DATE:20260910"));
         assert!(ics.contains("DTEND;VALUE=DATE:20260912"));
-        assert!(ics.contains("UID:cal-1@vynkor.calendar"), "fallback uid from id");
+        assert!(
+            ics.contains("UID:cal-1@vynkor.calendar"),
+            "fallback uid from id"
+        );
         assert!(!ics.contains("VALARM"));
     }
 }
-
-
-

@@ -74,7 +74,10 @@ impl MiningRow {
             goal: row.get("goal")?.as_str()?.to_string(),
             status: row.get("status")?.as_str()?.to_string(),
             steps,
-            updated_at_ms: row.get("updated_at_ms").and_then(Value::as_i64).unwrap_or(0),
+            updated_at_ms: row
+                .get("updated_at_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
         })
     }
 }
@@ -215,7 +218,9 @@ impl Db {
 
     /// Next monotonic goal id (atomic counter in our own namespace).
     pub async fn next_id(&self) -> Result<u64, String> {
-        let v = self.call("db_incr", serde_json::json!({"key": NEXT_ID_KEY})).await?;
+        let v = self
+            .call("db_incr", serde_json::json!({"key": NEXT_ID_KEY}))
+            .await?;
         v.get("value")
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("database.db_incr returned unexpected payload: {v}"))
@@ -223,7 +228,9 @@ impl Db {
 
     pub async fn put(&self, doc: &GoalDoc) -> Result<(), String> {
         let key = format!("{KEY_PREFIX}{}", doc.id);
-        let v = self.call("db_set", serde_json::json!({"key": key, "value": doc})).await?;
+        let v = self
+            .call("db_set", serde_json::json!({"key": key, "value": doc}))
+            .await?;
         if v.get("ok").and_then(Value::as_bool) != Some(true) {
             return Err(format!("database.db_set returned unexpected payload: {v}"));
         }
@@ -233,8 +240,12 @@ impl Db {
     /// Missing goals read as `None`; a present-but-corrupt document is an
     /// error (loudness over silent data loss on single-doc reads).
     pub async fn get(&self, id: &str) -> Result<Option<GoalDoc>, String> {
-        let v =
-            self.call("db_get", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")})).await?;
+        let v = self
+            .call(
+                "db_get",
+                serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+            )
+            .await?;
         if v.get("found").and_then(Value::as_bool) != Some(true) {
             return Ok(None);
         }
@@ -246,12 +257,17 @@ impl Db {
 
     /// All stored goal keys, newest first (by numeric id suffix).
     async fn sorted_keys(&self) -> Result<Vec<String>, String> {
-        let v = self.call("db_keys", serde_json::json!({"prefix": KEY_PREFIX})).await?;
+        let v = self
+            .call("db_keys", serde_json::json!({"prefix": KEY_PREFIX}))
+            .await?;
         let mut keys: Vec<String> = v
             .get("keys")
             .and_then(Value::as_array)
             .map(|a| {
-                a.iter().filter_map(|k| k.as_str()).map(str::to_string).collect::<Vec<_>>()
+                a.iter()
+                    .filter_map(|k| k.as_str())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
             })
             .ok_or_else(|| format!("database.db_keys returned unexpected payload: {v}"))?;
         keys.sort_by_key(|k| std::cmp::Reverse(key_num(k)));
@@ -274,7 +290,12 @@ impl Db {
             .to_string();
         let pattern = format!("{KEY_PREFIX}%");
         let params = serde_json::json!([pattern, now_ms(), since_ms]);
-        let v = self.call("db_query", serde_json::json!({"sql": sql, "params": params})).await?;
+        let v = self
+            .call(
+                "db_query",
+                serde_json::json!({"sql": sql, "params": params}),
+            )
+            .await?;
         let rows = v
             .get("rows")
             .and_then(Value::as_array)
@@ -299,10 +320,15 @@ impl Db {
     async fn fetch_summaries(&self, keys: &[String]) -> Result<Vec<GoalSummary>, String> {
         let mut out = Vec::with_capacity(keys.len());
         for chunk in keys.chunks(Self::BATCH_CHUNK) {
-            let batch = self.call("db_batch_get", serde_json::json!({"keys": chunk})).await?;
-            let values = batch.get("values").and_then(Value::as_object).ok_or_else(|| {
-                format!("database.db_batch_get returned unexpected payload: {batch}")
-            })?;
+            let batch = self
+                .call("db_batch_get", serde_json::json!({"keys": chunk}))
+                .await?;
+            let values = batch
+                .get("values")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    format!("database.db_batch_get returned unexpected payload: {batch}")
+                })?;
             for key in chunk {
                 let value = values.get(key).cloned().unwrap_or(Value::Null);
                 let doc: GoalDoc = serde_json::from_value(value)
@@ -357,7 +383,12 @@ impl Db {
              limit ?4"
             .to_string();
         let params = serde_json::json!([pattern, now_ms(), substr_start, limit as i64]);
-        let v = self.call("db_query", serde_json::json!({"sql": sql, "params": params})).await?;
+        let v = self
+            .call(
+                "db_query",
+                serde_json::json!({"sql": sql, "params": params}),
+            )
+            .await?;
         let rows = v
             .get("rows")
             .and_then(Value::as_array)
@@ -376,7 +407,11 @@ impl Db {
         if self.get(id).await?.is_none() {
             return Ok(false);
         }
-        self.call("db_delete", serde_json::json!({"key": format!("{KEY_PREFIX}{id}")})).await?;
+        self.call(
+            "db_delete",
+            serde_json::json!({"key": format!("{KEY_PREFIX}{id}")}),
+        )
+        .await?;
         Ok(true)
     }
 
@@ -394,13 +429,19 @@ impl Db {
         let summaries = self.fetch_summaries(&keys).await?;
         let candidates = summaries
             .into_iter()
-            .map(|s| PruneCandidate { id: s.id, status: s.status, updated_at_ms: s.updated_at_ms })
+            .map(|s| PruneCandidate {
+                id: s.id,
+                status: s.status,
+                updated_at_ms: s.updated_at_ms,
+            })
             .collect();
         let victims = prune_ids_at(Some(limit), candidates);
         let mut deleted = 0usize;
         for id in &victims {
             let key = format!("{KEY_PREFIX}{id}");
-            let v = self.call("db_delete", serde_json::json!({"key": key})).await?;
+            let v = self
+                .call("db_delete", serde_json::json!({"key": key}))
+                .await?;
             if v.get("ok").and_then(Value::as_bool) == Some(true) {
                 deleted += 1;
             }
@@ -410,7 +451,9 @@ impl Db {
 }
 
 fn key_num(key: &str) -> u64 {
-    key.strip_prefix(KEY_PREFIX).and_then(|s| s.parse().ok()).unwrap_or(0)
+    key.strip_prefix(KEY_PREFIX)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 /// Operator env var: max goal docs to retain. Unset/empty means unlimited —
@@ -446,7 +489,9 @@ pub struct PruneCandidate {
 /// `limit` until the goal reaches a terminal status. `limit: None` (env
 /// unset/empty) always returns no victims.
 pub fn prune_ids_at(limit: Option<usize>, mut docs: Vec<PruneCandidate>) -> Vec<String> {
-    let Some(limit) = limit else { return Vec::new() };
+    let Some(limit) = limit else {
+        return Vec::new();
+    };
     if docs.len() <= limit {
         return Vec::new();
     }
@@ -456,7 +501,11 @@ pub fn prune_ids_at(limit: Option<usize>, mut docs: Vec<PruneCandidate>) -> Vec<
         .filter(|d| {
             matches!(
                 d.status.as_str(),
-                STATUS_COMPLETED | STATUS_DECLINED | STATUS_MAX_STEPS | STATUS_ERROR | STATUS_CANCELLED
+                STATUS_COMPLETED
+                    | STATUS_DECLINED
+                    | STATUS_MAX_STEPS
+                    | STATUS_ERROR
+                    | STATUS_CANCELLED
             )
         })
         .map(|d| d.id)
@@ -480,7 +529,12 @@ pub(crate) mod tests {
     fn terminal_statuses_are_exact() {
         let mut doc = sample(STATUS_RUNNING);
         assert!(!doc.is_terminal());
-        for s in [STATUS_COMPLETED, STATUS_DECLINED, STATUS_MAX_STEPS, STATUS_ERROR] {
+        for s in [
+            STATUS_COMPLETED,
+            STATUS_DECLINED,
+            STATUS_MAX_STEPS,
+            STATUS_ERROR,
+        ] {
             doc.status = s.to_string();
             assert!(doc.is_terminal(), "{s}");
         }
@@ -526,12 +580,26 @@ pub(crate) mod tests {
     fn to_summary_excludes_transcript_and_full_steps() {
         let mut doc = sample(STATUS_COMPLETED);
         doc.transcript = vec![
-            Turn { role: "user".into(), content: "a very long goal description".into() },
-            Turn { role: "assistant".into(), content: "a very long reply".into() },
+            Turn {
+                role: "user".into(),
+                content: "a very long goal description".into(),
+            },
+            Turn {
+                role: "assistant".into(),
+                content: "a very long reply".into(),
+            },
         ];
         doc.steps = vec![
-            StepRec { n: 1, kind: "tool_ok".into(), detail: serde_json::json!({"tool": "x"}) },
-            StepRec { n: 2, kind: "final".into(), detail: Value::Null },
+            StepRec {
+                n: 1,
+                kind: "tool_ok".into(),
+                detail: serde_json::json!({"tool": "x"}),
+            },
+            StepRec {
+                n: 2,
+                kind: "final".into(),
+                detail: Value::Null,
+            },
         ];
         doc.final_answer = "done".into();
         doc.error = "".into();
@@ -555,8 +623,16 @@ pub(crate) mod tests {
     #[test]
     fn prune_ids_unlimited_when_env_unset() {
         let docs = vec![
-            PruneCandidate { id: "1".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
-            PruneCandidate { id: "2".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 2 },
+            PruneCandidate {
+                id: "1".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 1,
+            },
+            PruneCandidate {
+                id: "2".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 2,
+            },
         ];
         assert_eq!(prune_ids_at(None, docs), Vec::<String>::new());
     }
@@ -564,8 +640,16 @@ pub(crate) mod tests {
     #[test]
     fn prune_ids_noop_when_within_limit() {
         let docs = vec![
-            PruneCandidate { id: "1".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
-            PruneCandidate { id: "2".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 2 },
+            PruneCandidate {
+                id: "1".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 1,
+            },
+            PruneCandidate {
+                id: "2".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 2,
+            },
         ];
         assert_eq!(prune_ids_at(Some(5), docs), Vec::<String>::new());
     }
@@ -573,9 +657,21 @@ pub(crate) mod tests {
     #[test]
     fn prune_ids_deletes_oldest_terminal_beyond_limit() {
         let docs = vec![
-            PruneCandidate { id: "old".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 1 },
-            PruneCandidate { id: "mid".into(), status: STATUS_ERROR.into(), updated_at_ms: 2 },
-            PruneCandidate { id: "new".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 3 },
+            PruneCandidate {
+                id: "old".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 1,
+            },
+            PruneCandidate {
+                id: "mid".into(),
+                status: STATUS_ERROR.into(),
+                updated_at_ms: 2,
+            },
+            PruneCandidate {
+                id: "new".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 3,
+            },
         ];
         let victims = prune_ids_at(Some(2), docs);
         assert_eq!(victims, vec!["old".to_string()]);
@@ -584,13 +680,21 @@ pub(crate) mod tests {
     #[test]
     fn prune_ids_never_touches_running_or_needs_confirmation() {
         let docs = vec![
-            PruneCandidate { id: "running".into(), status: STATUS_RUNNING.into(), updated_at_ms: 1 },
+            PruneCandidate {
+                id: "running".into(),
+                status: STATUS_RUNNING.into(),
+                updated_at_ms: 1,
+            },
             PruneCandidate {
                 id: "confirm".into(),
                 status: STATUS_NEEDS_CONFIRMATION.into(),
                 updated_at_ms: 2,
             },
-            PruneCandidate { id: "new".into(), status: STATUS_COMPLETED.into(), updated_at_ms: 3 },
+            PruneCandidate {
+                id: "new".into(),
+                status: STATUS_COMPLETED.into(),
+                updated_at_ms: 3,
+            },
         ];
         // Limit of 1 would normally evict both "running" and "confirm" —
         // neither may ever be deleted, so the victim list must be empty.
@@ -628,7 +732,9 @@ pub(crate) mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
-                let crate::ProxyMsg::Action(call) = msg else { continue };
+                let crate::ProxyMsg::Action(call) = msg else {
+                    continue;
+                };
                 let result: Result<Value, String> = if fail {
                     Err("simulated db_query failure".to_string())
                 } else if call.action == "db_query" {
@@ -691,7 +797,10 @@ pub(crate) mod tests {
         let db = Db::new(spawn_query_rpc(rows, false), 1000);
         let got = db.list_summaries(20).await.unwrap();
         let ids: Vec<&str> = got.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]);
+        assert_eq!(
+            ids,
+            vec!["12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+        );
     }
 
     #[tokio::test]
@@ -717,7 +826,11 @@ pub(crate) mod tests {
                 doc: doc_with_id("1"),
                 expires_at: Some(1), // long past — expired relative to now_ms()
             },
-            FakeRow { key: format!("{KEY_PREFIX}2"), doc: doc_with_id("2"), expires_at: None },
+            FakeRow {
+                key: format!("{KEY_PREFIX}2"),
+                doc: doc_with_id("2"),
+                expires_at: None,
+            },
         ];
         let db = Db::new(spawn_query_rpc(rows, false), 1000);
         let got = db.list_summaries(10).await.unwrap();
@@ -730,18 +843,36 @@ pub(crate) mod tests {
         let mut doc = doc_with_id("7");
         doc.title = "t7".into();
         doc.final_answer = "done".into();
-        doc.transcript = vec![Turn { role: "user".into(), content: "long text".into() }];
+        doc.transcript = vec![Turn {
+            role: "user".into(),
+            content: "long text".into(),
+        }];
         doc.steps = vec![
-            StepRec { n: 1, kind: "tool_ok".into(), detail: Value::Null },
-            StepRec { n: 2, kind: "final".into(), detail: Value::Null },
+            StepRec {
+                n: 1,
+                kind: "tool_ok".into(),
+                detail: Value::Null,
+            },
+            StepRec {
+                n: 2,
+                kind: "final".into(),
+                detail: Value::Null,
+            },
         ];
-        let rows = vec![FakeRow { key: format!("{KEY_PREFIX}7"), doc, expires_at: None }];
+        let rows = vec![FakeRow {
+            key: format!("{KEY_PREFIX}7"),
+            doc,
+            expires_at: None,
+        }];
         let db = Db::new(spawn_query_rpc(rows, false), 1000);
         let got = db.list_summaries(10).await.unwrap();
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].title, "t7");
         assert_eq!(got[0].final_answer, "done");
-        assert_eq!(got[0].step_count, 2, "step_count must reflect json_array_length, not 0");
+        assert_eq!(
+            got[0].step_count, 2,
+            "step_count must reflect json_array_length, not 0"
+        );
     }
 
     #[tokio::test]

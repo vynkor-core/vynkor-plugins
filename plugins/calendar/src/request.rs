@@ -44,7 +44,9 @@ pub struct EventPatch {
 #[derive(Debug)]
 pub enum CalendarRequest {
     Create(NewEvent),
-    Get { id: String },
+    Get {
+        id: String,
+    },
     List {
         from_ms: Option<i64>,
         to_ms: Option<i64>,
@@ -52,10 +54,17 @@ pub enum CalendarRequest {
         limit: usize,
         offset: usize,
     },
-    Update { id: String, patch: EventPatch },
-    Delete { id: String },
+    Update {
+        id: String,
+        patch: EventPatch,
+    },
+    Delete {
+        id: String,
+    },
     /// `calendar_ics_import {ics_base64}` — decode → parse → upsert by UID.
-    Import { ics_base64: String },
+    Import {
+        ics_base64: String,
+    },
     /// `calendar_ics_export {}` — all events as one VCALENDAR.
     Export,
 }
@@ -198,12 +207,17 @@ pub fn sanitize_tags(raw: &[String]) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-
 fn validate_rrule(rrule: &str) -> Result<String, String> {
     let s = rrule.trim();
-    if s.is_empty() { return Err("params.rrule must not be empty when present".into()); }
-    if s.len() > 256 { return Err("params.rrule exceeds 256 bytes".into()); }
-    if !s.contains("FREQ=") { return Err("params.rrule must contain FREQ= (e.g. FREQ=WEEKLY;BYDAY=MO)".into()); }
+    if s.is_empty() {
+        return Err("params.rrule must not be empty when present".into());
+    }
+    if s.len() > 256 {
+        return Err("params.rrule exceeds 256 bytes".into());
+    }
+    if !s.contains("FREQ=") {
+        return Err("params.rrule must contain FREQ= (e.g. FREQ=WEEKLY;BYDAY=MO)".into());
+    }
     // Try to parse with rrule crate for early validation using start time 0
     // Use rrule::RRuleSet::from_str style - try parsing
     // For validation we attempt to build an RRule from the string with a dummy DTSTART
@@ -216,7 +230,6 @@ fn validate_rrule(rrule: &str) -> Result<String, String> {
     let _ = dtstart;
     Ok(s.to_string())
 }
-
 
 pub fn parse_request(action: &str, params_json: &[u8]) -> Result<CalendarRequest, String> {
     match action {
@@ -252,7 +265,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<CalendarRequest
         "event_get" => {
             let p: IdParams = serde_json::from_slice(params_json)
                 .map_err(|e| format!("invalid params for event_get, expected {{id}}: {e}"))?;
-            Ok(CalendarRequest::Get { id: require_nonempty_id(p.id)? })
+            Ok(CalendarRequest::Get {
+                id: require_nonempty_id(p.id)?,
+            })
         }
         "event_list" => {
             let p: ListParams = serde_json::from_slice(params_json).map_err(|e| {
@@ -367,7 +382,9 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<CalendarRequest
         "event_delete" => {
             let p: IdParams = serde_json::from_slice(params_json)
                 .map_err(|e| format!("invalid params for event_delete, expected {{id}}: {e}"))?;
-            Ok(CalendarRequest::Delete { id: require_nonempty_id(p.id)? })
+            Ok(CalendarRequest::Delete {
+                id: require_nonempty_id(p.id)?,
+            })
         }
         "calendar_ics_import" => {
             let p: ImportParams = serde_json::from_slice(params_json).map_err(|e| {
@@ -382,11 +399,14 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<CalendarRequest
                     MAX_ICS_BASE64_BYTES
                 ));
             }
-            Ok(CalendarRequest::Import { ics_base64: p.ics_base64 })
+            Ok(CalendarRequest::Import {
+                ics_base64: p.ics_base64,
+            })
         }
         "calendar_ics_export" => {
-            serde_json::from_slice::<serde::de::IgnoredAny>(params_json)
-                .map_err(|e| format!("invalid params for calendar_ics_export, expected {{}}: {e}"))?;
+            serde_json::from_slice::<serde::de::IgnoredAny>(params_json).map_err(|e| {
+                format!("invalid params for calendar_ics_export, expected {{}}: {e}")
+            })?;
             Ok(CalendarRequest::Export)
         }
         other => Err(format!("unknown action: {other}")),
@@ -404,9 +424,11 @@ mod tests {
 
     #[test]
     fn parses_create_minimal() {
-        let req =
-            parse_request("event_create", &create_params(json!({"title": "t", "start_ms": 100})))
-                .unwrap();
+        let req = parse_request(
+            "event_create",
+            &create_params(json!({"title": "t", "start_ms": 100})),
+        )
+        .unwrap();
         match req {
             CalendarRequest::Create(e) => {
                 assert_eq!(e.title, "t");
@@ -466,7 +488,13 @@ mod tests {
     #[test]
     fn list_defaults_and_range_fields() {
         match parse_request("event_list", b"{}").unwrap() {
-            CalendarRequest::List { from_ms, to_ms, tag, limit, offset } => {
+            CalendarRequest::List {
+                from_ms,
+                to_ms,
+                tag,
+                limit,
+                offset,
+            } => {
                 assert_eq!(from_ms, None);
                 assert_eq!(to_ms, None);
                 assert_eq!(tag, None);
@@ -481,7 +509,12 @@ mod tests {
         )
         .unwrap()
         {
-            CalendarRequest::List { from_ms, to_ms, tag, .. } => {
+            CalendarRequest::List {
+                from_ms,
+                to_ms,
+                tag,
+                ..
+            } => {
                 assert_eq!(from_ms, Some(5));
                 assert_eq!(to_ms, Some(9));
                 assert_eq!(tag, Some("work".to_string()));
@@ -492,8 +525,7 @@ mod tests {
 
     #[test]
     fn list_rejects_bad_limit() {
-        let err =
-            parse_request("event_list", &create_params(json!({"limit": 501}))).unwrap_err();
+        let err = parse_request("event_list", &create_params(json!({"limit": 501}))).unwrap_err();
         assert!(err.contains("limit"), "error was: {err}");
     }
 

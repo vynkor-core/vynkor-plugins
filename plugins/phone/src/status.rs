@@ -18,7 +18,11 @@ pub async fn status(t: &dyn Transport, cfg: &Config, reg: &StreamRegistry) -> Va
     let stream_active = reg.is_active().await;
     let (reachable, helper_state, error) = match checked {
         Ok(s) => (true, s.as_str(), None),
-        Err(PhoneError::Unreachable(m)) => (false, "unknown", Some(PhoneError::Unreachable(m).to_string())),
+        Err(PhoneError::Unreachable(m)) => (
+            false,
+            "unknown",
+            Some(PhoneError::Unreachable(m).to_string()),
+        ),
         Err(e) => (true, "unknown", Some(e.to_string())),
     };
     let mut v = json!({
@@ -50,7 +54,9 @@ mod tests {
         let reg = StreamRegistry::new();
 
         let t = FakeTransport::new();
-        t.push_run(FakeTransport::ok(format!("{}\n", helper::file_name()).into_bytes()));
+        t.push_run(FakeTransport::ok(
+            format!("{}\n", helper::file_name()).into_bytes(),
+        ));
         let v = status(&t, &cfg(), &reg).await;
         assert_eq!(v["reachable"], json!(true));
         assert_eq!(v["helper"], json!("ok"));
@@ -62,14 +68,24 @@ mod tests {
         assert_eq!(status(&t, &cfg(), &reg).await["helper"], json!("missing"));
 
         let t = FakeTransport::new();
-        t.push_run(Ok(Output { code: 255, stdout: vec![], stderr: "no route".into() }));
+        t.push_run(Ok(Output {
+            code: 255,
+            stdout: vec![],
+            stderr: "no route".into(),
+        }));
         let v = status(&t, &cfg(), &reg).await;
         assert_eq!(v["reachable"], json!(false));
-        assert!(v["error"].as_str().unwrap().starts_with("ERR_PHONE_UNREACHABLE"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("ERR_PHONE_UNREACHABLE"));
 
         let t = FakeTransport::new(); // no scripted result -> backend error, but reachable
         let v = status(&t, &cfg(), &reg).await;
         assert_eq!(v["reachable"], json!(true));
-        assert!(v["error"].as_str().unwrap().starts_with("ERR_PHONE_BACKEND"));
+        assert!(v["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("ERR_PHONE_BACKEND"));
     }
 }

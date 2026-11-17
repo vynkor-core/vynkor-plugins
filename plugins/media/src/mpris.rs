@@ -42,7 +42,12 @@ pub trait MprisBackend: Send + Sync {
         arg: Option<&str>,
     ) -> Result<(), String>;
     async fn seek_offset(&self, player: &str, offset_us: i64) -> Result<(), String>;
-    async fn set_position(&self, player: &str, track_id: &str, position_us: i64) -> Result<(), String>;
+    async fn set_position(
+        &self,
+        player: &str,
+        track_id: &str,
+        position_us: i64,
+    ) -> Result<(), String>;
     async fn get_position(&self, player: &str) -> Result<i64, String>;
     async fn get_volume(&self, player: &str) -> Result<f64, String>;
     async fn set_volume(&self, player: &str, volume: f64) -> Result<(), String>;
@@ -99,15 +104,9 @@ impl MprisBackend for RealBackend {
             .await
             .map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
         } else {
-            conn.call_method(
-                Some(player),
-                MPRIS_PATH,
-                Some(PLAYER_IFACE),
-                method,
-                &(),
-            )
-            .await
-            .map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
+            conn.call_method(Some(player), MPRIS_PATH, Some(PLAYER_IFACE), method, &())
+                .await
+                .map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
         }
         Ok(())
     }
@@ -126,7 +125,12 @@ impl MprisBackend for RealBackend {
         Ok(())
     }
 
-    async fn set_position(&self, player: &str, track_id: &str, position_us: i64) -> Result<(), String> {
+    async fn set_position(
+        &self,
+        player: &str,
+        track_id: &str,
+        position_us: i64,
+    ) -> Result<(), String> {
         let conn = crate::bus::session().await?;
         let path = ObjectPath::try_from(track_id)
             .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: bad trackId '{track_id}': {e}"))?;
@@ -156,17 +160,23 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "Position")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}"))?;
-        i64::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Position type: {e}"))
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "Position").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Position failed: {e}")
+        })?;
+        i64::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Position type: {e}"))
     }
 
     async fn get_volume(&self, player: &str) -> Result<f64, String> {
@@ -174,17 +184,23 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "Volume")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}"))?;
-        f64::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Volume type: {e}"))
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "Volume").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Volume failed: {e}")
+        })?;
+        f64::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Volume type: {e}"))
     }
 
     async fn set_volume(&self, player: &str, volume: f64) -> Result<(), String> {
@@ -192,12 +208,18 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}"))?;
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Volume failed: {e}")
+            })?;
         let val = Value::new(volume);
         props
             .set(iface, "Volume", &val)
@@ -211,17 +233,34 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"))?
+            .map_err(|e| {
+                format!(
+                    "ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"
+                )
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"))?
+            .map_err(|e| {
+                format!(
+                    "ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"
+                )
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"
+                )
+            })?;
         let v: OwnedValue = props
             .get(iface.clone(), "PlaybackStatus")
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"))?;
-        String::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad PlaybackStatus: {e}"))
+            .map_err(|e| {
+                format!(
+                    "ERR_MEDIA_PLAYER_VANISHED: player '{player}' get PlaybackStatus failed: {e}"
+                )
+            })?;
+        String::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad PlaybackStatus: {e}"))
     }
 
     async fn get_metadata(&self, player: &str) -> Result<HashMap<String, OwnedValue>, String> {
@@ -229,16 +268,21 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "Metadata")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}"))?;
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "Metadata").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Metadata failed: {e}")
+        })?;
         HashMap::<String, OwnedValue>::try_from(v)
             .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Metadata type: {e}"))
     }
@@ -248,17 +292,23 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "Rate")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}"))?;
-        f64::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Rate type: {e}"))
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "Rate").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Rate failed: {e}")
+        })?;
+        f64::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Rate type: {e}"))
     }
 
     async fn get_shuffle(&self, player: &str) -> Result<bool, String> {
@@ -266,17 +316,23 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "Shuffle")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}"))?;
-        bool::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Shuffle type: {e}"))
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "Shuffle").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get Shuffle failed: {e}")
+        })?;
+        bool::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad Shuffle type: {e}"))
     }
 
     async fn set_shuffle(&self, player: &str, enabled: bool) -> Result<(), String> {
@@ -284,12 +340,18 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}"))?;
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set Shuffle failed: {e}")
+            })?;
         let val = Value::new(enabled);
         props
             .set(iface, "Shuffle", &val)
@@ -303,17 +365,23 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}"))?;
-        let v: OwnedValue = props
-            .get(iface.clone(), "LoopStatus")
-            .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}"))?;
-        String::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad LoopStatus: {e}"))
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}")
+            })?;
+        let v: OwnedValue = props.get(iface.clone(), "LoopStatus").await.map_err(|e| {
+            format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' get LoopStatus failed: {e}")
+        })?;
+        String::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad LoopStatus: {e}"))
     }
 
     async fn set_loop_status(&self, player: &str, status: &str) -> Result<(), String> {
@@ -327,12 +395,18 @@ impl MprisBackend for RealBackend {
         let iface = InterfaceName::try_from(PLAYER_IFACE).unwrap();
         let props = PropertiesProxy::builder(&conn)
             .destination(player)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}")
+            })?
             .path(MPRIS_PATH)
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}"))?
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}")
+            })?
             .build()
             .await
-            .map_err(|e| format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}"))?;
+            .map_err(|e| {
+                format!("ERR_MEDIA_PLAYER_VANISHED: player '{player}' set LoopStatus failed: {e}")
+            })?;
         let val = Value::new(normalized);
         props
             .set(iface, "LoopStatus", &val)
@@ -343,7 +417,15 @@ impl MprisBackend for RealBackend {
 
     async fn call_root_method(&self, player: &str, method: &str) -> Result<(), String> {
         let conn = crate::bus::session().await?;
-        conn.call_method(Some(player), MPRIS_PATH, Some("org.mpris.MediaPlayer2"), method, &()).await.map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
+        conn.call_method(
+            Some(player),
+            MPRIS_PATH,
+            Some("org.mpris.MediaPlayer2"),
+            method,
+            &(),
+        )
+        .await
+        .map_err(|e| wrap_control_err(player, method, &e.to_string()))?;
         Ok(())
     }
     async fn get_capability(&self, player: &str, prop: &str) -> Result<bool, String> {
@@ -361,7 +443,8 @@ impl MprisBackend for RealBackend {
             .get(iface, prop)
             .await
             .map_err(|e| wrap_control_err(player, &format!("get {prop}"), &e.to_string()))?;
-        bool::try_from(v).map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad {prop} type: {e}"))
+        bool::try_from(v)
+            .map_err(|e| format!("ERR_MEDIA_BAD_PARAMS: player '{player}' bad {prop} type: {e}"))
     }
 
     async fn audible(&self, players: &[String]) -> HashMap<String, bool> {
@@ -403,7 +486,9 @@ pub fn spawn_watch_task() {
         scan.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             scan.tick().await;
-            let Ok(players) = list_players().await else { continue };
+            let Ok(players) = list_players().await else {
+                continue;
+            };
             let mut new_watchers = Vec::new();
             {
                 let mut set = watched().lock().unwrap();
@@ -599,7 +684,10 @@ fn last_change() -> &'static Mutex<HashMap<String, Instant>> {
 /// Record that a player's PlaybackStatus just changed (from the watcher, or
 /// from our own control call) — "resume" picks the most recent one.
 fn note_status_change(player: &str) {
-    last_change().lock().unwrap().insert(player.to_string(), Instant::now());
+    last_change()
+        .lock()
+        .unwrap()
+        .insert(player.to_string(), Instant::now());
 }
 
 /// Resolve the target player(s) of a request. An explicit `player` accepts
@@ -625,13 +713,23 @@ async fn resolve_targets<B: MprisBackend>(
     let mut cands = Vec::with_capacity(available.len());
     for name in available {
         // A player that vanished between ListNames and here is just skipped.
-        let Ok(status) = backend.get_playback_status(&name).await else { continue };
+        let Ok(status) = backend.get_playback_status(&name).await else {
+            continue;
+        };
         let last = last_change().lock().unwrap().get(&name).copied();
-        cands.push(Candidate { name, status, audible: None, last_change: last });
+        cands.push(Candidate {
+            name,
+            status,
+            audible: None,
+            last_change: last,
+        });
     }
     if resolve::needs_audibility(&cands) {
-        let playing: Vec<String> =
-            cands.iter().filter(|c| c.status == "Playing").map(|c| c.name.clone()).collect();
+        let playing: Vec<String> = cands
+            .iter()
+            .filter(|c| c.status == "Playing")
+            .map(|c| c.name.clone())
+            .collect();
         let heard = backend.audible(&playing).await;
         for c in &mut cands {
             c.audible = heard.get(&c.name).copied();
@@ -641,9 +739,13 @@ async fn resolve_targets<B: MprisBackend>(
 }
 
 /// Exactly one target player (explicit or the active one).
-pub(crate) async fn resolve_one<B: MprisBackend>(backend: &B, requested: Option<&str>) -> Result<String, String> {
+pub(crate) async fn resolve_one<B: MprisBackend>(
+    backend: &B,
+    requested: Option<&str>,
+) -> Result<String, String> {
     let mut v = resolve_targets(backend, requested, Intent::One).await?;
-    v.pop().ok_or_else(|| "ERR_MEDIA_NO_PLAYERS: no MPRIS players available".to_string())
+    v.pop()
+        .ok_or_else(|| "ERR_MEDIA_NO_PLAYERS: no MPRIS players available".to_string())
 }
 
 /// The active player for a request without `player`, for callers outside
@@ -686,7 +788,9 @@ async fn play_with<B: MprisBackend>(
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanPlay", "play").await?;
     if let Some(u) = uri {
-        backend.call_player_method(&target, "OpenUri", Some(u)).await?;
+        backend
+            .call_player_method(&target, "OpenUri", Some(u))
+            .await?;
     }
     backend.call_player_method(&target, "Play", None).await?;
     note_status_change(&target);
@@ -697,7 +801,10 @@ pub async fn pause(player: Option<&str>) -> Result<serde_json::Value, String> {
     pause_with(&RealBackend, player).await
 }
 /// Without `player`, pauses every playing player ("pause the music").
-async fn pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+async fn pause_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let targets = resolve_targets(backend, player, Intent::AllPlaying).await?;
     for target in &targets {
         require_capability(backend, target, "CanPause", "pause").await?;
@@ -710,7 +817,10 @@ async fn pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Resul
 pub async fn play_pause(player: Option<&str>) -> Result<serde_json::Value, String> {
     play_pause_with(&RealBackend, player).await
 }
-async fn play_pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+async fn play_pause_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     if player.is_none() {
         // Toggle without a target: something playing -> pause all of it,
         // silence -> resume the most recent player (handled below).
@@ -726,10 +836,15 @@ async fn play_pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> 
     }
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanPause", "play_pause").await?;
-    backend.call_player_method(&target, "PlayPause", None).await?;
+    backend
+        .call_player_method(&target, "PlayPause", None)
+        .await?;
     // BUG-3 fix: PlaybackStatus updates async via PropertiesChanged, so retry
     // briefly instead of reading stale value immediately.
-    let mut status = backend.get_playback_status(&target).await.unwrap_or_else(|_| "Paused".into());
+    let mut status = backend
+        .get_playback_status(&target)
+        .await
+        .unwrap_or_else(|_| "Paused".into());
     if status != "Playing" && status != "Paused" {
         status = "Paused".into();
     }
@@ -754,7 +869,10 @@ async fn play_pause_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> 
 pub async fn next(player: Option<&str>) -> Result<serde_json::Value, String> {
     next_with(&RealBackend, player).await
 }
-async fn next_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+async fn next_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanGoNext", "next").await?;
     backend.call_player_method(&target, "Next", None).await?;
@@ -764,10 +882,15 @@ async fn next_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result
 pub async fn prev(player: Option<&str>) -> Result<serde_json::Value, String> {
     prev_with(&RealBackend, player).await
 }
-async fn prev_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+async fn prev_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanGoPrevious", "prev").await?;
-    backend.call_player_method(&target, "Previous", None).await?;
+    backend
+        .call_player_method(&target, "Previous", None)
+        .await?;
     Ok(serde_json::json!({"ok": true, "player": target}))
 }
 
@@ -775,7 +898,10 @@ pub async fn stop(player: Option<&str>) -> Result<serde_json::Value, String> {
     stop_with(&RealBackend, player).await
 }
 /// Without `player`, stops every playing player.
-async fn stop_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+async fn stop_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let targets = resolve_targets(backend, player, Intent::AllPlaying).await?;
     for target in &targets {
         backend.call_player_method(target, "Stop", None).await?;
@@ -800,7 +926,10 @@ async fn seek_with<B: MprisBackend>(
     Ok(serde_json::json!({"position_ms": reached_us / 1000, "player": target}))
 }
 
-pub async fn seek_relative(player: Option<&str>, offset_ms: i64) -> Result<serde_json::Value, String> {
+pub async fn seek_relative(
+    player: Option<&str>,
+    offset_ms: i64,
+) -> Result<serde_json::Value, String> {
     seek_relative_with(&RealBackend, player, offset_ms).await
 }
 async fn seek_relative_with<B: MprisBackend>(
@@ -847,7 +976,11 @@ async fn seek_absolute_on<B: MprisBackend>(
         }
         match backend.set_position(target, &track_id, target_us).await {
             Ok(()) => return Ok(target_us),
-            Err(e) if e.contains("ERR_MEDIA_NOT_SUPPORTED") || e.contains("UnknownMethod") || e.contains("NotSupported") => {
+            Err(e)
+                if e.contains("ERR_MEDIA_NOT_SUPPORTED")
+                    || e.contains("UnknownMethod")
+                    || e.contains("NotSupported") =>
+            {
                 // Fall through to Seek fallback
             }
             Err(e) => return Err(e),
@@ -909,7 +1042,10 @@ async fn status_with<B: MprisBackend>(
         .await
         .unwrap_or(if playback == "Playing" { 1.0 } else { 0.0 });
     let shuffle = backend.get_shuffle(&target).await.unwrap_or(false);
-    let loop_status = backend.get_loop_status(&target).await.unwrap_or_else(|_| "None".into());
+    let loop_status = backend
+        .get_loop_status(&target)
+        .await
+        .unwrap_or_else(|_| "None".into());
 
     let position_us = extrapolate_position(&target, raw_position_us, rate, &playback);
 
@@ -936,7 +1072,9 @@ fn extrapolate_position(player: &str, raw_pos: i64, rate: f64, playback: &str) -
     let now = Instant::now();
     let mut cache = pos_cache().lock().unwrap();
     let trusted = match cache.get(player) {
-        Some(&(pos, rate, at)) if pos > 0 && now.duration_since(at).as_millis() <= EXTRAPOLATION_MAX_AGE_MS => {
+        Some(&(pos, rate, at))
+            if pos > 0 && now.duration_since(at).as_millis() <= EXTRAPOLATION_MAX_AGE_MS =>
+        {
             Some((pos, rate, at))
         }
         _ => None,
@@ -965,15 +1103,24 @@ fn extrapolate_position(player: &str, raw_pos: i64, rate: f64, playback: &str) -
     result
 }
 
-
-pub async fn raise(player: Option<&str>) -> Result<serde_json::Value, String> { raise_with(&RealBackend, player).await }
-async fn raise_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+pub async fn raise(player: Option<&str>) -> Result<serde_json::Value, String> {
+    raise_with(&RealBackend, player).await
+}
+async fn raise_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     backend.call_root_method(&target, "Raise").await?;
     Ok(serde_json::json!({"ok": true, "player": target}))
 }
-pub async fn quit(player: Option<&str>) -> Result<serde_json::Value, String> { quit_with(&RealBackend, player).await }
-async fn quit_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result<serde_json::Value, String> {
+pub async fn quit(player: Option<&str>) -> Result<serde_json::Value, String> {
+    quit_with(&RealBackend, player).await
+}
+async fn quit_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     backend.call_root_method(&target, "Quit").await?;
     Ok(serde_json::json!({"ok": true, "player": target}))
@@ -982,7 +1129,11 @@ async fn quit_with<B: MprisBackend>(backend: &B, player: Option<&str>) -> Result
 pub async fn set_shuffle(player: Option<&str>, enabled: bool) -> Result<serde_json::Value, String> {
     set_shuffle_with(&RealBackend, player, enabled).await
 }
-async fn set_shuffle_with<B: MprisBackend>(backend: &B, player: Option<&str>, enabled: bool) -> Result<serde_json::Value, String> {
+async fn set_shuffle_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+    enabled: bool,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanControl", "set shuffle").await?;
     backend.set_shuffle(&target, enabled).await?;
@@ -992,7 +1143,11 @@ async fn set_shuffle_with<B: MprisBackend>(backend: &B, player: Option<&str>, en
 pub async fn set_loop(player: Option<&str>, mode: &str) -> Result<serde_json::Value, String> {
     set_loop_with(&RealBackend, player, mode).await
 }
-async fn set_loop_with<B: MprisBackend>(backend: &B, player: Option<&str>, mode: &str) -> Result<serde_json::Value, String> {
+async fn set_loop_with<B: MprisBackend>(
+    backend: &B,
+    player: Option<&str>,
+    mode: &str,
+) -> Result<serde_json::Value, String> {
     let target = resolve_one(backend, player).await?;
     require_capability(backend, &target, "CanControl", "set loop").await?;
     backend.set_loop_status(&target, mode).await?;
@@ -1036,7 +1191,11 @@ fn merge_metadata_cached(player: &str, fresh: MediaMetadata) -> MediaMetadata {
     let cached = cache.get(player).cloned().unwrap_or_default();
     let merged = MediaMetadata {
         title: fresh.title.or(cached.title),
-        artists: if fresh.artists.is_empty() { cached.artists } else { fresh.artists },
+        artists: if fresh.artists.is_empty() {
+            cached.artists
+        } else {
+            fresh.artists
+        },
         album: fresh.album.or(cached.album),
         length_micros: fresh.length_micros.or(cached.length_micros),
         track_id: fresh.track_id.or(cached.track_id),
@@ -1060,7 +1219,10 @@ fn meta_string_array(metadata: &HashMap<String, OwnedValue>, key: &str) -> Vec<S
         return Vec::new();
     };
     match Value::try_from(v).ok() {
-        Some(Value::Array(arr)) => arr.iter().filter_map(|e| e.downcast_ref::<String>().ok()).collect(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|e| e.downcast_ref::<String>().ok())
+            .collect(),
         Some(Value::Str(s)) => vec![s.to_string()],
         _ => Vec::new(),
     }
@@ -1145,7 +1307,10 @@ mod tests {
         assert_eq!(p.artists, vec!["Alice", "Bob"]);
         assert_eq!(p.album.as_deref(), Some("Album X"));
         assert_eq!(p.length_micros, Some(210_000_000));
-        assert_eq!(p.track_id.as_deref(), Some("/org/mpris/MediaPlayer2/Track/1"));
+        assert_eq!(
+            p.track_id.as_deref(),
+            Some("/org/mpris/MediaPlayer2/Track/1")
+        );
         assert_eq!(p.art_url.as_deref(), Some("https://example.com/cover.jpg"));
     }
 
@@ -1209,21 +1374,48 @@ mod tests {
         async fn list_names(&self) -> Result<Vec<String>, String> {
             Ok(self.names.clone())
         }
-        async fn call_player_method(&self, player: &str, method: &str, _arg: Option<&str>) -> Result<(), String> {
-            self.calls.lock().unwrap().push((player.to_string(), method.to_string()));
+        async fn call_player_method(
+            &self,
+            player: &str,
+            method: &str,
+            _arg: Option<&str>,
+        ) -> Result<(), String> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((player.to_string(), method.to_string()));
             Ok(())
         }
         async fn seek_offset(&self, _player: &str, _offset: i64) -> Result<(), String> {
             Ok(())
         }
-        async fn set_position(&self, _player: &str, _track_id: &str, _pos: i64) -> Result<(), String> {
-            if self.set_position_ok { Ok(()) } else { Err("ERR_MEDIA_NOT_SUPPORTED: mock".into()) }
+        async fn set_position(
+            &self,
+            _player: &str,
+            _track_id: &str,
+            _pos: i64,
+        ) -> Result<(), String> {
+            if self.set_position_ok {
+                Ok(())
+            } else {
+                Err("ERR_MEDIA_NOT_SUPPORTED: mock".into())
+            }
         }
-        async fn get_position(&self, _player: &str) -> Result<i64, String> { Ok(self.position) }
-        async fn get_volume(&self, _player: &str) -> Result<f64, String> { Ok(0.5) }
-        async fn set_volume(&self, _player: &str, _v: f64) -> Result<(), String> { Ok(()) }
+        async fn get_position(&self, _player: &str) -> Result<i64, String> {
+            Ok(self.position)
+        }
+        async fn get_volume(&self, _player: &str) -> Result<f64, String> {
+            Ok(0.5)
+        }
+        async fn set_volume(&self, _player: &str, _v: f64) -> Result<(), String> {
+            Ok(())
+        }
         async fn get_playback_status(&self, player: &str) -> Result<String, String> {
-            Ok(self.statuses.get(player).cloned().unwrap_or_else(|| self.status.clone()))
+            Ok(self
+                .statuses
+                .get(player)
+                .cloned()
+                .unwrap_or_else(|| self.status.clone()))
         }
         async fn get_metadata(&self, _player: &str) -> Result<HashMap<String, OwnedValue>, String> {
             let mut m = HashMap::new();
@@ -1232,12 +1424,24 @@ mod tests {
             }
             Ok(m)
         }
-        async fn get_rate(&self, _player: &str) -> Result<f64, String> { Ok(self.rate) }
-        async fn get_shuffle(&self, _player: &str) -> Result<bool, String> { Ok(self.shuffle) }
-        async fn set_shuffle(&self, _player: &str, _v: bool) -> Result<(), String> { Ok(()) }
-        async fn get_loop_status(&self, _player: &str) -> Result<String, String> { Ok(self.loop_status.clone()) }
-        async fn set_loop_status(&self, _player: &str, _s: &str) -> Result<(), String> { Ok(()) }
-        async fn call_root_method(&self, _player: &str, _method: &str) -> Result<(), String> { Ok(()) }
+        async fn get_rate(&self, _player: &str) -> Result<f64, String> {
+            Ok(self.rate)
+        }
+        async fn get_shuffle(&self, _player: &str) -> Result<bool, String> {
+            Ok(self.shuffle)
+        }
+        async fn set_shuffle(&self, _player: &str, _v: bool) -> Result<(), String> {
+            Ok(())
+        }
+        async fn get_loop_status(&self, _player: &str) -> Result<String, String> {
+            Ok(self.loop_status.clone())
+        }
+        async fn set_loop_status(&self, _player: &str, _s: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn call_root_method(&self, _player: &str, _method: &str) -> Result<(), String> {
+            Ok(())
+        }
         async fn get_capability(&self, _player: &str, prop: &str) -> Result<bool, String> {
             Ok(*self.caps.get(prop).unwrap_or(&true))
         }
@@ -1313,7 +1517,10 @@ mod tests {
         assert_eq!(v["players"], serde_json::json!([FIREFOX, SPOTIFY]));
         assert_eq!(
             called(&b),
-            vec![(FIREFOX.to_string(), "Pause".to_string()), (SPOTIFY.to_string(), "Pause".to_string())]
+            vec![
+                (FIREFOX.to_string(), "Pause".to_string()),
+                (SPOTIFY.to_string(), "Pause".to_string())
+            ]
         );
     }
 
@@ -1360,28 +1567,52 @@ mod tests {
 
     #[tokio::test]
     async fn list_players_filters_prefix() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.spotify", "org.freedesktop.DBus", ":1.42"], 0, "Playing", None);
+        let b = mock(
+            vec![
+                "org.mpris.MediaPlayer2.spotify",
+                "org.freedesktop.DBus",
+                ":1.42",
+            ],
+            0,
+            "Playing",
+            None,
+        );
         let players = list_players_with(&b).await.unwrap();
         assert_eq!(players, vec!["org.mpris.MediaPlayer2.spotify"]);
     }
 
     #[tokio::test]
     async fn seek_no_track_rejects() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.mpd"], 0, "Stopped", Some("/TrackList/NoTrack"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.mpd"],
+            0,
+            "Stopped",
+            Some("/TrackList/NoTrack"),
+        );
         let err = seek_with(&b, None, 5000).await.unwrap_err();
         assert!(err.contains("ERR_MEDIA_NO_TRACK"));
     }
 
     #[tokio::test]
     async fn seek_uses_set_position_primary() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.spotify"], 0, "Playing", Some("/org/mpris/MediaPlayer2/Track/1"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.spotify"],
+            0,
+            "Playing",
+            Some("/org/mpris/MediaPlayer2/Track/1"),
+        );
         let res = seek_with(&b, None, 5000).await.unwrap();
         assert_eq!(res["position_ms"], 5000);
     }
 
     #[tokio::test]
     async fn seek_fallback_to_seek_when_set_position_unsupported() {
-        let mut b = mock(vec!["org.mpris.MediaPlayer2.spotify"], 1000, "Playing", Some("/org/mpris/MediaPlayer2/Track/1"));
+        let mut b = mock(
+            vec!["org.mpris.MediaPlayer2.spotify"],
+            1000,
+            "Playing",
+            Some("/org/mpris/MediaPlayer2/Track/1"),
+        );
         b.set_position_ok = false;
         let res = seek_with(&b, None, 5000).await.unwrap();
         assert_eq!(res["position_ms"], 5000);
@@ -1389,7 +1620,12 @@ mod tests {
 
     #[tokio::test]
     async fn status_includes_shuffle_loop_rate() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.spotify"], 5_000_000, "Playing", Some("/Track/1"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.spotify"],
+            5_000_000,
+            "Playing",
+            Some("/Track/1"),
+        );
         let v = status_with(&b, None).await.unwrap();
         assert_eq!(v["shuffle"], false);
         assert_eq!(v["loop_status"], "None");
@@ -1400,9 +1636,19 @@ mod tests {
     #[tokio::test]
     async fn metadata_cache_keeps_length() {
         let player = "org.mpris.MediaPlayer2.test_cache";
-        let m1 = MediaMetadata { title: Some("Song".into()), length_micros: Some(210_000_000), track_id: Some("/Track/1".into()), ..Default::default() };
+        let m1 = MediaMetadata {
+            title: Some("Song".into()),
+            length_micros: Some(210_000_000),
+            track_id: Some("/Track/1".into()),
+            ..Default::default()
+        };
         merge_metadata_cached(player, m1);
-        let m2 = MediaMetadata { title: Some("Song".into()), length_micros: None, track_id: None, ..Default::default() };
+        let m2 = MediaMetadata {
+            title: Some("Song".into()),
+            length_micros: None,
+            track_id: None,
+            ..Default::default()
+        };
         let merged = merge_metadata_cached(player, m2);
         assert_eq!(merged.length_micros, Some(210_000_000));
         assert_eq!(merged.track_id.as_deref(), Some("/Track/1"));
@@ -1459,7 +1705,12 @@ mod tests {
             let p = parse_metadata(&m);
             assert_eq!(
                 p.length_micros,
-                Some(match name { "i32" => 1234, "i16" => 567, "u16" => 89, _ => 12 }),
+                Some(match name {
+                    "i32" => 1234,
+                    "i16" => 567,
+                    "u16" => 89,
+                    _ => 12,
+                }),
                 "variant {name} failed"
             );
         }
@@ -1468,7 +1719,10 @@ mod tests {
     #[test]
     fn parse_length_float_rejected() {
         let mut m = HashMap::new();
-        m.insert("mpris:length".into(), OwnedValue::try_from(Value::new(1.5_f64)).unwrap());
+        m.insert(
+            "mpris:length".into(),
+            OwnedValue::try_from(Value::new(1.5_f64)).unwrap(),
+        );
         let p = parse_metadata(&m);
         assert!(p.length_micros.is_none());
     }
@@ -1485,7 +1739,12 @@ mod tests {
 
     #[tokio::test]
     async fn guard_seek_denied_when_can_seek_false() {
-        let mut b = mock(vec!["org.mpris.MediaPlayer2.spotify"], 0, "Playing", Some("/org/mpris/MediaPlayer2/Track/1"));
+        let mut b = mock(
+            vec!["org.mpris.MediaPlayer2.spotify"],
+            0,
+            "Playing",
+            Some("/org/mpris/MediaPlayer2/Track/1"),
+        );
         b.caps.insert("CanSeek".into(), false);
         let err = seek_with(&b, None, 5000).await.unwrap_err();
         assert!(err.contains("ERR_MEDIA_NOT_SUPPORTED"), "{err}");
@@ -1559,28 +1818,45 @@ mod tests {
     #[tokio::test]
     async fn guard_missing_capability_does_not_block() {
         let b = mock(vec!["org.mpris.MediaPlayer2.spotify"], 0, "Paused", None);
-        play_with(&b, None, None).await.expect("missing property must not block");
+        play_with(&b, None, None)
+            .await
+            .expect("missing property must not block");
     }
 
     // ---- v0.0.3: seek_relative ----
 
     #[tokio::test]
     async fn seek_relative_forward() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.mpd"], 6_000_000, "Playing", Some("/org/mpd/Tracks/3"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.mpd"],
+            6_000_000,
+            "Playing",
+            Some("/org/mpd/Tracks/3"),
+        );
         let res = seek_relative_with(&b, None, 25_000).await.unwrap();
         assert_eq!(res["position_ms"], 31_000);
     }
 
     #[tokio::test]
     async fn seek_relative_backward() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.mpd"], 30_000_000, "Playing", Some("/org/mpd/Tracks/3"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.mpd"],
+            30_000_000,
+            "Playing",
+            Some("/org/mpd/Tracks/3"),
+        );
         let res = seek_relative_with(&b, None, -15_000).await.unwrap();
         assert_eq!(res["position_ms"], 15_000);
     }
 
     #[tokio::test]
     async fn seek_relative_clamps_at_zero() {
-        let b = mock(vec!["org.mpris.MediaPlayer2.mpd"], 1_000_000, "Playing", Some("/org/mpd/Tracks/3"));
+        let b = mock(
+            vec!["org.mpris.MediaPlayer2.mpd"],
+            1_000_000,
+            "Playing",
+            Some("/org/mpd/Tracks/3"),
+        );
         let res = seek_relative_with(&b, None, -5_000).await.unwrap();
         assert_eq!(res["position_ms"], 0);
     }
@@ -1589,12 +1865,18 @@ mod tests {
 
     #[test]
     fn classify_no_such_property_is_not_supported() {
-        assert_eq!(classify_dbus("No such property 'Shuffle'"), Some("NOT_SUPPORTED"));
+        assert_eq!(
+            classify_dbus("No such property 'Shuffle'"),
+            Some("NOT_SUPPORTED")
+        );
     }
 
     #[test]
     fn classify_service_unknown_is_vanished() {
-        assert_eq!(classify_dbus("ServiceUnknown: The name was not provided"), Some("VANISHED"));
+        assert_eq!(
+            classify_dbus("ServiceUnknown: The name was not provided"),
+            Some("VANISHED")
+        );
     }
 
     #[test]
@@ -1611,7 +1893,10 @@ mod tests {
     #[test]
     fn wrap_control_err_defaults_to_vanished() {
         let wrapped = wrap_control_err("p", "Pause", "weird failure");
-        assert!(wrapped.starts_with("ERR_MEDIA_PLAYER_VANISHED"), "{wrapped}");
+        assert!(
+            wrapped.starts_with("ERR_MEDIA_PLAYER_VANISHED"),
+            "{wrapped}"
+        );
     }
 
     // ---- v0.0.3: signal-fed cache + extrapolation window ----
@@ -1620,7 +1905,12 @@ mod tests {
     fn cache_note_updates_position_and_rate_independently() {
         cache_note("cn_test_player", Some(5_000_000), None);
         cache_note("cn_test_player", None, Some(2.0));
-        let entry = pos_cache().lock().unwrap().get("cn_test_player").copied().unwrap();
+        let entry = pos_cache()
+            .lock()
+            .unwrap()
+            .get("cn_test_player")
+            .copied()
+            .unwrap();
         assert_eq!(entry.0, 5_000_000);
         assert_eq!(entry.1, 2.0);
     }
@@ -1628,7 +1918,10 @@ mod tests {
     #[test]
     fn extrapolate_uses_signal_fed_sample() {
         let key = "ext_test_fresh";
-        pos_cache().lock().unwrap().insert(key.to_string(), (10_000_000, 1.0, Instant::now()));
+        pos_cache()
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (10_000_000, 1.0, Instant::now()));
         let estimated = extrapolate_position(key, 0, 1.0, "Playing");
         assert!(estimated >= 10_000_000, "estimated {estimated}");
     }
@@ -1637,7 +1930,10 @@ mod tests {
     fn extrapolate_stale_sample_not_trusted() {
         let key = "ext_test_stale";
         let stale = Instant::now() - std::time::Duration::from_secs(600);
-        pos_cache().lock().unwrap().insert(key.to_string(), (10_000_000, 1.0, stale));
+        pos_cache()
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), (10_000_000, 1.0, stale));
         let result = extrapolate_position(key, 0, 1.0, "Playing");
         assert_eq!(result, 0);
     }

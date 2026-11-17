@@ -169,16 +169,18 @@ pub async fn chat_with_fallback(
     match chat(rpc, plan, transcript, tools, tag).await {
         Ok(outcome) => Ok(outcome),
         Err(primary_err) => {
-            let fb = std::env::var(FALLBACK_AGENT_ENV).ok().filter(|s| !s.is_empty());
+            let fb = std::env::var(FALLBACK_AGENT_ENV)
+                .ok()
+                .filter(|s| !s.is_empty());
             match fb {
                 Some(fb) if fb != plan.agent_id => {
                     eprintln!(
                         "[agent] primary LLM failed ({primary_err}); falling back to agent '{fb}'"
                     );
                     let retry_plan = fallback_plan(plan, &fb);
-                    chat(rpc, &retry_plan, transcript, tools, tag).await.map_err(|e| {
-                        format!("{primary_err}; fallback '{fb}' also failed: {e}")
-                    })
+                    chat(rpc, &retry_plan, transcript, tools, tag)
+                        .await
+                        .map_err(|e| format!("{primary_err}; fallback '{fb}' also failed: {e}"))
                 }
                 _ => Err(primary_err),
             }
@@ -205,16 +207,83 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
         return catalog.clone();
     }
     let hay = format!("{} {}", goal, context).to_lowercase();
-    let is_telegram = hay.contains("телег") || hay.contains("telegram") || hay.contains("tg_") || hay.contains("tg-") || hay.contains("чат") || hay.contains("сообщ") || hay.contains("диалог") || hay.contains("контакт") || hay.contains("непрочит") || hay.contains("артем") || hay.contains("артём") || hay.contains("loner");
-    let is_email = hay.contains("почт") || hay.contains("email") || hay.contains("письм") || hay.contains("imap") || hay.contains("smtp");
-    let is_calendar = hay.contains("календ") || hay.contains("встреч") || hay.contains("событ") || hay.contains("напомин") || hay.contains("schedule") || hay.contains("calendar") || hay.contains("event");
-    let is_fs = hay.contains("файл") || hay.contains("папк") || hay.contains("директ") || hay.contains("fs_") || hay.contains("filesystem");
+    let is_telegram = hay.contains("телег")
+        || hay.contains("telegram")
+        || hay.contains("tg_")
+        || hay.contains("tg-")
+        || hay.contains("чат")
+        || hay.contains("сообщ")
+        || hay.contains("диалог")
+        || hay.contains("контакт")
+        || hay.contains("непрочит")
+        || hay.contains("артем")
+        || hay.contains("артём")
+        || hay.contains("loner");
+    let is_email = hay.contains("почт")
+        || hay.contains("email")
+        || hay.contains("письм")
+        || hay.contains("imap")
+        || hay.contains("smtp");
+    let is_calendar = hay.contains("календ")
+        || hay.contains("встреч")
+        || hay.contains("событ")
+        || hay.contains("напомин")
+        || hay.contains("schedule")
+        || hay.contains("calendar")
+        || hay.contains("event");
+    let is_fs = hay.contains("файл")
+        || hay.contains("папк")
+        || hay.contains("директ")
+        || hay.contains("fs_")
+        || hay.contains("filesystem");
     let is_notes = hay.contains("заметк") || hay.contains("note");
-    let is_media = hay.contains("медиа") || hay.contains("музык") || hay.contains("видео") || hay.contains("голос") || hay.contains("аудио") || hay.contains("озвуч") || hay.contains("говор") || hay.contains("mpris") || hay.contains("media") || hay.contains("прослуш") || hay.contains("слуш") || hay.contains("транскриб") || hay.contains("расшифр") || hay.contains("войс") || hay.contains("voice") || hay.contains("файл") || hay.contains("документ");
-    let is_system = hay.contains("систем") || hay.contains("батаре") || hay.contains("громк") || hay.contains("яркост") || hay.contains("sys_");
-    let is_web = hay.contains("поиск") || hay.contains("найди") || hay.contains("web") || hay.contains("search") || hay.contains("погод") || hay.contains("weather");
-    let is_memory = hay.contains("помни") || hay.contains("память") || hay.contains("вспомн") || hay.contains("запомн") || hay.contains("обо мне") || hay.contains("про меня") || hay.contains("обо_мне") || hay.contains("факт") || hay.contains("memory") || hay.contains("вектор") || hay.contains("vector") || hay.contains("векторн");
-    let is_db = hay.contains("бд") || hay.contains("баз") || hay.contains("db_") || hay.contains("database") || hay.contains("vector") || hay.contains("вектор") || is_memory;
+    let is_media = hay.contains("медиа")
+        || hay.contains("музык")
+        || hay.contains("видео")
+        || hay.contains("голос")
+        || hay.contains("аудио")
+        || hay.contains("озвуч")
+        || hay.contains("говор")
+        || hay.contains("mpris")
+        || hay.contains("media")
+        || hay.contains("прослуш")
+        || hay.contains("слуш")
+        || hay.contains("транскриб")
+        || hay.contains("расшифр")
+        || hay.contains("войс")
+        || hay.contains("voice")
+        || hay.contains("файл")
+        || hay.contains("документ");
+    let is_system = hay.contains("систем")
+        || hay.contains("батаре")
+        || hay.contains("громк")
+        || hay.contains("яркост")
+        || hay.contains("sys_");
+    let is_web = hay.contains("поиск")
+        || hay.contains("найди")
+        || hay.contains("web")
+        || hay.contains("search")
+        || hay.contains("погод")
+        || hay.contains("weather");
+    let is_memory = hay.contains("помни")
+        || hay.contains("память")
+        || hay.contains("вспомн")
+        || hay.contains("запомн")
+        || hay.contains("обо мне")
+        || hay.contains("про меня")
+        || hay.contains("обо_мне")
+        || hay.contains("факт")
+        || hay.contains("memory")
+        || hay.contains("вектор")
+        || hay.contains("vector")
+        || hay.contains("векторн");
+    let is_db = hay.contains("бд")
+        || hay.contains("баз")
+        || hay.contains("db_")
+        || hay.contains("database")
+        || hay.contains("vector")
+        || hay.contains("вектор")
+        || is_memory;
     let is_any_telegram = hay.contains("telegram") || is_telegram;
 
     let mut filtered: Vec<crate::tools::ToolSpec> = Vec::new();
@@ -240,9 +309,21 @@ pub fn filtered_catalog(catalog: &Catalog, goal: &str, context: &str) -> Catalog
             is_memory || is_db || hay.contains("vec") || hay.contains("вектор")
         } else if name.starts_with("db_") {
             is_memory || is_db || hay.contains("db") || hay.contains("баз")
-        } else if name.starts_with("tts_") || name.starts_with("stt_") || name.starts_with("mic_") || name.starts_with("sound_") {
-            is_media || hay.contains("tts") || hay.contains("stt") || hay.contains("озвуч") || hay.contains("говор")
-        } else if name.starts_with("daemon_") || name.starts_with("hotkey_") || name.starts_with("launch") || name.starts_with("clipboard") {
+        } else if name.starts_with("tts_")
+            || name.starts_with("stt_")
+            || name.starts_with("mic_")
+            || name.starts_with("sound_")
+        {
+            is_media
+                || hay.contains("tts")
+                || hay.contains("stt")
+                || hay.contains("озвуч")
+                || hay.contains("говор")
+        } else if name.starts_with("daemon_")
+            || name.starts_with("hotkey_")
+            || name.starts_with("launch")
+            || name.starts_with("clipboard")
+        {
             false
         } else {
             true
@@ -339,7 +420,8 @@ fn prompt_from_dir(group: &str) -> Option<String> {
 /// without mutating process env — the repo has an open cross-module env
 /// race in tests (see commit 244de69).
 fn core_block_at(dir: Option<&Path>, stem: &str, fallback: &str) -> String {
-    dir.and_then(|d| prompt_file_at(d, stem)).unwrap_or_else(|| fallback.to_string())
+    dir.and_then(|d| prompt_file_at(d, stem))
+        .unwrap_or_else(|| fallback.to_string())
 }
 
 fn core_block(stem: &str, fallback: &str) -> String {
@@ -405,7 +487,12 @@ fn catalog_groups_overview(catalog: &Catalog) -> String {
         // first 6, silently invisible to text-protocol models).
         // `[group]` reads as a label, not a name: "- system (5 tools)" got
         // called as a tool named "system".
-        lines.push(format!("- [{}] {} tools: {}", group, count, names.join(", ")));
+        lines.push(format!(
+            "- [{}] {} tools: {}",
+            group,
+            count,
+            names.join(", ")
+        ));
     }
     lines.join("\n")
 }
@@ -613,13 +700,19 @@ pub fn opening_messages_with_full(
                  \"again\" against it, and never ask for anything it already covers.",
             );
         }
-        let mut msgs = vec![Turn { role: "user".into(), content: instructions }];
+        let mut msgs = vec![Turn {
+            role: "user".into(),
+            content: instructions,
+        }];
         let goal_msg = if context.is_empty() {
             goal.to_string()
         } else {
             format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
         };
-        msgs.push(Turn { role: "user".into(), content: goal_msg });
+        msgs.push(Turn {
+            role: "user".into(),
+            content: goal_msg,
+        });
         return msgs;
     }
     let overview = catalog_groups_overview(full);
@@ -699,13 +792,19 @@ pub fn opening_messages_with_full(
              \"again\" against it, and never ask for anything it already covers.",
         );
     }
-    let mut msgs = vec![Turn { role: "user".into(), content: instructions }];
+    let mut msgs = vec![Turn {
+        role: "user".into(),
+        content: instructions,
+    }];
     let goal_msg = if context.is_empty() {
         goal.to_string()
     } else {
         format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
     };
-    msgs.push(Turn { role: "user".into(), content: goal_msg });
+    msgs.push(Turn {
+        role: "user".into(),
+        content: goal_msg,
+    });
     msgs
 }
 
@@ -713,15 +812,27 @@ pub fn opening_messages_with_full(
 /// known here), so a step's `input_tokens` can be traced back to a part:
 /// the seed's persona, tool-name overview and per-group plugin prompts, the
 /// native `tools` param, and the session-memory/recall text.
-pub fn prompt_breakdown(goal_id: &str, filtered: &Catalog, full: &Catalog, transcript: &[Turn]) -> String {
+pub fn prompt_breakdown(
+    goal_id: &str,
+    filtered: &Catalog,
+    full: &Catalog,
+    transcript: &[Turn],
+) -> String {
     let chars = |s: &str| s.chars().count();
     let plugin_prompts = plugin_prompt_section(filtered).unwrap_or_default();
     let groups: Vec<&str> = plugin_prompts
         .lines()
-        .filter_map(|l| l.strip_prefix("**").and_then(|r| r.split_once("**:")).map(|(g, _)| g))
+        .filter_map(|l| {
+            l.strip_prefix("**")
+                .and_then(|r| r.split_once("**:"))
+                .map(|(g, _)| g)
+        })
         .collect();
     let tools_param = serde_json::to_string(&catalog_tools_param(filtered)).unwrap_or_default();
-    let turn_chars: Vec<String> = transcript.iter().map(|t| chars(&t.content).to_string()).collect();
+    let turn_chars: Vec<String> = transcript
+        .iter()
+        .map(|t| chars(&t.content).to_string())
+        .collect();
     format!(
         "[agent] prompt goal={goal_id} persona={} overview={} plugin_prompts={} ({}) \
          tools_param={} ({} tools: {}) turns=[{}]",
@@ -731,7 +842,12 @@ pub fn prompt_breakdown(goal_id: &str, filtered: &Catalog, full: &Catalog, trans
         groups.join(","),
         chars(&tools_param),
         filtered.tools.len(),
-        filtered.tools.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(","),
+        filtered
+            .tools
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
         turn_chars.join(","),
     )
 }
@@ -751,8 +867,14 @@ pub fn small_talk_messages(goal: &str, context: &str) -> Vec<Turn> {
         format!("{goal}\n\n---\n[SESSION MEMORY]\n{context}\n[/SESSION MEMORY]")
     };
     vec![
-        Turn { role: "user".into(), content: instructions },
-        Turn { role: "user".into(), content: goal_msg },
+        Turn {
+            role: "user".into(),
+            content: instructions,
+        },
+        Turn {
+            role: "user".into(),
+            content: goal_msg,
+        },
     ]
 }
 
@@ -824,7 +946,9 @@ pub async fn chat(
     params.insert("purpose".into(), json!(tag.purpose));
     params.insert("goal_id".into(), json!(tag.goal_id));
 
-    let v = rpc.call("chat_completion", Value::Object(params), timeout).await?;
+    let v = rpc
+        .call("chat_completion", Value::Object(params), timeout)
+        .await?;
     let content = v
         .get("content")
         .and_then(Value::as_str)
@@ -849,8 +973,15 @@ pub async fn chat(
                 .collect()
         })
         .unwrap_or_default();
-    let input_tokens = v.pointer("/usage/input_tokens").and_then(Value::as_u64).unwrap_or(0);
-    Ok(ChatOutcome { content, tool_calls, input_tokens })
+    let input_tokens = v
+        .pointer("/usage/input_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok(ChatOutcome {
+        content,
+        tool_calls,
+        input_tokens,
+    })
 }
 
 /// Interpret a chat outcome: a native tool invocation wins (structured
@@ -947,7 +1078,9 @@ fn extract_xml_tool_call(text: &str) -> Option<Reply> {
     let mut cursor = inner;
     while let Some(ki) = cursor.find("<arg_key>") {
         let after_key = &cursor[ki + "<arg_key>".len()..];
-        let Some(k_end) = after_key.find("</arg_key>") else { break };
+        let Some(k_end) = after_key.find("</arg_key>") else {
+            break;
+        };
         let key = after_key[..k_end].trim().to_string();
         let vi = match after_key[k_end..].find("<arg_value>") {
             Some(v) => k_end + v + "<arg_value>".len(),
@@ -1003,7 +1136,11 @@ pub fn parse_reply(content: &str) -> Reply {
     let Ok(v) = serde_json::from_str::<Value>(obj_text) else {
         return Reply::Final(cleaned.trim().to_string());
     };
-    let Some(name) = v.get("tool").and_then(Value::as_str).filter(|s| !s.is_empty()) else {
+    let Some(name) = v
+        .get("tool")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    else {
         return Reply::Final(cleaned.trim().to_string());
     };
     let params = match v.get("params") {
@@ -1011,13 +1148,15 @@ pub fn parse_reply(content: &str) -> Reply {
         Some(p) if p.is_object() => p.clone(),
         _ => return Reply::Final(cleaned.trim().to_string()),
     };
-    Reply::ToolCall { name: name.to_string(), params }
+    Reply::ToolCall {
+        name: name.to_string(),
+        params,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
 
     #[test]
     fn parses_qwen_style_xml_tool_call() {
@@ -1026,14 +1165,20 @@ mod tests {
         );
         assert_eq!(
             r,
-            Reply::ToolCall { name: "launch".into(), params: json!({"app_id": "Alacritty"}) }
+            Reply::ToolCall {
+                name: "launch".into(),
+                params: json!({"app_id": "Alacritty"})
+            }
         );
         let numeric = parse_reply(
             "<tool_call>schedule_set<arg_key>delay_ms</arg_key><arg_value>10000</arg_value></tool_call>",
         );
         assert_eq!(
             numeric,
-            Reply::ToolCall { name: "schedule_set".into(), params: json!({"delay_ms": 10000}) }
+            Reply::ToolCall {
+                name: "schedule_set".into(),
+                params: json!({"delay_ms": 10000})
+            }
         );
     }
 
@@ -1052,7 +1197,10 @@ mod tests {
     fn unparseable_xml_never_leaks_markup_into_speech() {
         let r = parse_reply("Готово.<tool_call><arg_value>мусор");
         match &r {
-            Reply::Final(t) => assert!(!t.contains("<tool_call>") && !t.contains("<arg_value>"), "{t}"),
+            Reply::Final(t) => assert!(
+                !t.contains("<tool_call>") && !t.contains("<arg_value>"),
+                "{t}"
+            ),
             other => panic!("expected final, got {other:?}"),
         }
     }
@@ -1079,39 +1227,66 @@ mod tests {
         let r = parse_reply("{\"tool\":\"notify_send\",\"params\":{\"title\":\"hi\"}}");
         assert_eq!(
             r,
-            Reply::ToolCall { name: "notify_send".into(), params: json!({"title": "hi"}) }
+            Reply::ToolCall {
+                name: "notify_send".into(),
+                params: json!({"title": "hi"})
+            }
         );
 
         let fenced = "```json\n{\"tool\": \"a\", \"params\": {\"x\": 1}}\n```";
-        assert_eq!(parse_reply(fenced), Reply::ToolCall { name: "a".into(), params: json!({"x": 1}) });
+        assert_eq!(
+            parse_reply(fenced),
+            Reply::ToolCall {
+                name: "a".into(),
+                params: json!({"x": 1})
+            }
+        );
 
         let embedded = "Let me check.\n{\"tool\":\"b\",\"params\":{\"path\":\"}{ odd\"}} done";
         assert_eq!(
             parse_reply(embedded),
-            Reply::ToolCall { name: "b".into(), params: json!({"path": "}{ odd"}) }
+            Reply::ToolCall {
+                name: "b".into(),
+                params: json!({"path": "}{ odd"})
+            }
         );
 
         let no_params = "{\"tool\":\"c\"}";
         assert_eq!(
             parse_reply(no_params),
-            Reply::ToolCall { name: "c".into(), params: json!({}) }
+            Reply::ToolCall {
+                name: "c".into(),
+                params: json!({})
+            }
         );
     }
 
     #[test]
     fn malformed_calls_degrade_to_final_answer() {
-        assert_eq!(parse_reply("Just do it."), Reply::Final("Just do it.".into()));
+        assert_eq!(
+            parse_reply("Just do it."),
+            Reply::Final("Just do it.".into())
+        );
         assert_eq!(parse_reply("{not json}"), Reply::Final("{not json}".into()));
         // A JSON object without "tool" is not a tool call.
-        assert_eq!(parse_reply("{\"answer\": 42}"), Reply::Final("{\"answer\": 42}".into()));
+        assert_eq!(
+            parse_reply("{\"answer\": 42}"),
+            Reply::Final("{\"answer\": 42}".into())
+        );
         // Empty tool name / non-object params degrade too.
-        assert_eq!(parse_reply("{\"tool\":\"\"}"), Reply::Final("{\"tool\":\"\"}".into()));
+        assert_eq!(
+            parse_reply("{\"tool\":\"\"}"),
+            Reply::Final("{\"tool\":\"\"}".into())
+        );
         assert_eq!(
             parse_reply("{\"tool\":\"a\",\"params\":[1]}"),
             Reply::Final("{\"tool\":\"a\",\"params\":[1]}".into())
         );
         // Unterminated brace → plain final.
-        assert_eq!(parse_reply("{\"tool\":\"a\""), Reply::Final("{\"tool\":\"a\"".into()));
+        assert_eq!(
+            parse_reply("{\"tool\":\"a\""),
+            Reply::Final("{\"tool\":\"a\"".into())
+        );
     }
 
     #[test]
@@ -1169,7 +1344,9 @@ mod tests {
         assert!(msgs[0].content.contains("JSON"));
         assert_eq!(msgs[1].role, "user");
         assert!(msgs[1].content.contains("water the plants"));
-        assert!(msgs[1].content.contains("[SESSION MEMORY]\ngarden only\n[/SESSION MEMORY]"));
+        assert!(msgs[1]
+            .content
+            .contains("[SESSION MEMORY]\ngarden only\n[/SESSION MEMORY]"));
         // Memory awareness instruction rides only when context exists.
         assert!(msgs[0].content.contains("Session memory:"));
 
@@ -1218,7 +1395,10 @@ mod tests {
         let cat = sample_catalog();
         let native = opening_messages_with_full("g", "", &cat, &cat, false);
         let legacy = opening_messages("g", "", &cat);
-        assert_eq!(native, legacy, "native=false must match the legacy opening_messages() wrapper exactly");
+        assert_eq!(
+            native, legacy,
+            "native=false must match the legacy opening_messages() wrapper exactly"
+        );
         assert!(native[0].content.contains("requires_confirmation"));
         assert!(native[0].content.contains("notify_send"));
     }
@@ -1357,8 +1537,16 @@ mod tests {
             allowed_actions: vec![],
             tools_file_set: false,
         };
-        let groups = groups_with_prompts(&cat(&["sys_info", "sys_procs", "tg_send_message", "mqtt_status"]));
-        assert_eq!(groups.into_iter().collect::<Vec<_>>(), vec!["system".to_string()]);
+        let groups = groups_with_prompts(&cat(&[
+            "sys_info",
+            "sys_procs",
+            "tg_send_message",
+            "mqtt_status",
+        ]));
+        assert_eq!(
+            groups.into_iter().collect::<Vec<_>>(),
+            vec!["system".to_string()]
+        );
         // a catalog of one tool still gets its group's prompt
         let solo = groups_with_prompts(&cat(&["tg_send_message"]));
         assert!(solo.contains("telegram"));
@@ -1377,8 +1565,15 @@ mod tests {
             max_per_goal: 16,
             source: crate::tools::Source::Kernel,
         };
-        let cat = Catalog { tools: vec![spec], allowed_actions: vec!["launch".into()], tools_file_set: false };
-        let turns = vec![Turn { role: "user".into(), content: "abcd".into() }];
+        let cat = Catalog {
+            tools: vec![spec],
+            allowed_actions: vec!["launch".into()],
+            tools_file_set: false,
+        };
+        let turns = vec![Turn {
+            role: "user".into(),
+            content: "abcd".into(),
+        }];
         let line = prompt_breakdown("g1", &cat, &cat, &turns);
         assert!(line.contains("goal=g1"), "{line}");
         assert!(line.contains("(1 tools: launch)"), "{line}");
@@ -1409,7 +1604,10 @@ mod tests {
         let tools = catalog_tools_param(&cat);
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0]["name"], "launch");
-        assert_eq!(tools[0]["input_schema"]["properties"]["app_id"]["type"], "string");
+        assert_eq!(
+            tools[0]["input_schema"]["properties"]["app_id"]["type"],
+            "string"
+        );
         assert!(tools[0].get("requires_confirmation").is_none());
         // A Null/minimal schema must not invalidate the whole request.
         assert_eq!(tools[1]["input_schema"]["type"], "object");
@@ -1429,7 +1627,10 @@ mod tests {
         };
         assert_eq!(
             outcome_to_reply(&outcome),
-            Reply::ToolCall { name: "launch".into(), params: json!({"app_id": "firefox"}) }
+            Reply::ToolCall {
+                name: "launch".into(),
+                params: json!({"app_id": "firefox"})
+            }
         );
     }
 
@@ -1446,7 +1647,10 @@ mod tests {
         };
         assert_eq!(
             outcome_to_reply(&outcome),
-            Reply::ToolCall { name: "launch".into(), params: json!({}) }
+            Reply::ToolCall {
+                name: "launch".into(),
+                params: json!({})
+            }
         );
     }
 
@@ -1463,7 +1667,10 @@ mod tests {
         };
         assert_eq!(
             outcome_to_reply(&outcome),
-            Reply::ToolCall { name: "a".into(), params: json!({"x": 1}) }
+            Reply::ToolCall {
+                name: "a".into(),
+                params: json!({"x": 1})
+            }
         );
     }
 
@@ -1484,7 +1691,10 @@ mod tests {
         };
         assert_eq!(
             outcome_to_reply(&text_proto),
-            Reply::ToolCall { name: "b".into(), params: json!({}) }
+            Reply::ToolCall {
+                name: "b".into(),
+                params: json!({})
+            }
         );
     }
 
@@ -1500,7 +1710,10 @@ mod tests {
     fn prompt_file_at_reads_and_trims_contents() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("telegram.md"), "\n  be terse  \n").unwrap();
-        assert_eq!(prompt_file_at(dir.path(), "telegram").as_deref(), Some("be terse"));
+        assert_eq!(
+            prompt_file_at(dir.path(), "telegram").as_deref(),
+            Some("be terse")
+        );
     }
 
     #[test]
@@ -1524,7 +1737,10 @@ mod tests {
     #[test]
     fn core_block_falls_back_when_dir_unset_or_file_absent() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(core_block_at(None, "_identity", "builtin identity"), "builtin identity");
+        assert_eq!(
+            core_block_at(None, "_identity", "builtin identity"),
+            "builtin identity"
+        );
         assert_eq!(
             core_block_at(Some(dir.path()), "_identity", "builtin identity"),
             "builtin identity"
@@ -1535,7 +1751,10 @@ mod tests {
     fn core_block_falls_back_on_blank_file_rather_than_blanking_persona() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("_channel.md"), "  \n ").unwrap();
-        assert_eq!(core_block_at(Some(dir.path()), "_channel", "builtin channel"), "builtin channel");
+        assert_eq!(
+            core_block_at(Some(dir.path()), "_channel", "builtin channel"),
+            "builtin channel"
+        );
     }
 
     #[test]
@@ -1552,8 +1771,14 @@ mod tests {
     fn blank_facts_env_falls_through_to_the_file() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("_facts.md"), "from file").unwrap();
-        assert_eq!(facts_block_at(Some(dir.path()), Some("   ")).as_deref(), Some("from file"));
-        assert_eq!(facts_block_at(Some(dir.path()), None).as_deref(), Some("from file"));
+        assert_eq!(
+            facts_block_at(Some(dir.path()), Some("   ")).as_deref(),
+            Some("from file")
+        );
+        assert_eq!(
+            facts_block_at(Some(dir.path()), None).as_deref(),
+            Some("from file")
+        );
     }
 
     #[test]

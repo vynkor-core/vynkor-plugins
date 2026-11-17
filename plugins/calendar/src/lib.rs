@@ -46,7 +46,11 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { db_timeout_ms: 5000, scan_secs: 30, notify_enabled: true }
+        Self {
+            db_timeout_ms: 5000,
+            scan_secs: 30,
+            notify_enabled: true,
+        }
     }
 }
 
@@ -67,7 +71,11 @@ impl Config {
                 !s.is_empty() && s != "false" && s != "0"
             })
             .unwrap_or(true);
-        Self { db_timeout_ms, scan_secs, notify_enabled }
+        Self {
+            db_timeout_ms,
+            scan_secs,
+            notify_enabled,
+        }
     }
 }
 
@@ -106,7 +114,12 @@ impl Rpc {
             .map_err(|e| format!("failed to encode {action} params: {e}"))?;
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(RpcCall { action: action.to_string(), params_json, timeout_ms, reply })
+            .send(RpcCall {
+                action: action.to_string(),
+                params_json,
+                timeout_ms,
+                reply,
+            })
             .await
             .map_err(|_| format!("{action} aborted: serve loop is shutting down"))?;
         let effective = if timeout_ms == 0 { 30_000 } else { timeout_ms };
@@ -165,43 +178,71 @@ pub async fn handle_action(
                 updated_at_ms: now,
             };
             db.put(&doc).await?;
-            ok(json!({"id": id, "event": doc}), Some(changed("created", &doc.id)))
+            ok(
+                json!({"id": id, "event": doc}),
+                Some(changed("created", &doc.id)),
+            )
         }
         request::CalendarRequest::Get { id } => match db.get(&id).await? {
             Some(doc) => ok(json!({"found": true, "event": doc}), None),
             None => ok(json!({"found": false, "event": null}), None),
         },
-        request::CalendarRequest::List { from_ms, to_ms, tag, limit, offset } => {
+        request::CalendarRequest::List {
+            from_ms,
+            to_ms,
+            tag,
+            limit,
+            offset,
+        } => {
             let events = db.list().await?;
             let mut expanded = Vec::new();
             for e in events {
                 if let Some(rrule) = &e.rrule {
-                    let window_from = from_ms.unwrap_or_else(|| store::now_ms() - 24*3600*1000);
-                    let window_to = to_ms.unwrap_or_else(|| store::now_ms() + 90*24*3600*1000);
+                    let window_from = from_ms.unwrap_or_else(|| store::now_ms() - 24 * 3600 * 1000);
+                    let window_to =
+                        to_ms.unwrap_or_else(|| store::now_ms() + 90 * 24 * 3600 * 1000);
                     let occs = expand_rrule(&e, rrule, window_from, window_to);
                     for occ in occs {
                         if let Some(tag) = &tag {
-                            if !occ.tags.iter().any(|t| t == tag) { continue; }
+                            if !occ.tags.iter().any(|t| t == tag) {
+                                continue;
+                            }
                         }
                         expanded.push(occ);
                     }
                 } else {
-                    if let Some(from) = from_ms { if e.start_ms < from { continue; } }
-                    if let Some(to) = to_ms { if e.start_ms > to { continue; } }
-                    if let Some(tag) = &tag { if !e.tags.iter().any(|t| t == tag) { continue; } }
+                    if let Some(from) = from_ms {
+                        if e.start_ms < from {
+                            continue;
+                        }
+                    }
+                    if let Some(to) = to_ms {
+                        if e.start_ms > to {
+                            continue;
+                        }
+                    }
+                    if let Some(tag) = &tag {
+                        if !e.tags.iter().any(|t| t == tag) {
+                            continue;
+                        }
+                    }
                     expanded.push(e);
                 }
             }
             expanded.sort_by(|a, b| {
-                a.start_ms.cmp(&b.start_ms).then_with(|| id_num(a).cmp(&id_num(b)))
+                a.start_ms
+                    .cmp(&b.start_ms)
+                    .then_with(|| id_num(a).cmp(&id_num(b)))
             });
             let total = expanded.len();
             let page: Vec<&EventDoc> = expanded.iter().skip(offset).take(limit).collect();
             ok(json!({"events": page, "total": total}), None)
         }
         request::CalendarRequest::Update { id, patch } => {
-            let mut doc =
-                db.get(&id).await?.ok_or_else(|| format!("event not found: {id}"))?;
+            let mut doc = db
+                .get(&id)
+                .await?
+                .ok_or_else(|| format!("event not found: {id}"))?;
             if let Some(t) = patch.title {
                 doc.title = t;
             }
@@ -264,9 +305,7 @@ pub async fn handle_action(
             let event = deleted.then(|| changed("deleted", &id));
             ok(json!({"deleted": deleted}), event)
         }
-        request::CalendarRequest::Import { ics_base64 } => {
-            import_ics(&db, &ics_base64).await
-        }
+        request::CalendarRequest::Import { ics_base64 } => import_ics(&db, &ics_base64).await,
         request::CalendarRequest::Export => export_ics(&db).await,
     }
 }
@@ -276,7 +315,10 @@ pub async fn handle_action(
 /// a re-import of the same calendar never duplicates events. RRULEs expand to
 /// concrete occurrences (first-stage semantics from PLANS.md EXI-01).
 async fn import_ics(db: &store::Db, ics_base64: &str) -> Result<ActionResult, String> {
-    let compact: String = ics_base64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let compact: String = ics_base64
+        .chars()
+        .filter(|c| !c.is_ascii_whitespace())
+        .collect();
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(compact.as_bytes())
         .map_err(|e| format!("params.ics_base64 is not valid base64: {e}"))?;
@@ -289,8 +331,7 @@ async fn import_ics(db: &store::Db, ics_base64: &str) -> Result<ActionResult, St
 
     let now = store::now_ms();
     let window_start = now - ics::MS_PER_DAY;
-    let window_end =
-        now.saturating_add(ics::IMPORT_HORIZON_DAYS * ics::MS_PER_DAY);
+    let window_end = now.saturating_add(ics::IMPORT_HORIZON_DAYS * ics::MS_PER_DAY);
 
     let existing = db.list().await?;
     let mut by_uid: HashMap<String, EventDoc> = existing
@@ -375,7 +416,10 @@ async fn export_ics(db: &store::Db) -> Result<ActionResult, String> {
     let mut events = db.list().await?;
     events.sort_by(|a, b| a.start_ms.cmp(&b.start_ms));
     let text = ics::generate_ics(&events);
-    ok(json!({"ics_base64": base64::engine::general_purpose::STANDARD.encode(text)}), None)
+    ok(
+        json!({"ics_base64": base64::engine::general_purpose::STANDARD.encode(text)}),
+        None,
+    )
 }
 
 /// Scan all events once and fire every due reminder. Per reminder, in order:
@@ -435,7 +479,9 @@ pub async fn scan_due(
 }
 
 async fn send_notify(rpc: &Rpc, timeout_ms: u32, params: &Value) -> Result<(), String> {
-    rpc.call("notify_send", params.clone(), timeout_ms).await.map(|_| ())
+    rpc.call("notify_send", params.clone(), timeout_ms)
+        .await
+        .map(|_| ())
 }
 
 fn reminder_message(fire: &DueFire, now_ms: i64) -> String {
@@ -460,8 +506,15 @@ fn id_num(e: &EventDoc) -> u64 {
 fn expand_rrule(master: &EventDoc, rrule: &str, window_from: i64, window_to: i64) -> Vec<EventDoc> {
     use chrono::TimeZone;
     use std::str::FromStr;
-    let dtstart = chrono::Utc.timestamp_millis_opt(master.start_ms).single().unwrap_or_else(|| chrono::Utc.timestamp_millis_opt(0).single().unwrap());
-    let rrule_str = format!("DTSTART:{}\nRRULE:{}", dtstart.format("%Y%m%dT%H%M%SZ"), rrule);
+    let dtstart = chrono::Utc
+        .timestamp_millis_opt(master.start_ms)
+        .single()
+        .unwrap_or_else(|| chrono::Utc.timestamp_millis_opt(0).single().unwrap());
+    let rrule_str = format!(
+        "DTSTART:{}\nRRULE:{}",
+        dtstart.format("%Y%m%dT%H%M%SZ"),
+        rrule
+    );
     let set = match rrule::RRuleSet::from_str(&rrule_str) {
         Ok(s) => s,
         Err(_) => return vec![master.clone()],
@@ -474,23 +527,33 @@ fn expand_rrule(master: &EventDoc, rrule: &str, window_from: i64, window_to: i64
     };
     for dt in dates {
         let ms = dt.timestamp_millis();
-        if ms < window_from || ms > window_to { continue; }
+        if ms < window_from || ms > window_to {
+            continue;
+        }
         let mut occ = master.clone();
         occ.id = format!("{}#{}", master.id, ms);
         occ.start_ms = ms;
         occ.end_ms = duration.map(|d| ms + d);
         out.push(occ);
-        if out.len() >= 50 { break; }
+        if out.len() >= 50 {
+            break;
+        }
     }
-    if out.is_empty() { vec![master.clone()] } else { out }
+    if out.is_empty() {
+        vec![master.clone()]
+    } else {
+        out
+    }
 }
 
 fn ok(data: Value, event: Option<ChangeEvent>) -> Result<ActionResult, String> {
-    let data =
-        serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
+    let data = serde_json::to_vec(&data).map_err(|e| format!("failed to encode response: {e}"))?;
     Ok(ActionResult { data, event })
 }
 
 fn changed(op: &'static str, id: &str) -> ChangeEvent {
-    ChangeEvent { event_type: "changed", payload: json!({"op": op, "id": id}) }
+    ChangeEvent {
+        event_type: "changed",
+        payload: json!({"op": op, "id": id}),
+    }
 }

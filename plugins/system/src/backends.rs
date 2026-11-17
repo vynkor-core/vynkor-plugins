@@ -84,8 +84,10 @@ pub trait SessionLock: Send + Sync {
 #[async_trait::async_trait]
 pub trait PowerProfiles: Send + Sync {
     async fn get(&self) -> Result<crate::power_profile::ProfileState, SystemError>;
-    async fn set(&self, profile: crate::request::Profile)
-        -> Result<crate::power_profile::ProfileState, SystemError>;
+    async fn set(
+        &self,
+        profile: crate::request::Profile,
+    ) -> Result<crate::power_profile::ProfileState, SystemError>;
 }
 
 /// The set of backends detected on this host. `None` = capability absent →

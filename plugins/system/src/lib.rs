@@ -75,11 +75,15 @@ pub async fn handle_action(
             encode(volume_json(v))
         }
         SysRequest::BrightnessSet { percent } => {
-            let percent = require(be.brightness.as_ref(), "brightness")?.set(percent).await?;
+            let percent = require(be.brightness.as_ref(), "brightness")?
+                .set(percent)
+                .await?;
             encode(json!({ "percent": percent }))
         }
         SysRequest::PowerProfileSet { profile } => {
-            let state = require(be.power.as_ref(), "power-profiles-daemon")?.set(profile).await?;
+            let state = require(be.power.as_ref(), "power-profiles-daemon")?
+                .set(profile)
+                .await?;
             encode(serde_json::to_value(state).map_err(encode_err)?)
         }
     }
@@ -107,7 +111,9 @@ async fn handle_get(action: &str, be: &SystemBackends) -> Result<serde_json::Val
             encode(json!({ "percent": percent }))
         }
         "sys_power_profile" => {
-            let s = require(be.power.as_ref(), "power-profiles-daemon")?.get().await?;
+            let s = require(be.power.as_ref(), "power-profiles-daemon")?
+                .get()
+                .await?;
             encode(serde_json::to_value(s).map_err(encode_err)?)
         }
         "sys_lock" => {
@@ -223,15 +229,24 @@ mod tests {
     #[async_trait::async_trait]
     impl Volume for FakeVolume {
         async fn get(&self) -> Result<VolumeStatus, SystemError> {
-            Ok(VolumeStatus { percent: 42, muted: false })
+            Ok(VolumeStatus {
+                percent: 42,
+                muted: false,
+            })
         }
 
         async fn set(&self, percent: u8) -> Result<VolumeStatus, SystemError> {
-            Ok(VolumeStatus { percent: u32::from(percent), muted: false })
+            Ok(VolumeStatus {
+                percent: u32::from(percent),
+                muted: false,
+            })
         }
 
         async fn mute(&self, mode: crate::request::MuteMode) -> Result<VolumeStatus, SystemError> {
-            Ok(VolumeStatus { percent: 42, muted: mode == crate::request::MuteMode::On })
+            Ok(VolumeStatus {
+                percent: 42,
+                muted: mode == crate::request::MuteMode::On,
+            })
         }
     }
 
@@ -245,7 +260,9 @@ mod tests {
 
     #[tokio::test]
     async fn sys_battery_maps_backend_status() {
-        let v = handle_action("sys_battery", b"{}", &full_backends()).await.expect("ok");
+        let v = handle_action("sys_battery", b"{}", &full_backends())
+            .await
+            .expect("ok");
         assert_eq!(v["percent"], 87.5);
         assert_eq!(v["state"], "discharging");
         assert_eq!(v["time_to_empty_s"], 4210);
@@ -284,16 +301,21 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_action_is_not_found() {
-        let e =
-            handle_action("sys_frobnicate", b"{}", &full_backends()).await.unwrap_err();
+        let e = handle_action("sys_frobnicate", b"{}", &full_backends())
+            .await
+            .unwrap_err();
         assert_eq!(e.code().as_str(), "ERR_SYS_NOT_FOUND");
     }
 
     #[tokio::test]
     async fn malformed_params_are_bad_params_not_a_crash() {
-        let e = handle_action("sys_info", b"{broken", &full_backends()).await.unwrap_err();
+        let e = handle_action("sys_info", b"{broken", &full_backends())
+            .await
+            .unwrap_err();
         assert_eq!(e.code().as_str(), "ERR_SYS_BAD_PARAMS");
-        let e = handle_action("sys_volume_set", b"[1]", &full_backends()).await.unwrap_err();
+        let e = handle_action("sys_volume_set", b"[1]", &full_backends())
+            .await
+            .unwrap_err();
         assert_eq!(e.code().as_str(), "ERR_SYS_BAD_PARAMS");
     }
 }
@@ -311,12 +333,19 @@ mod manifest_specs_tests {
         let parsed: Value = serde_json::from_str(include_str!("../plugin.json")).unwrap();
         let declared = parsed["actions"].as_array().unwrap().len();
         let specs = vynkor_plugin_manifest::specs_from_manifest(&parsed);
-        assert_eq!(specs.len(), declared, "every declared action must produce a spec");
+        assert_eq!(
+            specs.len(),
+            declared,
+            "every declared action must produce a spec"
+        );
         let undocumented: Vec<&str> = specs
             .iter()
             .filter(|s| s.description.is_empty())
             .map(|s| s.name.as_str())
             .collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
     }
 }

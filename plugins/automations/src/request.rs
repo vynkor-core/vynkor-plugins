@@ -4,9 +4,9 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::store::{ActionSpec, Condition, RuleDoc, Trigger};
 #[cfg(test)]
 use crate::store::MAX_RULES;
+use crate::store::{ActionSpec, Condition, RuleDoc, Trigger};
 
 pub const MAX_NAME_BYTES: usize = 200;
 pub const MAX_CONDITIONS: usize = 8;
@@ -14,11 +14,17 @@ pub const MAX_CONDITIONS: usize = 8;
 #[derive(Debug)]
 pub enum AutomationRequest {
     /// Create (no id) or update (id present) one rule.
-    RuleSet { doc: RuleDoc },
-    RuleGet { id: String },
+    RuleSet {
+        doc: RuleDoc,
+    },
+    RuleGet {
+        id: String,
+    },
     RuleList,
     /// Delete; also used to retract a confirmation-pending rule.
-    RuleDelete { id: String },
+    RuleDelete {
+        id: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -66,12 +72,12 @@ fn validate(doc: &RuleDoc) -> Result<(), String> {
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     {
-        return Err(
-            "params.trigger.event_type may only contain [A-Za-z0-9._-]".to_string(),
-        );
+        return Err("params.trigger.event_type may only contain [A-Za-z0-9._-]".to_string());
     }
     if doc.conditions.len() > MAX_CONDITIONS {
-        return Err(format!("params.conditions exceeds {MAX_CONDITIONS} entries"));
+        return Err(format!(
+            "params.conditions exceeds {MAX_CONDITIONS} entries"
+        ));
     }
     for condition in &doc.conditions {
         if !condition.path.starts_with('/') && !condition.path.is_empty() {
@@ -133,9 +139,13 @@ pub fn parse_request(action: &str, params_json: &[u8]) -> Result<AutomationReque
             validate(&doc)?;
             Ok(AutomationRequest::RuleSet { doc })
         }
-        "rule_get" => Ok(AutomationRequest::RuleGet { id: want_id(&body)? }),
+        "rule_get" => Ok(AutomationRequest::RuleGet {
+            id: want_id(&body)?,
+        }),
         "rule_list" => Ok(AutomationRequest::RuleList),
-        "rule_delete" => Ok(AutomationRequest::RuleDelete { id: want_id(&body)? }),
+        "rule_delete" => Ok(AutomationRequest::RuleDelete {
+            id: want_id(&body)?,
+        }),
         other => Err(format!("unknown action: {other}")),
     }
 }
@@ -161,8 +171,10 @@ mod tests {
 
     #[test]
     fn parses_minimal_set() {
-        match parse_request("rule_set", &serde_json::to_vec(&base_rule(json!({}))).unwrap())
-        {
+        match parse_request(
+            "rule_set",
+            &serde_json::to_vec(&base_rule(json!({}))).unwrap(),
+        ) {
             Ok(AutomationRequest::RuleSet { doc }) => {
                 assert!(doc.id.is_empty(), "no id = create");
                 assert!(doc.enabled);
@@ -206,8 +218,7 @@ mod tests {
 
     #[test]
     fn get_delete_require_id_and_unknown_actions_rejected() {
-        let err =
-            parse_request("rule_get", b"{}").unwrap_err();
+        let err = parse_request("rule_get", b"{}").unwrap_err();
         assert!(err.contains("id"), "{err}");
         let ok = parse_request("rule_delete", br#"{"id":"7"}"#).unwrap();
         assert!(matches!(ok, AutomationRequest::RuleDelete { id } if id == "7"));

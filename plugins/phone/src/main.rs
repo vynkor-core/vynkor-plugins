@@ -42,7 +42,11 @@ struct App {
 
 impl App {
     fn new(cfg: Config, transport: Arc<dyn Transport>) -> Self {
-        Self { transport, cfg, reg: StreamRegistry::new() }
+        Self {
+            transport,
+            cfg,
+            reg: StreamRegistry::new(),
+        }
     }
 
     async fn dispatch(&self, action: &str, params: &Value) -> Result<Value, PhoneError> {
@@ -56,8 +60,14 @@ impl App {
                     "helper_path": r.helper_path, "sha8": r.sha8,
                 }))
             }
-            "phone_photo" => photo::take(t, &self.cfg, &self.reg, &PhotoParams::parse(params)?).await,
-            "phone_stream_start" => self.reg.start(t, &self.cfg, &StreamParams::parse(params)?).await,
+            "phone_photo" => {
+                photo::take(t, &self.cfg, &self.reg, &PhotoParams::parse(params)?).await
+            }
+            "phone_stream_start" => {
+                self.reg
+                    .start(t, &self.cfg, &StreamParams::parse(params)?)
+                    .await
+            }
             "phone_stream_stop" => self.reg.stop(parse_stream_id(params)?).await,
             "phone_stream_status" => Ok(self.reg.status().await),
             other => Err(PhoneError::BadParams(format!("unknown action: {other}"))),
@@ -67,7 +77,10 @@ impl App {
 
 fn manifest() -> PluginManifest {
     PluginManifest {
-        permissions: vec!["PERMISSION_NETWORK".to_string(), "PERMISSION_SCREEN".to_string()],
+        permissions: vec![
+            "PERMISSION_NETWORK".to_string(),
+            "PERMISSION_SCREEN".to_string(),
+        ],
         actions: ACTIONS.iter().map(|s| s.to_string()).collect(),
         action_specs: vynkor_plugin_manifest::action_specs(),
         ..Default::default()
@@ -94,7 +107,10 @@ impl ConcurrentHandler for App {
             match serde_json::from_slice(&req.params_json) {
                 Ok(v) => v,
                 Err(e) => {
-                    return vec![response_envelope(req.action_id, Err(format!("invalid params_json: {e}")))];
+                    return vec![response_envelope(
+                        req.action_id,
+                        Err(format!("invalid params_json: {e}")),
+                    )];
                 }
             }
         };
@@ -150,8 +166,16 @@ mod tests {
         }
     }
 
-    async fn call(kernel: &mut VynkorClient, id: &str, action: &str, params: Value) -> Result<Value, String> {
-        kernel.send("phone", action_request(id, action, params)).await.unwrap();
+    async fn call(
+        kernel: &mut VynkorClient,
+        id: &str,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, String> {
+        kernel
+            .send("phone", action_request(id, action, params))
+            .await
+            .unwrap();
         loop {
             let env = tokio::time::timeout(Duration::from_secs(5), kernel.recv())
                 .await
@@ -160,7 +184,8 @@ mod tests {
             if let Some(envelope::Payload::ActionResponse(resp)) = env.payload {
                 if resp.action_id == id {
                     return if resp.status == ActionStatus::ActionOk as i32 {
-                        serde_json::from_slice::<Value>(&resp.data_json).map_err(|e| format!("malformed payload: {e}"))
+                        serde_json::from_slice::<Value>(&resp.data_json)
+                            .map_err(|e| format!("malformed payload: {e}"))
                     } else {
                         Err(resp.error)
                     };
@@ -185,19 +210,39 @@ mod tests {
         declared.sort();
         let mut served: Vec<String> = ACTIONS.iter().map(|s| s.to_string()).collect();
         served.sort();
-        assert_eq!(declared, served, "plugin.json and ACTIONS must list exactly the same actions");
-        let undocumented: Vec<&str> = specs.iter().filter(|s| s.description.is_empty()).map(|s| s.name.as_str()).collect();
-        assert!(undocumented.is_empty(), "actions missing a description: {undocumented:?}");
+        assert_eq!(
+            declared, served,
+            "plugin.json and ACTIONS must list exactly the same actions"
+        );
+        let undocumented: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.description.is_empty())
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "actions missing a description: {undocumented:?}"
+        );
         for s in &specs {
             assert!(s.risk != 0, "{} must declare a risk", s.name);
         }
-        let high: Vec<&str> = specs.iter().filter(|s| s.requires_confirmation).map(|s| s.name.as_str()).collect();
-        assert!(high.contains(&"phone_photo") && high.contains(&"phone_stream_start"), "{high:?}");
+        let high: Vec<&str> = specs
+            .iter()
+            .filter(|s| s.requires_confirmation)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            high.contains(&"phone_photo") && high.contains(&"phone_stream_start"),
+            "{high:?}"
+        );
     }
 
     #[test]
     fn manifest_declares_the_two_permissions() {
-        assert_eq!(manifest().permissions, vec!["PERMISSION_NETWORK", "PERMISSION_SCREEN"]);
+        assert_eq!(
+            manifest().permissions,
+            vec!["PERMISSION_NETWORK", "PERMISSION_SCREEN"]
+        );
     }
 
     #[tokio::test]
@@ -213,36 +258,65 @@ mod tests {
         let (plugin_side, kernel_side) = UnixStream::pair().unwrap();
         let client = VynkorClient::from_stream(plugin_side, None);
         let mut kernel = VynkorClient::from_stream(kernel_side, None);
-        let app = Arc::new(App::new(test_cfg(dir.path()), fake.clone() as Arc<dyn Transport>));
+        let app = Arc::new(App::new(
+            test_cfg(dir.path()),
+            fake.clone() as Arc<dyn Transport>,
+        ));
         let loop_task = tokio::spawn(run_concurrent_loop(client, app));
 
-        let v = call(&mut kernel, "t-1", "phone_status", json!({})).await.unwrap();
+        let v = call(&mut kernel, "t-1", "phone_status", json!({}))
+            .await
+            .unwrap();
         assert_eq!(v["helper"], json!("missing"));
         assert_eq!(v["reachable"], json!(true));
 
-        let v = call(&mut kernel, "t-2", "phone_setup", json!({})).await.unwrap();
+        let v = call(&mut kernel, "t-2", "phone_setup", json!({}))
+            .await
+            .unwrap();
         assert_eq!(v["changed"], json!(true));
 
-        let v = call(&mut kernel, "t-3", "phone_photo", json!({"camera": "front", "width": 640, "height": 480})).await.unwrap();
+        let v = call(
+            &mut kernel,
+            "t-3",
+            "phone_photo",
+            json!({"camera": "front", "width": 640, "height": 480}),
+        )
+        .await
+        .unwrap();
         assert_eq!(std::fs::read(v["path"].as_str().unwrap()).unwrap(), jpeg);
         assert_eq!(v["camera"], json!("front"));
 
         // bad params and unknown actions come back as coded errors, not crashes
-        let e = call(&mut kernel, "t-4", "phone_photo", json!({"camera": "side"})).await.unwrap_err();
+        let e = call(&mut kernel, "t-4", "phone_photo", json!({"camera": "side"}))
+            .await
+            .unwrap_err();
         assert!(e.starts_with("ERR_PHONE_BAD_PARAMS"), "{e}");
-        let e = call(&mut kernel, "t-5", "phone_nope", json!({})).await.unwrap_err();
+        let e = call(&mut kernel, "t-5", "phone_nope", json!({}))
+            .await
+            .unwrap_err();
         assert!(e.contains("unknown action"), "{e}");
 
-        let v = call(&mut kernel, "t-6", "phone_stream_status", json!({})).await.unwrap();
+        let v = call(&mut kernel, "t-6", "phone_stream_status", json!({}))
+            .await
+            .unwrap();
         assert_eq!(v, json!({"active": false}));
-        let v = call(&mut kernel, "t-7", "phone_stream_stop", json!({})).await.unwrap();
+        let v = call(&mut kernel, "t-7", "phone_stream_stop", json!({}))
+            .await
+            .unwrap();
         assert_eq!(v["stopped"], json!(false));
 
         let shutdown = Envelope {
-            payload: Some(envelope::Payload::PluginShutdown(PluginShutdown { reason: "test done".into(), grace_seconds: 0 })),
+            payload: Some(envelope::Payload::PluginShutdown(PluginShutdown {
+                reason: "test done".into(),
+                grace_seconds: 0,
+            })),
             ..Default::default()
         };
         kernel.send("phone", shutdown).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(5), loop_task).await.expect("loop did not exit").unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(5), loop_task)
+            .await
+            .expect("loop did not exit")
+            .unwrap()
+            .unwrap();
     }
 }
