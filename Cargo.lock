@@ -57,7 +57,7 @@ name = "ai-plugin"
 version = "0.1.1"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "rusqlite",
  "serde",
  "serde_json",
@@ -400,7 +400,7 @@ dependencies = [
 name = "calendar-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "rrule",
  "serde",
@@ -416,7 +416,7 @@ name = "capture-plugin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "futures-util",
  "libc",
  "serde",
@@ -903,7 +903,7 @@ dependencies = [
 name = "email-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "imap",
  "lettre",
  "rustls-connector",
@@ -1015,7 +1015,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "filesystem-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "serde",
  "serde_json",
@@ -1210,7 +1210,7 @@ dependencies = [
 name = "github-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "tokio",
@@ -1907,7 +1907,7 @@ dependencies = [
 name = "notify-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "tempfile",
@@ -2541,7 +2541,7 @@ dependencies = [
 name = "rss-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "rss",
  "serde",
@@ -2727,7 +2727,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "search-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "tokio",
@@ -2740,7 +2740,7 @@ dependencies = [
 name = "secrets-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chacha20poly1305",
  "getrandom 0.4.3",
  "serde",
@@ -2962,7 +2962,7 @@ name = "sound-plugin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde_json",
  "tempfile",
  "tokio",
@@ -3045,7 +3045,7 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 name = "stt-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "sherpa-onnx",
@@ -3356,7 +3356,7 @@ dependencies = [
 name = "tts-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "mp3lame-encoder",
  "opus 0.4.0",
  "serde",
@@ -3634,7 +3634,7 @@ dependencies = [
 name = "weather-plugin"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde",
  "serde_json",
  "tokio",
