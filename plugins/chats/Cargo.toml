@@ -17,7 +17,7 @@ vynkor-sdk = "0.0.5"
 vynkor-wire = "0.0.4"
 vynkor-plugin-manifest = { path = "../_shared/plugin-manifest" }
 serde = { version = "1", features = ["derive"] }
-ulid = "1"
+ulid = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 serde_json = "1"
 rusqlite = { version = "0.40", features = ["bundled"] }
