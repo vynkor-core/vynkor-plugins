@@ -19,6 +19,6 @@ vynkor-plugin-manifest = { path = "../_shared/plugin-manifest" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
+base64 = "0.23"
 rrule = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
